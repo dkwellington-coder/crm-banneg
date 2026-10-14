@@ -72,7 +72,7 @@ const handlers: Record<string, Handler> = {
     const next = await stageByKey(STAGE_KEYS.AI_QUALIFYING, lead.pipelineId);
     if (next) await moveLead(lead.id, next.id, agent.name);
     else await db.lead.update({ where: { id: lead.id }, data: { status: "AI_QUALIFYING" } });
-    return res.usedTemplate ? "Primeiro contato enviado por modelo aprovado." : "Primeiro contato enviado.";
+    return `Primeiro contato ${sentHow(res)}.`;
   },
 
   async "sdr.reply"(_job, l) {
@@ -146,9 +146,15 @@ const handlers: Record<string, Handler> = {
     const res = await sendWhatsApp(lead, text, "Automação", { automatic: true, purpose: "reminder" });
     if (res.skipped) return res.skipped;
     if (!res.ok) throw new Error(res.error);
-    return res.usedTemplate ? "Lembrete enviado por modelo aprovado." : "Lembrete enviado.";
+    return `Lembrete ${sentHow(res)}.`;
   },
 };
+
+/** "enviado", "simulado (modo teste)", "enviado pelo modelo da Meta"... for the job history. */
+function sentHow(res: { usedTemplate?: boolean; simulated?: boolean }) {
+  const how = res.simulated ? "simulado (modo teste)" : "enviado";
+  return res.usedTemplate ? `${how} pelo modelo da Meta (janela de 24 h fechada)` : how;
+}
 
 const decisionLabel: Record<string, string> = {
   continue: "Qualificando",
@@ -202,7 +208,7 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig):
       });
       if (res.skipped) return res.skipped;
       if (!res.ok) throw new Error(res.error);
-      return res.usedTemplate ? "WhatsApp enviado por modelo aprovado (janela de 24 h fechada)." : "WhatsApp enviado.";
+      return `WhatsApp ${sentHow(res)}.`;
     }
     case "email":
       return sendTemplateEmail(lead, config.templateKey ?? "");
