@@ -99,6 +99,23 @@ export async function giveWhatsAppBack(): Promise<CheckResult> {
   }
 }
 
+type HealthEntity = { entity_type: string; can_send_message: string; errors?: { error_code: number; error_description: string }[] };
+
+/**
+ * Whether Meta lets this number send right now, without sending anything. A pending payment on
+ * the WhatsApp account (error 131042 on sends) shows up here as BLOCKED with the reason.
+ */
+export async function whatsappSendStatus(): Promise<{ canSend: boolean; problem: { code?: number; message: string } | null } | null> {
+  const id = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  if (!id || !process.env.WHATSAPP_TOKEN) return null;
+  const res = await graphGet<{ health_status?: { can_send_message: string; entities?: HealthEntity[] } }>(`${id}?fields=health_status`);
+  const health = res.health_status;
+  if (!health) return null;
+  const error = health.entities?.flatMap((e) => e.errors ?? [])[0];
+  if (health.can_send_message === "AVAILABLE") return { canSend: true, problem: null };
+  return { canSend: false, problem: { code: error?.error_code, message: error?.error_description ?? `Meta: envio ${health.can_send_message}` } };
+}
+
 /** Reads the number's profile from Meta without sending anything. */
 export async function checkWhatsApp(): Promise<CheckResult> {
   const { WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID } = process.env;
@@ -108,6 +125,8 @@ export async function checkWhatsApp(): Promise<CheckResult> {
       `${WHATSAPP_PHONE_NUMBER_ID}?fields=display_phone_number,verified_name,quality_rating,messaging_limit_tier`,
     );
     const details = [`Qualidade: ${n.quality_rating ?? "?"}`, `Limite: ${n.messaging_limit_tier ?? "?"}`];
+    const sending = await whatsappSendStatus().catch(() => null);
+    if (sending) details.unshift(sending.canSend ? "Envio liberado pela Meta." : `Envio bloqueado pela Meta: ${sending.problem?.message}`);
     if (WHATSAPP_BUSINESS_ACCOUNT_ID) {
       const t = await graphGet<{ data: { name: string; status: string }[] }>(`${WHATSAPP_BUSINESS_ACCOUNT_ID}/message_templates?fields=name,status&limit=100`);
       const approved = t.data.filter((x) => x.status === "APPROVED").length;

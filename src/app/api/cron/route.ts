@@ -1,7 +1,7 @@
 import { runDueJobs } from "@/lib/jobs";
 import { db } from "@/lib/db";
-import { submitTemplates, syncTemplateStatus } from "@/lib/whatsapp";
-import { checkWhatsApp } from "@/lib/integrations";
+import { getHealth, setHealth, submitTemplates, syncTemplateStatus } from "@/lib/whatsapp";
+import { checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
 import { runDailyBatches } from "@/lib/batches";
 
 // Called every minute by the server's scheduler (cron, Vercel Cron, or the worker script).
@@ -20,6 +20,14 @@ export async function GET(request: Request) {
     // Templates under Meta's review: start using the approved ones
     if (await db.whatsAppTemplate.count({ where: { status: { in: ["PENDING", "IN_APPEAL"] } } }))
       meta.synced = await syncTemplateStatus().catch((e: Error) => e.message);
+  }
+  if (minute % 10 === 5) {
+    // Meta's own answer on whether the number can send (a pending payment blocks it): pauses the
+    // queues and shows the banner while blocked, and clears both as soon as Meta releases it
+    const sending = await whatsappSendStatus().catch(() => null);
+    if (sending?.problem) await setHealth(sending.problem);
+    else if (sending?.canSend && (await getHealth())) await setHealth(null);
+    if (sending) meta.sending = sending;
   }
   if (minute % 30 === 0) {
     // Kept for the Integrações screen and for support: which number is connected and its sending tier

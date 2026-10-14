@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { classifyError, isWindowOpen, normalizePhone, verifySignature } from "@/lib/whatsapp";
 import { renderTemplate } from "@/lib/email";
 import { createHmac } from "node:crypto";
@@ -50,5 +50,28 @@ describe("csv import", () => {
       city: "Curitiba",
       externalId: "123",
     });
+  });
+});
+
+describe("Meta send status", () => {
+  it("reads the payment block from health_status without sending anything", async () => {
+    const { whatsappSendStatus } = await import("@/lib/integrations");
+    process.env.WHATSAPP_TOKEN = "t";
+    process.env.WHATSAPP_PHONE_NUMBER_ID = "123";
+    const reply = (health: unknown) => async () => new Response(JSON.stringify({ health_status: health }), { status: 200 });
+    vi.stubGlobal(
+      "fetch",
+      reply({
+        can_send_message: "BLOCKED",
+        entities: [
+          { entity_type: "PHONE_NUMBER", can_send_message: "AVAILABLE" },
+          { entity_type: "WABA", can_send_message: "BLOCKED", errors: [{ error_code: 141006, error_description: "Problema com a forma de pagamento." }] },
+        ],
+      }),
+    );
+    expect(await whatsappSendStatus()).toEqual({ canSend: false, problem: { code: 141006, message: "Problema com a forma de pagamento." } });
+    vi.stubGlobal("fetch", reply({ can_send_message: "AVAILABLE", entities: [] }));
+    expect(await whatsappSendStatus()).toEqual({ canSend: true, problem: null });
+    vi.unstubAllGlobals();
   });
 });
