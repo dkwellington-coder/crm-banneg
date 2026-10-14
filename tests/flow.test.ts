@@ -61,6 +61,7 @@ describe.skipIf(!dbUrl)("lead flow", () => {
       'TRUNCATE "Job","LeadEvent","Message","Meeting","Task","Lead","SdrAgent","AutomationRule","Stage","Pipeline","Goal","User","Session","WhatsAppTemplate","EmailTemplate","Setting" CASCADE',
     );
     await installDefaultPipeline(db);
+    await db.setting.create({ data: { key: "crm", value: { testMode: false } } });
     await db.sdrAgent.create({ data: { name: "Duda", persona: "x" } });
     await db.user.create({ data: { name: "Gerente", email: "g@banneg.com.br", role: "MANAGER", passwordHash: "x" } });
     await db.whatsAppTemplate.create({ data: { name: "boas_vindas", body: "Olá {{1}}, aqui é da Banneg!", purpose: "first_contact" } });
@@ -205,5 +206,18 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(lead.stageId).toBe(entrada.id);
     await drain();
     expect(await db.task.count({ where: { leadId: lead.id, title: "Ligar para o revendedor" } })).toBe(1);
+  });
+
+  it("test mode records messages to other leads as simulated and only sends to test contacts", async () => {
+    await db.setting.update({ where: { key: "crm" }, data: { value: { testMode: true, testContacts: ["(41) 98888-1111"] } } });
+    const other = (await leads.createLead({ name: "Gil", phone: "11933332222", source: "site" }, "teste")).lead;
+    const mine = (await leads.createLead({ name: "Eu", phone: "41988881111", source: "site" }, "teste")).lead;
+    await drain();
+    expect(sent.map((s) => s.to)).toEqual(["5541988881111"]);
+    const simulated = await db.message.findFirstOrThrow({ where: { leadId: other.id, direction: "OUT" } });
+    expect(simulated.status).toBe("SIMULATED");
+    // The funnel still moves as if it had been sent
+    expect((await db.lead.findUniqueOrThrow({ where: { id: other.id }, include: { stage: true } })).stage.key).toBe("qualificando");
+    expect((await db.message.findFirstOrThrow({ where: { leadId: mine.id, direction: "OUT" } })).status).toBe("SENT");
   });
 });

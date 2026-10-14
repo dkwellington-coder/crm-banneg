@@ -122,7 +122,7 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
           <input type="hidden" name="f" value={pipeline.id} />
           <div className="relative">
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input name="q" defaultValue={q} placeholder="Buscar nome, telefone, cidade" className={`${inputCls} w-72 pl-9`} />
+            <input name="q" defaultValue={q} placeholder="Buscar nome, telefone, cidade" className={`${inputCls} w-72! pl-9`} />
           </div>
           {mine && <input type="hidden" name="meus" value="1" />}
         </form>

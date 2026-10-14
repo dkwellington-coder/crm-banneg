@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { actionLabel, delayLabel, fillVariables, splitDelay, triggerLabel } from "@/lib/rules";
+import { isTestContact } from "@/lib/settings";
 import { currentPeriod, pace, periodRange, shiftPeriod } from "@/lib/goals";
 
 describe("automation rules", () => {
@@ -43,5 +44,15 @@ describe("goals", () => {
     expect(p.daysLeft).toBe(16);
     expect(p.perDay).toBeCloseTo(20 / 16);
     expect(pace(30, 30, "2026-10", mid)).toMatchObject({ percent: 100, onTrack: true });
+  });
+});
+
+describe("test mode", () => {
+  it("matches test contacts in any format", () => {
+    const s = { testContacts: ["(41) 99999-0000", "Wellington@Banneg.com.br"] };
+    expect(isTestContact(s, "5541999990000")).toBe(true);
+    expect(isTestContact(s, "wellington@banneg.com.br")).toBe(true);
+    expect(isTestContact(s, "5541999990001")).toBe(false);
+    expect(isTestContact({ testContacts: [] }, "5541999990000")).toBe(false);
   });
 });

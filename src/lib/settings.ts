@@ -11,6 +11,9 @@ export type CrmSettings = {
   meetingMinutes: number;
   businessHours: BusinessHours;
   presentationUrl: string;
+  // While on, WhatsApp and e-mail only really go to testContacts; the rest is recorded as simulated
+  testMode: boolean;
+  testContacts: string[];
 };
 
 export const DEFAULT_SETTINGS: CrmSettings = {
@@ -27,7 +30,22 @@ export const DEFAULT_SETTINGS: CrmSettings = {
   meetingMinutes: 30,
   businessHours: { start: 9, end: 18, days: [1, 2, 3, 4, 5], timezone: "America/Sao_Paulo" },
   presentationUrl: "https://crm.banneg.com.br/materiais/banneg-apresentacao-franquia.pdf",
+  testMode: true,
+  testContacts: [],
 };
+
+/** In test mode, only listed phones (any format) and e-mails receive real messages. */
+export function isTestContact(settings: Pick<CrmSettings, "testContacts">, contact: string) {
+  const c = contact.trim().toLowerCase();
+  const digits = c.replace(/\D/g, "");
+  return settings.testContacts.some((t) => {
+    const x = t.trim().toLowerCase();
+    if (x.includes("@")) return x === c;
+    const xd = x.replace(/\D/g, "");
+    // 41999990000 matches 5541999990000
+    return xd.length >= 8 && digits.length >= 8 && (digits.endsWith(xd) || xd.endsWith(digits));
+  });
+}
 
 export async function getSettings(): Promise<CrmSettings> {
   const row = await db.setting.findUnique({ where: { key: "crm" } });

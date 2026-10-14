@@ -30,7 +30,7 @@ export function Composer({ leadId, macros }: { leadId: string; macros: { title: 
       <div className="flex items-center gap-2">
         {macros.length > 0 && (
           <select
-            className={`${inputCls} w-auto`}
+            className={`${inputCls} w-auto!`}
             value=""
             onChange={(e) => {
               const m = macros[Number(e.target.value)];

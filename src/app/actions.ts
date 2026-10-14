@@ -462,3 +462,115 @@ export async function saveGoalsAction(form: FormData) {
   revalidatePath("/metas");
   redirect(`/metas?p=${period}`);
 }
+
+// ---------- Integrações e testes ----------
+
+export type TestState = { kind: string; ok: boolean; message: string; details?: string[] } | null;
+
+export async function testIntegrationAction(_: TestState, form: FormData): Promise<TestState> {
+  const user = await requireManager();
+  const kind = String(form.get("kind"));
+  const integrations = await import("@/lib/integrations");
+  const run = {
+    ai: () => integrations.checkAi(),
+    whatsapp: () => integrations.checkWhatsApp(),
+    whatsapp_send: () => integrations.sendWhatsAppTest(String(form.get("phone") ?? "")),
+    templates: () => integrations.importWhatsAppTemplates(),
+    email: () => integrations.sendEmailTest(String(form.get("to") || user.email)),
+    calendar: () => integrations.checkCalendar(String(form.get("userId") || user.id)),
+  }[kind];
+  if (!run) return { kind, ok: false, message: "Teste desconhecido." };
+  const res = await run();
+  if (kind === "templates") revalidatePath("/configuracoes");
+  return { kind, ...res };
+}
+
+export async function saveTestModeAction(form: FormData) {
+  await requireOwner();
+  await saveSettings({
+    testMode: form.get("testMode") === "on",
+    testContacts: String(form.get("testContacts") ?? "")
+      .split(/[\n,;]+/)
+      .map((s) => s.trim())
+      .filter(Boolean),
+  });
+  revalidatePath("/integracoes");
+}
+
+export type SimMessage = { direction: "IN" | "OUT"; body: string; author: string };
+export type SimResult =
+  | {
+      ok: true;
+      reply: string;
+      decision: string;
+      score: number;
+      temperature: string;
+      reason: string;
+      summary: string;
+      extracted: Record<string, string | null>;
+      effects: string[];
+      slots: string[];
+    }
+  | { ok: false; error: string };
+
+/** Runs the real SDR on a made-up conversation. Reads settings and knowledge; writes nothing. */
+export async function simulateSdrAction(input: { agentId: string; messages: SimMessage[]; lead: { name?: string; city?: string } }): Promise<SimResult> {
+  await requireUser();
+  const [{ runSdrTurn }, { planFromDecision }, { pickOwner, freeSlotsFor, formatSlot }] = await Promise.all([
+    import("@/lib/sdr"),
+    import("@/lib/plan"),
+    import("@/lib/calendar"),
+  ]);
+  const agent = await db.sdrAgent.findUnique({ where: { id: input.agentId } });
+  if (!agent) return { ok: false, error: "Escolha uma SDR." };
+  if (!process.env.ANTHROPIC_API_KEY) return { ok: false, error: "A IA ainda não está conectada: falta a ANTHROPIC_API_KEY no servidor." };
+  const settings = await getSettings();
+  const knowledge = await db.knowledgeItem.findMany({ orderBy: { title: "asc" } });
+  const owner = await pickOwner();
+  const slots = owner ? await freeSlotsFor(owner.id, settings.businessHours, settings.meetingMinutes) : [];
+  const now = new Date();
+  try {
+    const d = await runSdrTurn({
+      agentName: agent.name,
+      persona: agent.persona,
+      settings,
+      knowledge,
+      lead: {
+        name: input.lead.name || null,
+        phone: "simulado",
+        email: null,
+        city: input.lead.city || null,
+        state: null,
+        source: "simulador",
+        qualification: {},
+        summary: null,
+      },
+      transcript: input.messages.map((m, i) => ({ ...m, at: new Date(now.getTime() - (input.messages.length - i) * 60_000) })),
+      slots,
+      now,
+    });
+    const plan = planFromDecision(d, slots, settings.qualifyScore);
+    const stage = await db.stage.findFirst({ where: { key: plan.stageKey, pipeline: { isDefault: true } } });
+    const effects = [`Lead iria para "${stage?.name ?? plan.stageKey}".`];
+    if (plan.slot) effects.push(`Marcaria reunião com ${owner?.name ?? "o gerente"} em ${formatSlot(plan.slot.startsAt)} e mandaria lembretes.`);
+    if (plan.handoffTask) effects.push(`Criaria tarefa: ${plan.handoffTask}`);
+    if (plan.stopAi) effects.push("A IA pararia de responder este lead.");
+    if (d.decision === "offer_meeting" && !plan.slot && plan.stageKey !== "qualificado") {
+      effects.push(`A IA quis oferecer reunião, mas o score (${d.score}) está abaixo do mínimo (${settings.qualifyScore}): continua qualificando.`);
+    }
+    return {
+      ok: true,
+      reply: plan.reply,
+      decision: d.decision,
+      score: d.score,
+      temperature: d.temperature,
+      reason: d.reason,
+      summary: d.summary,
+      extracted: d.extracted,
+      effects,
+      slots: slots.slice(0, 5).map((s) => formatSlot(s.startsAt)),
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}

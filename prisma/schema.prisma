@@ -49,6 +49,8 @@ enum MessageStatus {
   READ
   FAILED
   RECEIVED
+  // Test mode: recorded but not really sent
+  SIMULATED
 }
 
 enum JobStatus {

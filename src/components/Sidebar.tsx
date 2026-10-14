@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarDays, Columns3, LayoutDashboard, MessageCircle, Settings, Target, type LucideIcon } from "lucide-react";
+import { CalendarDays, Columns3, FlaskConical, LayoutDashboard, MessageCircle, Plug, Settings, Target, type LucideIcon } from "lucide-react";
 
 type Item = { href: string; label: string; icon: LucideIcon; match?: string[] };
 
@@ -12,6 +12,7 @@ const ITEMS: Item[] = [
   { href: "/agenda", label: "Agenda", icon: CalendarDays },
   { href: "/metas", label: "Metas", icon: Target },
   { href: "/painel", label: "Painel", icon: LayoutDashboard },
+  { href: "/simulador", label: "Simulador", icon: FlaskConical },
 ];
 
 export function Sidebar() {
@@ -38,7 +39,10 @@ export function Sidebar() {
         <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-lg font-black text-brand shadow">B</span>
       </div>
       {ITEMS.map(item)}
-      <div className="mt-auto">{item({ href: "/configuracoes", label: "Ajustes", icon: Settings })}</div>
+      <div className="mt-auto space-y-1">
+        {item({ href: "/integracoes", label: "Integrar", icon: Plug })}
+        {item({ href: "/configuracoes", label: "Ajustes", icon: Settings })}
+      </div>
     </nav>
   );
 }

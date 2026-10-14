@@ -107,7 +107,7 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
               <button className={btnGhostCls}>{lead.aiPaused ? "Retomar IA" : "Pausar IA"}</button>
             </form>
             <form action={assignSdrAction.bind(null, lead.id)} className="flex gap-1">
-              <select name="sdrId" defaultValue={lead.sdrId ?? ""} className={`${inputCls} w-auto py-1`}>
+              <select name="sdrId" defaultValue={lead.sdrId ?? ""} className={`${inputCls} w-auto! py-1`}>
                 <option value="">Sem IA</option>
                 {agents.map((a) => (
                   <option key={a.id} value={a.id}>
@@ -160,7 +160,7 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
             <input name="email" defaultValue={lead.email ?? ""} placeholder="E-mail" className={inputCls} />
             <div className="flex gap-2">
               <input name="city" defaultValue={lead.city ?? ""} placeholder="Cidade" className={inputCls} />
-              <input name="state" defaultValue={lead.state ?? ""} placeholder="UF" className={`${inputCls} w-20`} />
+              <input name="state" defaultValue={lead.state ?? ""} placeholder="UF" className={`${inputCls} w-20!`} />
             </div>
             <div className="relative">
               <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">R$</span>
@@ -269,4 +269,4 @@ function MessageBubble({ m }: { m: { channel: string; direction: string; body: s
   );
 }
 
-const STATUS_PT: Record<string, string> = { QUEUED: "na fila", SENT: "enviada", DELIVERED: "entregue", READ: "lida", FAILED: "falhou" };
+const STATUS_PT: Record<string, string> = { QUEUED: "na fila", SENT: "enviada", DELIVERED: "entregue", READ: "lida", FAILED: "falhou", SIMULATED: "simulada (modo teste)" };

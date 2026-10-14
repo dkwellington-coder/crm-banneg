@@ -157,9 +157,9 @@ async function Config() {
           <form key={e?.key ?? "new"} action={saveEmailTemplateAction} className="space-y-2 border-t border-slate-100 pt-2 first:border-0 first:pt-0">
             <fieldset disabled={!owner} className="space-y-2">
               <div className="flex gap-2">
-                <input name="key" required defaultValue={e?.key ?? ""} readOnly={!!e} placeholder="chave (ex.: boas_vindas_10)" className={`${inputCls} w-48`} />
+                <input name="key" required defaultValue={e?.key ?? ""} readOnly={!!e} placeholder="chave (ex.: boas_vindas_10)" className={`${inputCls} w-48!`} />
                 <input name="name" required defaultValue={e?.name ?? ""} placeholder="Nome" className={inputCls} />
-                <input name="sequenceDay" type="number" min={0} defaultValue={e?.sequenceDay ?? ""} placeholder="Dia" className={`${inputCls} w-20`} />
+                <input name="sequenceDay" type="number" min={0} defaultValue={e?.sequenceDay ?? ""} placeholder="Dia" className={`${inputCls} w-20!`} />
                 <label className="flex items-center gap-1 text-sm">
                   <input type="checkbox" name="active" defaultChecked={e?.active ?? true} /> ativo
                 </label>
@@ -178,8 +178,8 @@ async function Config() {
             <fieldset disabled={!owner} className="space-y-2">
               <div className="flex gap-2">
                 <input name="name" defaultValue={t?.name ?? ""} readOnly={!!t} placeholder="nome_do_modelo" className={inputCls} />
-                <input name="purpose" defaultValue={t?.purpose ?? "reengagement"} className={`${inputCls} w-40`} />
-                <input name="language" defaultValue={t?.language ?? "pt_BR"} className={`${inputCls} w-24`} />
+                <input name="purpose" defaultValue={t?.purpose ?? "reengagement"} className={`${inputCls} w-40!`} />
+                <input name="language" defaultValue={t?.language ?? "pt_BR"} className={`${inputCls} w-24!`} />
                 <label className="flex items-center gap-1 text-sm">
                   <input type="checkbox" name="active" defaultChecked={t?.active ?? true} /> ativo
                 </label>
@@ -206,15 +206,15 @@ async function Config() {
         {[...users, null].map((u) => (
           <form key={u?.id ?? "new"} action={saveUserAction} className="flex flex-wrap gap-2 border-t border-slate-100 pt-2 first:border-0 first:pt-0">
             <fieldset disabled={!owner} className="contents">
-              <input name="name" required defaultValue={u?.name ?? ""} placeholder="Nome" className={`${inputCls} w-40`} />
-              <input name="email" required type="email" defaultValue={u?.email ?? ""} readOnly={!!u} placeholder="E-mail" className={`${inputCls} w-56`} />
-              <select name="role" defaultValue={u?.role ?? "MANAGER"} className={`${inputCls} w-36`}>
+              <input name="name" required defaultValue={u?.name ?? ""} placeholder="Nome" className={`${inputCls} w-40!`} />
+              <input name="email" required type="email" defaultValue={u?.email ?? ""} readOnly={!!u} placeholder="E-mail" className={`${inputCls} w-56!`} />
+              <select name="role" defaultValue={u?.role ?? "MANAGER"} className={`${inputCls} w-36!`}>
                 <option value="OWNER">Proprietário</option>
                 <option value="MANAGER">Gerente</option>
                 <option value="SELLER">Vendedor</option>
               </select>
-              <input name="calendarId" defaultValue={u?.calendarId ?? ""} placeholder="Agenda Google" className={`${inputCls} w-48`} />
-              <input name="password" type="password" placeholder={u ? "Nova senha (opcional)" : "Senha"} className={`${inputCls} w-40`} />
+              <input name="calendarId" defaultValue={u?.calendarId ?? ""} placeholder="Agenda Google" className={`${inputCls} w-48!`} />
+              <input name="password" type="password" placeholder={u ? "Nova senha (opcional)" : "Senha"} className={`${inputCls} w-40!`} />
               <button className={btnGhostCls}>{u ? "Salvar" : "Adicionar"}</button>
             </fieldset>
           </form>

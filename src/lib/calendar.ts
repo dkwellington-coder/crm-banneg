@@ -64,14 +64,42 @@ export async function pickOwner() {
 }
 
 export async function freeSlotsFor(userId: string, hours: BusinessHours, minutes: number, now = new Date()) {
-  const busy = await db.meeting.findMany({
-    where: { userId, status: "scheduled", endsAt: { gte: now } },
-    select: { startsAt: true, endsAt: true },
-  });
-  return computeSlots({ now, hours, minutes, busy });
+  const [user, meetings] = await Promise.all([
+    db.user.findUnique({ where: { id: userId }, select: { email: true, calendarId: true } }),
+    db.meeting.findMany({
+      where: { userId, status: "scheduled", endsAt: { gte: now } },
+      select: { startsAt: true, endsAt: true },
+    }),
+  ]);
+  // The manager's real Google agenda counts too, so the AI never offers a time already taken
+  let google: { startsAt: Date; endsAt: Date }[] = [];
+  if (user) {
+    try {
+      google = await googleBusy(user.calendarId ?? user.email, now, new Date(now.getTime() + 8 * 86_400_000));
+    } catch {
+      // Without Google, the CRM's own meetings are enough to avoid double booking
+    }
+  }
+  return computeSlots({ now, hours, minutes, busy: [...meetings, ...google] });
 }
 
-async function googleAccessToken() {
+/** Busy periods on a Google calendar; empty when Google is not configured. */
+export async function googleBusy(calendarId: string, from: Date, to: Date) {
+  const token = await googleAccessToken();
+  if (!token) return [];
+  const res = await fetch("https://www.googleapis.com/calendar/v3/freeBusy", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ timeMin: from.toISOString(), timeMax: to.toISOString(), items: [{ id: calendarId }] }),
+  });
+  if (!res.ok) throw new Error(`Google Agenda (disponibilidade): HTTP ${res.status}`);
+  const json = (await res.json()) as { calendars?: Record<string, { busy?: { start: string; end: string }[]; errors?: { reason: string }[] }> };
+  const cal = json.calendars?.[calendarId];
+  if (cal?.errors?.length) throw new Error(`Google Agenda sem acesso ao calendário ${calendarId} (${cal.errors[0].reason}).`);
+  return (cal?.busy ?? []).map((b) => ({ startsAt: new Date(b.start), endsAt: new Date(b.end) }));
+}
+
+export async function googleAccessToken() {
   const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN } = process.env;
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REFRESH_TOKEN) return null;
   const res = await fetch("https://oauth2.googleapis.com/token", {

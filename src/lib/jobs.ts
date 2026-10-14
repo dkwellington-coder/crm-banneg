@@ -3,7 +3,7 @@ import { db } from "./db";
 import { logEvent } from "./events";
 import { backoffMs, cancelJobs, enqueue } from "./queue";
 import { sendWhatsApp } from "./messaging";
-import { getSettings } from "./settings";
+import { getSettings, isTestContact } from "./settings";
 import { createCalendarEvent, formatSlot, freeSlotsFor, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
 import { planFromDecision, STAGE_KEYS } from "./plan";
@@ -168,11 +168,19 @@ async function sendTemplateEmail(lead: Lead, templateKey: string) {
   };
   const subject = renderTemplate(t.subject, vars);
   const body = renderTemplate(t.body, vars);
-  await sendEmail(lead.email, subject, body);
+  const simulated = settings.testMode && !isTestContact(settings, lead.email);
+  if (!simulated) await sendEmail(lead.email, subject, body);
   await db.message.create({
-    data: { leadId: lead.id, channel: "EMAIL", direction: "OUT", body: `${subject}\n\n${body}`, author: "E-mail automático", status: "SENT" },
+    data: {
+      leadId: lead.id,
+      channel: "EMAIL",
+      direction: "OUT",
+      body: `${subject}\n\n${body}`,
+      author: "E-mail automático",
+      status: simulated ? "SIMULATED" : "SENT",
+    },
   });
-  return `E-mail "${t.name}" enviado.`;
+  return simulated ? `E-mail "${t.name}" simulado (modo teste).` : `E-mail "${t.name}" enviado.`;
 }
 
 /** Does what a rule says. Throws on a failure worth retrying (WhatsApp down, SMTP error). */
