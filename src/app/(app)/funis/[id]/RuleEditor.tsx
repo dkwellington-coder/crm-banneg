@@ -20,6 +20,7 @@ export type EditorOptions = {
   stages: { id: string; name: string; pipeline: string; same: boolean }[];
   emails: { key: string; name: string }[];
   sdrs: { id: string; name: string }[];
+  waTemplates: { name: string; status: string }[];
 };
 
 type Draft = {
@@ -48,7 +49,7 @@ const PRESETS: { label: string; draft: Partial<Draft> }[] = [
   { label: "Mover se sumir", draft: { trigger: "idle", amount: 7, unit: "d", action: "move", config: {} } },
 ];
 
-const VARIABLES = ["nome", "empresa", "cidade", "sdr", "apresentacao"];
+const VARIABLES = ["nome", "empresa", "cidade", "sdr", "apresentacao", "video_ganhos", "simulacoes", "por_que_investir", "video_fundador", "video_bottini"];
 
 function fromRule(rule?: RuleData): Draft {
   if (!rule) return { trigger: "enter", when: "now", amount: 1, unit: "d", action: "whatsapp", config: {}, runAfterLeaving: false };
@@ -184,7 +185,25 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
               </button>
             ))}
           </div>
-          <p className="text-xs text-slate-500">Se o lead não escreveu nas últimas 24 h, o CRM manda o modelo aprovado de follow-up no lugar (regra da Meta).</p>
+          <input
+            name="buttons"
+            value={(d.config.buttons ?? []).join(" | ")}
+            onChange={(e) => setConfig({ buttons: e.target.value.split("|").map((b) => b.trim()).filter(Boolean).slice(0, 3) })}
+            placeholder="Botões (opcional, até 3, separados por |): Quero ver | Agora não"
+            className={inputCls}
+          />
+          <label className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+            Se o lead não escreveu nas últimas 24 h, mandar o modelo da Meta:
+            <select name="templateName" value={d.config.templateName ?? ""} onChange={(e) => setConfig({ templateName: e.target.value || undefined })} className={`${inputCls} w-auto!`}>
+              <option value="">nenhum (espera o lead escrever)</option>
+              {options.waTemplates.map((t) => (
+                <option key={t.name} value={t.name}>
+                  {t.name}
+                  {t.status !== "APPROVED" ? " (aguardando a Meta)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
       )}
       {d.action === "email" && (

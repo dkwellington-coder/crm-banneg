@@ -4,6 +4,8 @@ import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { isWindowOpen } from "@/lib/whatsapp";
+import { getSettings, messageVars } from "@/lib/settings";
+import { fillVariables } from "@/lib/rules";
 import { Avatar, Card, Loading, STATUS_LABEL, TempBadge, btnGhostCls, fmt, inputCls, relTime } from "@/components/ui";
 import {
   addNoteAction,
@@ -48,12 +50,15 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
     },
   });
   if (!lead) notFound();
-  const [stages, agents, users, macros] = await Promise.all([
+  const [stages, agents, users, macros, settings] = await Promise.all([
     db.stage.findMany({ orderBy: [{ pipeline: { position: "asc" } }, { position: "asc" }], include: { pipeline: { select: { name: true } } } }),
     db.sdrAgent.findMany({ where: { active: true } }),
     db.user.findMany({ orderBy: { name: "asc" } }),
     db.macro.findMany({ orderBy: { title: "asc" } }),
+    getSettings(),
   ]);
+  // Macros arrive ready to send: name, links to videos and PDFs already filled in
+  const vars = messageVars(settings, lead, lead.sdr?.name ?? "");
   const windowOpen = isWindowOpen(lead.lastInboundAt);
   const feed = [
     ...lead.messages.map((m) => ({ kind: "msg" as const, at: m.createdAt, m })),
@@ -184,6 +189,9 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" name="emailOptOut" defaultChecked={lead.emailOptOut} /> Não enviar e-mails
             </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" name="whatsappOptOut" defaultChecked={lead.whatsappOptOut} /> Não enviar WhatsApp automático
+            </label>
             <button className={btnGhostCls}>Salvar dados</button>
           </form>
         </Card>
@@ -221,7 +229,7 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
               : "Janela de 24 h fechada: o CRM envia automaticamente um modelo aprovado pela Meta para reabrir a conversa."}
             {lead.sdr && !lead.aiPaused && " Ao enviar, a IA pausa neste lead."}
           </div>
-          <Composer leadId={lead.id} macros={macros.map((m) => ({ title: m.title, body: m.body }))} />
+          <Composer leadId={lead.id} macros={macros.map((m) => ({ title: m.title, body: fillVariables(m.body, vars) }))} />
           <form action={addNoteAction.bind(null, lead.id)} className="mt-2 flex gap-2">
             <input name="note" placeholder="Nota interna (o lead não vê)" className={inputCls} />
             <button className={btnGhostCls}>Anotar</button>

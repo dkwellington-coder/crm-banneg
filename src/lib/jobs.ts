@@ -3,7 +3,7 @@ import { db } from "./db";
 import { logEvent } from "./events";
 import { backoffMs, cancelJobs, enqueue } from "./queue";
 import { sendWhatsApp } from "./messaging";
-import { getSettings, isTestContact } from "./settings";
+import { getSettings, isTestContact, messageVars } from "./settings";
 import { createCalendarEvent, formatSlot, freeSlotsFor, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
 import { planFromDecision, STAGE_KEYS } from "./plan";
@@ -62,8 +62,12 @@ const handlers: Record<string, Handler> = {
     if (lead.aiPaused || lead.status !== "NEW") return "Ignorado: lead já em atendimento.";
     const { agent, settings } = await sdrContext(lead);
     const firstName = lead.name?.split(" ")[0];
-    const body = `Olá${firstName ? `, ${firstName}` : ""}! Aqui é a ${agent.name}, do ${settings.companyName}. Recebi seu interesse na nossa franquia e queria entender um pouco do seu momento para te passar as informações certas. Pode falar agora?`;
-    const res = await sendWhatsApp(lead, body, agent.name, "first_contact");
+    const body = `Olá${firstName ? `, ${firstName}` : ""}! Aqui é a ${agent.name}, do time de expansão do ${settings.companyName}. Recebi seu interesse na nossa franquia de seguros e separei um vídeo de 1 minuto que mostra como o franqueado ganha dinheiro. Posso te enviar?`;
+    const res = await sendWhatsApp(lead, body, agent.name, { automatic: true, purpose: "first_contact", buttons: ["Pode enviar", "Agora não"] });
+    if (res.skipped) {
+      await ensureTask(lead.id, lead.ownerId, "Fazer o primeiro contato: o modelo da Meta ainda não foi aprovado");
+      return res.skipped;
+    }
     if (!res.ok) throw new Error(res.error);
     const next = await stageByKey(STAGE_KEYS.AI_QUALIFYING, lead.pipelineId);
     if (next) await moveLead(lead.id, next.id, agent.name);
@@ -105,6 +109,7 @@ const handlers: Record<string, Handler> = {
       const fresh = await db.lead.findUniqueOrThrow({ where: { id: lead.id } });
       const res = await sendWhatsApp(fresh, reply, agent.name);
       if (!res.ok) throw new Error(res.error);
+      if (res.skipped) await logEvent(lead.id, "whatsapp.skipped", agent.name, res.skipped);
     }
     // Funnels the team built may not have the AI's stage; then only the status changes
     const target = await stageByKey(plan.stageKey, lead.pipelineId);
@@ -138,9 +143,10 @@ const handlers: Record<string, Handler> = {
     const meeting = await db.meeting.findUnique({ where: { id: meetingId } });
     if (!meeting || meeting.status !== "scheduled") return "Ignorado: reunião cancelada.";
     const text = `Lembrete: nossa reunião é ${label}, ${formatSlot(meeting.startsAt)}.${meeting.meetLink ? ` Link: ${meeting.meetLink}` : ""} Até lá!`;
-    const res = await sendWhatsApp(lead, text, "Automação", "reminder");
+    const res = await sendWhatsApp(lead, text, "Automação", { automatic: true, purpose: "reminder" });
+    if (res.skipped) return res.skipped;
     if (!res.ok) throw new Error(res.error);
-    return "Lembrete enviado.";
+    return res.usedTemplate ? "Lembrete enviado por modelo aprovado." : "Lembrete enviado.";
   },
 };
 
@@ -160,12 +166,9 @@ async function sendTemplateEmail(lead: Lead, templateKey: string) {
   const t = await db.emailTemplate.findUnique({ where: { key: templateKey } });
   if (!t || !t.active) return "Ignorado: modelo de e-mail inativo.";
   const settings = await getSettings();
-  const vars = {
-    nome: lead.name?.split(" ")[0] ?? "",
-    empresa: settings.companyName,
-    cidade: lead.city ?? "",
-    apresentacao: settings.presentationUrl,
-  };
+  // "A {{sdr}}, do nosso time de expansão": the e-mail names the SDR who is talking to this lead
+  const sdr = lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null;
+  const vars = messageVars(settings, lead, sdr?.name ?? "Duda");
   const subject = renderTemplate(t.subject, vars);
   const body = renderTemplate(t.body, vars);
   const simulated = settings.testMode && !isTestContact(settings, lead.email);
@@ -190,15 +193,14 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig):
       if (!lead.phone) return "Ignorado: lead sem telefone.";
       const settings = await getSettings();
       const sdr = lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null;
-      const text = fillVariables(config.text ?? "", {
-        nome: lead.name?.split(" ")[0] ?? "",
-        empresa: settings.companyName,
-        cidade: lead.city ?? "",
-        sdr: sdr?.name ?? "",
-        apresentacao: settings.presentationUrl,
-      });
+      const text = fillVariables(config.text ?? "", messageVars(settings, lead, sdr?.name ?? ""));
       if (!text) return "Ignorado: mensagem vazia.";
-      const res = await sendWhatsApp(lead, text, sdr?.name ?? "Automação", "followup");
+      const res = await sendWhatsApp(lead, text, sdr?.name ?? "Automação", {
+        automatic: true,
+        templateName: config.templateName,
+        buttons: config.buttons,
+      });
+      if (res.skipped) return res.skipped;
       if (!res.ok) throw new Error(res.error);
       return res.usedTemplate ? "WhatsApp enviado por modelo aprovado (janela de 24 h fechada)." : "WhatsApp enviado.";
     }

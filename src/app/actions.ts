@@ -101,6 +101,7 @@ export async function updateLeadAction(leadId: string, form: FormData) {
       ownerId: pick("ownerId"),
       value: parseMoney(pick("value")),
       emailOptOut: form.get("emailOptOut") === "on",
+      whatsappOptOut: form.get("whatsappOptOut") === "on",
     },
   });
   await logEvent(leadId, "lead.updated", user.name, "Dados do lead atualizados.");
@@ -398,6 +399,15 @@ export async function saveRuleAction(form: FormData) {
   const pick = (k: string) => String(form.get(k) ?? "").trim() || undefined;
   const config: RuleConfig = {
     text: action === "whatsapp" ? pick("text") : undefined,
+    templateName: action === "whatsapp" ? pick("templateName") : undefined,
+    buttons:
+      action === "whatsapp"
+        ? String(form.get("buttons") ?? "")
+            .split("|")
+            .map((b) => b.trim().slice(0, 20))
+            .filter(Boolean)
+            .slice(0, 3)
+        : undefined,
     templateKey: action === "email" ? pick("templateKey") : undefined,
     title: action === "task" ? pick("title") : undefined,
     toStageId: action === "move" ? pick("toStageId") : undefined,
@@ -476,12 +486,17 @@ export async function testIntegrationAction(_: TestState, form: FormData): Promi
     whatsapp: () => integrations.checkWhatsApp(),
     whatsapp_send: () => integrations.sendWhatsAppTest(String(form.get("phone") ?? "")),
     templates: () => integrations.importWhatsAppTemplates(),
+    templates_submit: () => integrations.submitWhatsAppTemplates(),
+    templates_sync: () => integrations.syncWhatsAppTemplates(),
     email: () => integrations.sendEmailTest(String(form.get("to") || user.email)),
     calendar: () => integrations.checkCalendar(String(form.get("userId") || user.id)),
   }[kind];
   if (!run) return { kind, ok: false, message: "Teste desconhecido." };
   const res = await run();
-  if (kind === "templates") revalidatePath("/configuracoes");
+  if (kind.startsWith("templates")) {
+    revalidatePath("/configuracoes");
+    revalidatePath("/integracoes");
+  }
   return { kind, ...res };
 }
 

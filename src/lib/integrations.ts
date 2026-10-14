@@ -4,7 +4,7 @@ import { SDR_MODEL } from "./sdr";
 import { sendEmail } from "./email";
 import { formatSlot, freeSlotsFor, googleAccessToken, googleBusy } from "./calendar";
 import { getSettings } from "./settings";
-import { normalizePhone, sendTemplate, sendText } from "./whatsapp";
+import { normalizePhone, sendTemplate, sendText, submitTemplates, syncTemplateStatus } from "./whatsapp";
 
 export type CheckResult = { ok: boolean; message: string; details?: string[] };
 
@@ -83,8 +83,8 @@ export async function importWhatsAppTemplates(): Promise<CheckResult> {
       const purpose = /lembr|remind/.test(n) ? "reminder" : /follow|retom|cobr/.test(n) ? "followup" : /boas|bem_vindo|welcome|primeir|contato/.test(n) ? "first_contact" : "reengagement";
       await db.whatsAppTemplate.upsert({
         where: { name: t.name },
-        create: { name: t.name, language: t.language, body, purpose },
-        update: { language: t.language, body },
+        create: { name: t.name, language: t.language, body, purpose, status: "APPROVED", active: true },
+        update: { language: t.language, body, status: "APPROVED", active: true, metaNote: null },
       });
     }
     return { ok: true, message: `${approved.length} modelos aprovados importados.`, details: approved.map((t) => t.name) };
@@ -100,12 +100,42 @@ export async function sendWhatsAppTest(rawPhone: string): Promise<CheckResult> {
   const text = await sendText(phone, "Teste do CRM Banneg: se você recebeu esta mensagem, o WhatsApp está conectado. Responda qualquer coisa para testar o recebimento.");
   if (text.ok) return { ok: true, message: `Mensagem enviada para ${phone}. Responda no celular e veja se ela aparece em Conversas.` };
   // 131047: more than 24 h since the person last wrote to this number
-  const template = await db.whatsAppTemplate.findFirst({ where: { active: true }, orderBy: { name: "asc" } });
-  if (!template) return { ok: false, message: `${text.error} Para números que não escreveram nas últimas 24 h é preciso um modelo aprovado: importe os modelos.` };
-  const res = await sendTemplate(phone, template.name, template.language, template.body.includes("{{1}}") ? ["teste"] : []);
+  const template =
+    (await db.whatsAppTemplate.findFirst({ where: { active: true, purpose: "reengagement" }, orderBy: { name: "asc" } })) ??
+    (await db.whatsAppTemplate.findFirst({ where: { active: true }, orderBy: { name: "asc" } }));
+  if (!template) return { ok: false, message: `${text.error} Para números que não escreveram nas últimas 24 h é preciso um modelo aprovado: envie os modelos para a Meta.` };
+  const params = template.body.includes("{{2}}") ? ["teste", "Duda"] : template.body.includes("{{1}}") ? ["teste"] : [];
+  const res = await sendTemplate(phone, template.name, template.language, params);
   return res.ok
     ? { ok: true, message: `Enviado pelo modelo "${template.name}" (o número não escreveu nas últimas 24 h). Responda no celular para testar o recebimento.` }
     : { ok: false, message: res.error };
+}
+
+/** Sends the kit's templates to Meta for review, straight from the CRM. */
+export async function submitWhatsAppTemplates(): Promise<CheckResult> {
+  try {
+    const { done, failed } = await submitTemplates();
+    if (!done.length && !failed.length) return { ok: true, message: "Nenhum modelo aguardando envio." };
+    return {
+      ok: failed.length === 0,
+      message: `${done.length} modelos enviados para a Meta${failed.length ? `, ${failed.length} com erro` : ""}. A análise costuma sair em minutos; o CRM confere sozinho.`,
+      details: [...done, ...failed],
+    };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+/** Brings Meta's review result now instead of waiting for the automatic check. */
+export async function syncWhatsAppTemplates(): Promise<CheckResult> {
+  if (!process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || !process.env.WHATSAPP_TOKEN)
+    return { ok: false, message: "Falta WHATSAPP_TOKEN ou WHATSAPP_BUSINESS_ACCOUNT_ID." };
+  try {
+    const { changed } = await syncTemplateStatus();
+    return { ok: true, message: changed.length ? `${changed.length} modelos mudaram de situação.` : "Nenhuma mudança desde a última conferência.", details: changed };
+  } catch (e) {
+    return fail(e);
+  }
 }
 
 export async function sendEmailTest(to: string): Promise<CheckResult> {

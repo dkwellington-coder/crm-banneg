@@ -32,16 +32,18 @@ async function Editor({ params }: { params: PageProps<"/funis/[id]">["params"] }
     },
   });
   if (!pipeline) notFound();
-  const [allStages, emails, sdrs] = await Promise.all([
+  const [allStages, emails, sdrs, waTemplates] = await Promise.all([
     db.stage.findMany({ orderBy: [{ pipeline: { position: "asc" } }, { position: "asc" }], include: { pipeline: { select: { name: true } } } }),
     db.emailTemplate.findMany({ where: { active: true }, orderBy: { key: "asc" }, select: { key: true, name: true } }),
     db.sdrAgent.findMany({ where: { active: true }, select: { id: true, name: true } }),
+    db.whatsAppTemplate.findMany({ orderBy: { name: "asc" }, select: { name: true, status: true } }),
   ]);
   const canEdit = user.role !== "SELLER";
   const options = {
     stages: allStages.map((s) => ({ id: s.id, name: s.name, pipeline: s.pipeline.name, same: s.pipelineId === pipeline.id })),
     emails,
     sdrs,
+    waTemplates,
   };
   const stages: StageData[] = pipeline.stages.map((s) => ({
     id: s.id,

@@ -60,6 +60,29 @@ export function sendText(to: string, body: string) {
   return post({ to, type: "text", text: { body, preview_url: true } });
 }
 
+/** Text with up to 3 tap-to-answer buttons (only inside the 24 h window). Titles are cut to Meta's 20 characters. */
+export function sendButtons(to: string, body: string, buttons: string[]) {
+  return post({
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: body.slice(0, 1024) },
+      action: {
+        buttons: buttons.slice(0, 3).map((title, i) => ({ type: "reply", reply: { id: `b${i}`, title: title.slice(0, 20) } })),
+      },
+    },
+  });
+}
+
+/** A video or PDF from a public link, with the message as its caption. */
+export function sendMedia(to: string, kind: "video" | "document" | "image", link: string, caption: string, filename?: string) {
+  const media: Record<string, string> = { link };
+  if (caption) media.caption = caption.slice(0, 1024);
+  if (kind === "document" && filename) media.filename = filename;
+  return post({ to, type: kind, [kind]: media });
+}
+
 export function sendTemplate(to: string, name: string, language: string, params: string[]) {
   return post({
     to,
@@ -134,4 +157,70 @@ export function messageText(m: InboundMessage) {
     m.interactive?.list_reply?.title ??
     `[${m.type} recebido]`
   );
+}
+
+// ---------- Templates at Meta ----------
+
+type MetaTemplate = { id: string; name: string; status: string; language: string; category?: string; rejected_reason?: string };
+
+async function graph<T>(path: string, init?: { method: "POST"; body: unknown }): Promise<T> {
+  const token = process.env.WHATSAPP_TOKEN;
+  if (!token) throw new Error("Falta o WHATSAPP_TOKEN nas variáveis do servidor.");
+  const res = await fetch(`${GRAPH}/${path}`, {
+    method: init?.method ?? "GET",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: init ? JSON.stringify(init.body) : undefined,
+  });
+  const json = (await res.json().catch(() => ({}))) as T & { error?: { message?: string; error_user_msg?: string; code?: number } };
+  if (!res.ok) throw new Error(json.error?.error_user_msg ?? json.error?.message ?? `HTTP ${res.status}`);
+  return json;
+}
+
+/** Meta's template body: {{1}} is the lead's first name and {{2}} the SDR's, with examples so review can read it. */
+export function templateComponents(t: { body: string; buttons: string[] }) {
+  const example = ["Maria", "Duda"].slice(0, t.body.includes("{{2}}") ? 2 : t.body.includes("{{1}}") ? 1 : 0);
+  const components: Record<string, unknown>[] = [
+    { type: "BODY", text: t.body, ...(example.length && { example: { body_text: [example] } }) },
+  ];
+  if (t.buttons.length) components.push({ type: "BUTTONS", buttons: t.buttons.map((text) => ({ type: "QUICK_REPLY", text: text.slice(0, 25) })) });
+  return components;
+}
+
+/** Sends every template still only in the CRM to Meta for review. */
+export async function submitTemplates() {
+  const waba = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+  if (!waba) throw new Error("Falta o WHATSAPP_BUSINESS_ACCOUNT_ID (ID da conta do WhatsApp Business).");
+  const drafts = await db.whatsAppTemplate.findMany({ where: { status: "draft" }, orderBy: { name: "asc" } });
+  const done: string[] = [];
+  const failed: string[] = [];
+  for (const t of drafts) {
+    try {
+      const res = await graph<{ id: string; status: string }>(`${waba}/message_templates`, {
+        method: "POST",
+        body: { name: t.name, language: t.language, category: t.category, components: templateComponents({ body: t.body, buttons: t.buttons as string[] }) },
+      });
+      await db.whatsAppTemplate.update({ where: { id: t.id }, data: { status: res.status ?? "PENDING", active: res.status === "APPROVED", metaNote: null } });
+      done.push(t.name);
+    } catch (e) {
+      await db.whatsAppTemplate.update({ where: { id: t.id }, data: { metaNote: (e as Error).message } });
+      failed.push(`${t.name}: ${(e as Error).message}`);
+    }
+  }
+  return { done, failed };
+}
+
+/** Brings each template's review result from Meta; approved ones start being used right away. */
+export async function syncTemplateStatus() {
+  const waba = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+  if (!waba || !process.env.WHATSAPP_TOKEN) return { changed: [] as string[] };
+  const res = await graph<{ data: MetaTemplate[] }>(`${waba}/message_templates?fields=id,name,status,language,category,rejected_reason&limit=200`);
+  const changed: string[] = [];
+  for (const m of res.data) {
+    const local = await db.whatsAppTemplate.findUnique({ where: { name: m.name } });
+    if (!local || local.status === m.status) continue;
+    const note = m.rejected_reason && m.rejected_reason !== "NONE" ? m.rejected_reason : null;
+    await db.whatsAppTemplate.update({ where: { id: local.id }, data: { status: m.status, active: m.status === "APPROVED", metaNote: note } });
+    changed.push(`${m.name}: ${m.status}`);
+  }
+  return { changed };
 }

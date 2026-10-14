@@ -14,6 +14,24 @@ export type CrmSettings = {
   // While on, WhatsApp and e-mail only really go to testContacts; the rest is recorded as simulated
   testMode: boolean;
   testContacts: string[];
+  // Files the AI, the automations and the e-mails send as links: {{video_ganhos}} -> URL
+  materials: Record<string, string>;
+};
+
+// Public files served from /materiais on the CRM's own address
+const MATERIALS_BASE = `${process.env.PUBLIC_BASE_URL ?? "https://crm-banneg-banneg.vercel.app"}/materiais`;
+export const DEFAULT_MATERIALS: Record<string, string> = {
+  apresentacao: `${MATERIALS_BASE}/apresentacao-de-valor.pdf`,
+  por_que_investir: `${MATERIALS_BASE}/por-que-investir.pdf`,
+  simulacoes: `${MATERIALS_BASE}/simulacoes-de-rentabilidade.pdf`,
+  catalogo_lojas: `${MATERIALS_BASE}/catalogo-lojas-3d.pdf`,
+  video_ganhos: `${MATERIALS_BASE}/como-ganhar-dinheiro.mp4`,
+  video_bottini: `${MATERIALS_BASE}/ciro-bottini.mp4`,
+  video_franqueado: `${MATERIALS_BASE}/depoimento-franqueado.mp4`,
+  video_fundador: `${MATERIALS_BASE}/wellington-mensagem.mp4`,
+  video_fundador_podcast: `${MATERIALS_BASE}/wellington-podcast.mp4`,
+  foto_fundador: `${MATERIALS_BASE}/wellington.jpg`,
+  foto_fachada: `${MATERIALS_BASE}/fachada-loja.jpg`,
 };
 
 export const DEFAULT_SETTINGS: CrmSettings = {
@@ -29,9 +47,10 @@ export const DEFAULT_SETTINGS: CrmSettings = {
   qualifyScore: 60,
   meetingMinutes: 30,
   businessHours: { start: 9, end: 18, days: [1, 2, 3, 4, 5], timezone: "America/Sao_Paulo" },
-  presentationUrl: "https://crm.banneg.com.br/materiais/banneg-apresentacao-franquia.pdf",
+  presentationUrl: DEFAULT_MATERIALS.apresentacao,
   testMode: true,
   testContacts: [],
+  materials: DEFAULT_MATERIALS,
 };
 
 /** In test mode, only listed phones (any format) and e-mails receive real messages. */
@@ -49,7 +68,20 @@ export function isTestContact(settings: Pick<CrmSettings, "testContacts">, conta
 
 export async function getSettings(): Promise<CrmSettings> {
   const row = await db.setting.findUnique({ where: { key: "crm" } });
-  return { ...DEFAULT_SETTINGS, ...((row?.value as Partial<CrmSettings>) ?? {}) };
+  const saved = (row?.value as Partial<CrmSettings>) ?? {};
+  return { ...DEFAULT_SETTINGS, ...saved, materials: { ...DEFAULT_MATERIALS, ...saved.materials } };
+}
+
+/** {{nome}}, {{empresa}}, {{apresentacao}}, {{video_ganhos}}... for one lead. */
+export function messageVars(settings: CrmSettings, lead: { name: string | null; city: string | null }, sdrName = "") {
+  return {
+    ...settings.materials,
+    nome: lead.name?.split(" ")[0] ?? "",
+    empresa: settings.companyName,
+    cidade: lead.city ?? "",
+    sdr: sdrName,
+    apresentacao: settings.presentationUrl,
+  };
 }
 
 export async function saveSettings(patch: Partial<CrmSettings>) {

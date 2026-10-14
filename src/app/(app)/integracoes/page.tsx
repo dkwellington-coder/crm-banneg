@@ -57,11 +57,13 @@ async function Integrations() {
   const user = await requireUser();
   const h = await headers();
   const origin = `${h.get("x-forwarded-proto") ?? "https"}://${h.get("host")}`;
-  const [settings, lastInbound, users, templates] = await Promise.all([
+  const [settings, lastInbound, users, templates, drafts, pending] = await Promise.all([
     getSettings(),
     db.message.findFirst({ where: { direction: "IN", channel: "WHATSAPP" }, orderBy: { createdAt: "desc" } }),
     db.user.findMany({ where: { role: { in: ["OWNER", "MANAGER"] } }, orderBy: { name: "asc" } }),
     db.whatsAppTemplate.count({ where: { active: true } }),
+    db.whatsAppTemplate.count({ where: { status: "draft" } }),
+    db.whatsAppTemplate.count({ where: { status: "PENDING" } }),
   ]);
   const owner = user.role === "OWNER";
 
@@ -123,7 +125,9 @@ async function Integrations() {
           <Step>Cadastre o webhook abaixo e assine o campo &quot;messages&quot;.</Step>
         </ol>
         <TestButton kind="whatsapp" label="Verificar número" />
-        <TestButton kind="templates" label={`Importar modelos aprovados (${templates} no CRM)`} />
+        <TestButton kind="templates_submit" label={`Enviar modelos para aprovação da Meta (${drafts} aguardando envio)`} />
+        <TestButton kind="templates_sync" label={`Conferir aprovação (${templates} aprovados, ${pending} em análise)`} />
+        <TestButton kind="templates" label="Importar modelos já aprovados na Meta" />
         <TestButton kind="whatsapp_send" label="Enviar mensagem de teste">
           <input name="phone" required placeholder="Seu celular com DDD" className={`${inputCls} w-56!`} />
         </TestButton>

@@ -4,6 +4,7 @@ import { logEvent } from "./events";
 import { cancelJobs, enqueueDebounced } from "./queue";
 import { cancelRuleJobs, scheduleStageRules } from "./automations";
 import { normalizePhone } from "./whatsapp";
+import { sendWhatsApp } from "./messaging";
 import { STAGE_KEYS } from "./plan";
 
 /** A stage of the given funnel by its AI key; null when that funnel has no such stage. */
@@ -106,6 +107,7 @@ export async function handleInbound(input: { phone: string; profileName?: string
     where: { id: lead.id },
     data: { lastInboundAt: input.at, name: lead.name ?? input.profileName ?? null },
   });
+  if (isStopRequest(input.body)) return optOut(lead);
   // The lead answered: the "sem resposta" clock starts over
   await cancelRuleJobs(lead.id, "idle");
   await scheduleStageRules(lead, "idle");
@@ -116,6 +118,31 @@ export async function handleInbound(input: { phone: string; profileName?: string
     await ensureTask(lead.id, lead.ownerId, "Responder mensagem do lead no WhatsApp");
   }
   return lead;
+}
+
+// The "Parar mensagens" button of the templates, or the lead typing it
+const STOP_WORDS = new Set(["parar mensagens", "parar", "pare", "sair", "stop", "cancelar", "descadastrar"]);
+
+export function isStopRequest(body: string) {
+  return STOP_WORDS.has(body.trim().toLowerCase().replace(/[.!]+$/, ""));
+}
+
+/** The lead asked to stop: no automatic WhatsApp or e-mail from now on, and the AI steps out. */
+export async function optOut(lead: Lead) {
+  if (lead.whatsappOptOut) return lead;
+  const updated = await db.lead.update({
+    where: { id: lead.id },
+    data: { whatsappOptOut: true, emailOptOut: true, aiPaused: true },
+  });
+  await cancelRuleJobs(lead.id, "all");
+  await cancelJobs(lead.id, ["sdr.first_contact", "sdr.reply", "email.send"]);
+  await logEvent(lead.id, "lead.opt_out", "WhatsApp", "O lead pediu para parar as mensagens: automações, e-mails e IA desligados para ele.");
+  try {
+    await sendWhatsApp(updated, "Tudo certo, não vou mais te mandar mensagens automáticas. Se quiser retomar a conversa, é só escrever aqui.", "Automação");
+  } catch (e) {
+    await logEvent(lead.id, "whatsapp.failed", "Automação", `Confirmação de saída não enviada: ${(e as Error).message}`);
+  }
+  return updated;
 }
 
 export async function ensureTask(leadId: string, userId: string | null, title: string, dueAt = new Date()) {

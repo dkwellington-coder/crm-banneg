@@ -37,6 +37,8 @@ describe.skipIf(!dbUrl)("lead flow", () => {
       where: { leadId, type: "rule.run", status: "PENDING", ...(idle !== undefined && { payload: { path: ["idle"], equals: idle } }) },
     });
   const sent: { to: string; type: string; body: unknown }[] = [];
+  // Every payload as Meta receives it
+  const raw: Record<string, unknown>[] = [];
   let failNext: { code: number; message: string } | null = null;
 
   beforeAll(async () => {
@@ -51,12 +53,14 @@ describe.skipIf(!dbUrl)("lead flow", () => {
         return new Response(JSON.stringify({ error }), { status: 400 });
       }
       sent.push({ to: body.to, type: body.type, body: body.text?.body ?? body.template?.name });
+      raw.push(body);
       return new Response(JSON.stringify({ messages: [{ id: `wamid.${sent.length}.${Date.now()}` }] }), { status: 200 });
     });
   });
 
   beforeEach(async () => {
     sent.length = 0;
+    raw.length = 0;
     await db.$executeRawUnsafe(
       'TRUNCATE "Job","LeadEvent","Message","Meeting","Task","Lead","SdrAgent","AutomationRule","Stage","Pipeline","Goal","User","Session","WhatsAppTemplate","EmailTemplate","Setting" CASCADE',
     );
@@ -219,5 +223,56 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     // The funnel still moves as if it had been sent
     expect((await db.lead.findUniqueOrThrow({ where: { id: other.id }, include: { stage: true } })).stage.key).toBe("qualificando");
     expect((await db.message.findFirstOrThrow({ where: { leadId: mine.id, direction: "OUT" } })).status).toBe("SENT");
+  });
+
+  it("sends the kit: template signed by the lead's SDR, materials as video, and stops on request", async () => {
+    await db.whatsAppTemplate.deleteMany();
+    await db.whatsAppTemplate.create({
+      data: { name: "banneg_primeiro_contato", body: "Olá, {{1}}! Aqui é a {{2}}, do time de expansão do Banneg. Posso te enviar?", purpose: "first_contact" },
+    });
+    const qualificando = await db.stage.findFirstOrThrow({ where: { key: "qualificando" } });
+    const rule = await db.automationRule.create({
+      data: { stageId: qualificando.id, trigger: "idle", delayMinutes: 120, action: "whatsapp", config: { text: "Aqui está, {{nome}}: {{video_ganhos}}\n\nMe conta: você já vende?" } },
+    });
+    const { lead } = await leads.createLead({ name: "Hugo Reis", phone: "11922221111", source: "site" }, "teste");
+    await drain();
+
+    // 1. First contact by the template, signed by the lead's SDR
+    expect(raw.at(-1)).toMatchObject({
+      type: "template",
+      template: { name: "banneg_primeiro_contato", components: [{ parameters: [{ text: "Hugo" }, { text: "Duda" }] }] },
+    });
+    expect((await db.message.findFirstOrThrow({ where: { leadId: lead.id, direction: "OUT" } })).body).toContain("Aqui é a Duda,");
+
+    // 2. Lead taps "Pode enviar"; with the window open, the rule's video link goes as a real video with the text as caption
+    await leads.handleInbound({ phone: "11922221111", body: "Pode enviar", externalId: "k1", at: new Date() });
+    await db.lead.update({ where: { id: lead.id }, data: { aiPaused: true } });
+    await db.job.updateMany({ where: { leadId: lead.id, type: "sdr.reply" }, data: { status: "CANCELLED" } });
+    const job = await db.job.findFirstOrThrow({ where: { leadId: lead.id, status: "PENDING", payload: { path: ["ruleId"], equals: rule.id } } });
+    await db.job.update({ where: { id: job.id }, data: { runAt: new Date(Date.now() - 1000) } });
+    raw.length = 0;
+    await drain();
+    expect(raw).toEqual([
+      expect.objectContaining({
+        type: "video",
+        video: { link: expect.stringMatching(/\/materiais\/como-ganhar-dinheiro\.mp4$/), caption: "Aqui está, Hugo.\n\nMe conta: você já vende?" },
+      }),
+    ]);
+
+    // 3. Lead taps "Parar mensagens": automations, e-mails and AI stop, and one confirmation goes out
+    raw.length = 0;
+    await leads.handleInbound({ phone: "11922221111", body: "Parar mensagens", externalId: "k2", at: new Date() });
+    const stopped = await db.lead.findUniqueOrThrow({ where: { id: lead.id } });
+    expect(stopped).toMatchObject({ whatsappOptOut: true, emailOptOut: true, aiPaused: true });
+    expect(await pendingRules(lead.id)).toBe(0);
+    expect(raw).toEqual([expect.objectContaining({ type: "text" })]);
+    expect(await jobs.runAction(stopped, "whatsapp", { text: "Oi" })).toMatch(/parar as mensagens/);
+
+    // 4. Window closed and the rule has no Meta template: nothing goes out
+    const quiet = await db.lead.update({ where: { id: lead.id }, data: { whatsappOptOut: false, lastInboundAt: new Date(Date.now() - 2 * 86400_000) } });
+    raw.length = 0;
+    expect(await jobs.runAction(quiet, "whatsapp", { text: "Oi" })).toMatch(/não tem modelo da Meta/);
+    expect(await jobs.runAction(quiet, "whatsapp", { text: "Oi", templateName: "banneg_inexistente" })).toMatch(/não está cadastrado/);
+    expect(raw).toHaveLength(0);
   });
 });

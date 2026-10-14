@@ -176,6 +176,8 @@ model Lead {
   sdr            SdrAgent?   @relation(fields: [sdrId], references: [id])
   aiPaused       Boolean     @default(false)
   emailOptOut    Boolean     @default(false)
+  // Lead tapped "Parar mensagens" (or wrote PARAR/SAIR): no more automatic WhatsApp
+  whatsappOptOut Boolean     @default(false)
   score          Int?
   temperature    String?
   // Answers the SDR collected (capital, region, timeline, decision maker...)
@@ -292,7 +294,16 @@ model WhatsAppTemplate {
   language String  @default("pt_BR")
   body     String
   purpose  String  @default("reengagement")
+  // true = approved by Meta, so the CRM may send it
   active   Boolean @default(true)
+  // MARKETING | UTILITY, as submitted to Meta
+  category String  @default("MARKETING")
+  // Quick reply button labels, in order
+  buttons  Json    @default("[]")
+  // draft (only in the CRM) | PENDING | APPROVED | REJECTED | PAUSED | DISABLED, as Meta reports it
+  status   String  @default("APPROVED")
+  // Meta's reason when it rejects the template
+  metaNote String?
 }
 
 model Macro {

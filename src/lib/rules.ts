@@ -12,7 +12,17 @@ export const ACTIONS = {
 export type ActionKey = keyof typeof ACTIONS;
 export type RuleTrigger = "enter" | "idle";
 
-export type RuleConfig = { text?: string; templateKey?: string; title?: string; toStageId?: string; sdrId?: string };
+export type RuleConfig = {
+  text?: string;
+  templateKey?: string;
+  title?: string;
+  toStageId?: string;
+  sdrId?: string;
+  // WhatsApp: Meta template used when the 24 h window is closed (without one, the message waits for the lead)
+  templateName?: string;
+  // WhatsApp: quick reply buttons shown with the text
+  buttons?: string[];
+};
 
 export const UNITS = [
   { key: "min", label: "minutos", minutes: 1 },
@@ -42,7 +52,7 @@ export function triggerLabel(trigger: string, delayMinutes: number) {
 export function actionLabel(action: string, config: RuleConfig, names: { stages?: Record<string, string>; emails?: Record<string, string> } = {}) {
   switch (action) {
     case "whatsapp":
-      return `Enviar WhatsApp: “${config.text ?? ""}”`;
+      return `Enviar WhatsApp: “${config.text ?? ""}”${config.buttons?.length ? ` [${config.buttons.join(" · ")}]` : ""}${config.templateName ? ` (fora das 24 h: modelo ${config.templateName})` : ""}`;
     case "email":
       return `Enviar e-mail “${names.emails?.[config.templateKey ?? ""] ?? config.templateKey}”`;
     case "task":
