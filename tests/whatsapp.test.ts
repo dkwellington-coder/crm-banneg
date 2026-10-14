@@ -1,0 +1,54 @@
+import { describe, expect, it } from "vitest";
+import { classifyError, isWindowOpen, normalizePhone, verifySignature } from "@/lib/whatsapp";
+import { renderTemplate } from "@/lib/email";
+import { createHmac } from "node:crypto";
+
+describe("whatsapp helpers", () => {
+  it("opens the 24h window only after a recent inbound message", () => {
+    const now = new Date("2026-10-14T12:00:00Z");
+    expect(isWindowOpen(null, now)).toBe(false);
+    expect(isWindowOpen(new Date("2026-10-14T00:00:00Z"), now)).toBe(true);
+    expect(isWindowOpen(new Date("2026-10-13T11:59:00Z"), now)).toBe(false);
+  });
+
+  it("normalizes Brazilian phone numbers", () => {
+    expect(normalizePhone("(11) 92013-8123")).toBe("5511920138123");
+    expect(normalizePhone("+55 11 92013-8123")).toBe("5511920138123");
+  });
+
+  it("flags the Meta payment error as an account problem", () => {
+    expect(classifyError(131042, "x")).toMatchObject({ accountLevel: true });
+    expect(classifyError(131026, "Message undeliverable")).toEqual({ accountLevel: false, friendly: "Message undeliverable" });
+  });
+
+  it("checks the webhook signature", () => {
+    process.env.WHATSAPP_APP_SECRET = "s3cret";
+    const body = '{"a":1}';
+    const sig = "sha256=" + createHmac("sha256", "s3cret").update(body).digest("hex");
+    expect(verifySignature(body, sig)).toBe(true);
+    expect(verifySignature(body, "sha256=00")).toBe(false);
+    delete process.env.WHATSAPP_APP_SECRET;
+  });
+
+  it("renders email variables", () => {
+    expect(renderTemplate("Olá {{nome}}, veja {{ apresentacao }}", { nome: "Ana", apresentacao: "https://x" })).toBe(
+      "Olá Ana, veja https://x",
+    );
+  });
+});
+
+import { mapRow, parseCsv } from "@/lib/csv";
+
+describe("csv import", () => {
+  it("parses a Kommo-style semicolon export with quotes", () => {
+    const rows = parseCsv('﻿ID;Contato principal;Celular;Email comercial;Cidade\n123;"Silva; João";(41) 99999-0000;joao@x.com;Curitiba\n');
+    expect(rows).toHaveLength(1);
+    expect(mapRow(rows[0])).toMatchObject({
+      name: "Silva; João",
+      phone: "(41) 99999-0000",
+      email: "joao@x.com",
+      city: "Curitiba",
+      externalId: "123",
+    });
+  });
+});

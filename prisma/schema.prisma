@@ -1,0 +1,262 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  MANAGER
+  SELLER
+}
+
+enum StageKind {
+  OPEN
+  WON
+  LOST
+}
+
+enum LeadStatus {
+  NEW
+  AI_QUALIFYING
+  QUALIFIED
+  MEETING_BOOKED
+  HANDED_OFF
+  NURTURING
+  DISQUALIFIED
+  WON
+  LOST
+}
+
+enum Channel {
+  WHATSAPP
+  EMAIL
+  NOTE
+}
+
+enum Direction {
+  IN
+  OUT
+}
+
+enum MessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  RECEIVED
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  DONE
+  FAILED
+  CANCELLED
+}
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         Role      @default(SELLER)
+  phone        String?
+  calendarId   String?
+  createdAt    DateTime  @default(now())
+  leads        Lead[]
+  tasks        Task[]
+  meetings     Meeting[]
+  sessions     Session[]
+}
+
+model Session {
+  id        String   @id
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+}
+
+model Stage {
+  id             String    @id @default(cuid())
+  // Stable key the automations use (novo, qualificando, ...); null for stages the team creates
+  key            String?   @unique
+  name           String
+  position       Int
+  kind           StageKind @default(OPEN)
+  color          String    @default("#64748b")
+  // Days a lead may stay here before the stale-card automation fires (null = never)
+  staleAfterDays Int?
+  leads          Lead[]
+}
+
+model SdrAgent {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  active    Boolean  @default(true)
+  persona   String
+  createdAt DateTime @default(now())
+  leads     Lead[]
+}
+
+model Lead {
+  id             String      @id @default(cuid())
+  name           String?
+  phone          String?     @unique
+  email          String?
+  city           String?
+  state          String?
+  source         String      @default("manual")
+  campaign       String?
+  externalId     String?
+  stageId        String
+  stage          Stage       @relation(fields: [stageId], references: [id])
+  status         LeadStatus  @default(NEW)
+  ownerId        String?
+  owner          User?       @relation(fields: [ownerId], references: [id])
+  sdrId          String?
+  sdr            SdrAgent?   @relation(fields: [sdrId], references: [id])
+  aiPaused       Boolean     @default(false)
+  emailOptOut    Boolean     @default(false)
+  followUpStep   Int         @default(0)
+  score          Int?
+  temperature    String?
+  // Answers the SDR collected (capital, region, timeline, decision maker...)
+  qualification  Json        @default("{}")
+  aiSummary      String?
+  lostReason     String?
+  lastInboundAt  DateTime?
+  lastContactAt  DateTime?
+  stageEnteredAt DateTime    @default(now())
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  messages       Message[]
+  events         LeadEvent[]
+  tasks          Task[]
+  meetings       Meeting[]
+  jobs           Job[]
+
+  @@index([stageId])
+  @@index([status])
+}
+
+model Message {
+  id         String        @id @default(cuid())
+  leadId     String
+  lead       Lead          @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  channel    Channel
+  direction  Direction
+  body       String
+  author     String
+  status     MessageStatus @default(QUEUED)
+  externalId String?       @unique
+  template   String?
+  error      String?
+  createdAt  DateTime      @default(now())
+
+  @@index([leadId, createdAt])
+}
+
+// Timeline: everything that happened to a lead, including each AI decision.
+model LeadEvent {
+  id        String   @id @default(cuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  type      String
+  actor     String
+  summary   String
+  data      Json?
+  createdAt DateTime @default(now())
+
+  @@index([leadId, createdAt])
+}
+
+model Task {
+  id        String    @id @default(cuid())
+  leadId    String?
+  lead      Lead?     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?     @relation(fields: [userId], references: [id])
+  title     String
+  dueAt     DateTime
+  doneAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+model Meeting {
+  id              String   @id @default(cuid())
+  leadId          String
+  lead            Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  userId          String?
+  user            User?    @relation(fields: [userId], references: [id])
+  startsAt        DateTime
+  endsAt          DateTime
+  calendarEventId String?
+  meetLink        String?
+  status          String   @default("scheduled")
+  createdAt       DateTime @default(now())
+}
+
+// Durable queue: every automation, follow-up, email and AI turn runs through here, with retries and a log.
+model Job {
+  id          String    @id @default(cuid())
+  type        String
+  leadId      String?
+  lead        Lead?     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  payload     Json      @default("{}")
+  runAt       DateTime  @default(now())
+  status      JobStatus @default(PENDING)
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(5)
+  lastError   String?
+  result      String?
+  dedupeKey   String?   @unique
+  createdAt   DateTime  @default(now())
+  finishedAt  DateTime?
+
+  @@index([status, runAt])
+}
+
+model EmailTemplate {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  name        String
+  subject     String
+  body        String
+  // Sequence step: days after the lead enters the sequence (null = manual only)
+  sequenceDay Int?
+  active      Boolean  @default(true)
+  updatedAt   DateTime @updatedAt
+}
+
+model WhatsAppTemplate {
+  id       String  @id @default(cuid())
+  name     String  @unique
+  language String  @default("pt_BR")
+  body     String
+  purpose  String  @default("reengagement")
+  active   Boolean @default(true)
+}
+
+model Macro {
+  id    String @id @default(cuid())
+  title String
+  body  String
+}
+
+// Business knowledge the SDR may use, and nothing else.
+model KnowledgeItem {
+  id        String   @id @default(cuid())
+  title     String
+  content   String
+  updatedAt DateTime @updatedAt
+}
+
+model Setting {
+  key   String @id
+  value Json
+}
