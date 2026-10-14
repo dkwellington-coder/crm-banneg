@@ -36,7 +36,7 @@ type Draft = {
 const PRESETS: { label: string; draft: Partial<Draft> }[] = [
   {
     label: "Boas-vindas no WhatsApp",
-    draft: { trigger: "enter", when: "now", action: "whatsapp", config: { text: "Oi, {{nome}}! Aqui é a {{sdr}}, da {{empresa}}. Recebi seu contato e já te ajudo por aqui." } },
+    draft: { trigger: "enter", when: "now", action: "whatsapp", config: { text: "Oi, {{nome}}! Aqui é a {{sdr}}, do {{empresa}}. Recebi seu contato e já te ajudo por aqui." } },
   },
   {
     label: "Cobrar se não responder",

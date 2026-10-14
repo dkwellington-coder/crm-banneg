@@ -34,7 +34,7 @@ Equipe de Expansão {{empresa}}`,
     subject: "As 3 perguntas que todo futuro franqueado {{empresa}} faz",
     body: `Olá, {{nome}}!
 
-Quem chega até a {{empresa}} costuma perguntar:
+Quem chega até o {{empresa}} costuma perguntar:
 
 1. Quanto preciso investir?
 2. Em quanto tempo a unidade começa a operar?

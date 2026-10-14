@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "CRM Banneg",
-  description: "CRM de expansão de franquias da Banneg",
+  description: "CRM de expansão de franquias do Banneg",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

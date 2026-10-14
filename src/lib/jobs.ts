@@ -62,7 +62,7 @@ const handlers: Record<string, Handler> = {
     if (lead.aiPaused || lead.status !== "NEW") return "Ignorado: lead já em atendimento.";
     const { agent, settings } = await sdrContext(lead);
     const firstName = lead.name?.split(" ")[0];
-    const body = `Olá${firstName ? `, ${firstName}` : ""}! Aqui é a ${agent.name}, da ${settings.companyName}. Recebi seu interesse na nossa franquia e queria entender um pouco do seu momento para te passar as informações certas. Pode falar agora?`;
+    const body = `Olá${firstName ? `, ${firstName}` : ""}! Aqui é a ${agent.name}, do ${settings.companyName}. Recebi seu interesse na nossa franquia e queria entender um pouco do seu momento para te passar as informações certas. Pode falar agora?`;
     const res = await sendWhatsApp(lead, body, agent.name, "first_contact");
     if (!res.ok) throw new Error(res.error);
     const next = await stageByKey(STAGE_KEYS.AI_QUALIFYING, lead.pipelineId);
