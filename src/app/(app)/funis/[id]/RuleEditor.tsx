@@ -47,6 +47,7 @@ const PRESETS: { label: string; draft: Partial<Draft> }[] = [
   { label: "Mandar a apresentação", draft: { trigger: "enter", when: "later", amount: 5, unit: "min", action: "email", config: {} } },
   { label: "Ligar a SDR de IA", draft: { trigger: "enter", when: "now", action: "ai_on", config: {} } },
   { label: "Mover se sumir", draft: { trigger: "idle", amount: 7, unit: "d", action: "move", config: {} } },
+  { label: "Fila: soltar leads por dia", draft: { trigger: "daily", action: "move", config: { perDay: 100 } } },
 ];
 
 const VARIABLES = ["nome", "empresa", "cidade", "sdr", "apresentacao", "video_ganhos", "simulacoes", "por_que_investir", "video_fundador", "video_bottini"];
@@ -74,7 +75,8 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
   const text = useRef<HTMLTextAreaElement>(null);
   const set = (patch: Partial<Draft>) => setD((cur) => ({ ...cur, ...patch }));
   const setConfig = (patch: RuleConfig) => setD((cur) => ({ ...cur, config: { ...cur.config, ...patch } }));
-  const later = d.trigger === "idle" || d.when === "later";
+  const daily = d.trigger === "daily";
+  const later = !daily && (d.trigger === "idle" || d.when === "later");
 
   function insertVar(v: string) {
     const el = text.current;
@@ -103,6 +105,7 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
       <input type="hidden" name="amount" value={later ? d.amount : 0} />
       <input type="hidden" name="unit" value={d.unit} />
       <input type="hidden" name="action" value={d.action} />
+      {daily && <input type="hidden" name="perDay" value={d.config.perDay ?? 100} />}
 
       {!rule && (
         <div className="flex flex-wrap items-center gap-1.5">
@@ -125,11 +128,33 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
       {/* The rule reads as a sentence */}
       <div className="flex flex-wrap items-center gap-2 rounded-lg bg-white p-3 ring-1 ring-slate-200">
         <span className={word}>Quando o lead</span>
-        <select value={d.trigger} onChange={(e) => set({ trigger: e.target.value as RuleTrigger })} className={sel}>
+        <select
+          value={d.trigger}
+          onChange={(e) => {
+            const trigger = e.target.value as RuleTrigger;
+            // A queue only releases leads to another stage
+            set(trigger === "daily" ? { trigger, action: "move", config: { perDay: 100 } } : { trigger });
+          }}
+          className={sel}
+        >
           <option value="enter">entrar nesta etapa</option>
           <option value="idle">ficar sem responder</option>
+          <option value="daily">estiver na fila desta etapa</option>
         </select>
-        {d.trigger === "enter" ? (
+        {daily ? (
+          <>
+            <span className={word}>soltar</span>
+            <input
+              type="number"
+              min={1}
+              max={1000}
+              value={d.config.perDay ?? 100}
+              onChange={(e) => setConfig({ perDay: Math.min(1000, Math.max(1, Number(e.target.value) || 1)) })}
+              className={`${sel} w-24`}
+            />
+            <span className={word}>por dia útil (9h às 18h), os mais recentes primeiro</span>
+          </>
+        ) : d.trigger === "enter" ? (
           <select value={d.when} onChange={(e) => set({ when: e.target.value as Draft["when"] })} className={sel}>
             <option value="now">na hora</option>
             <option value="later">depois de</option>
@@ -156,7 +181,12 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
           </>
         )}
         <span className={word}>então</span>
-        <select value={d.action} onChange={(e) => set({ action: e.target.value as ActionKey, config: {} })} className={sel}>
+        <select
+          value={d.action}
+          disabled={daily}
+          onChange={(e) => set({ action: e.target.value as ActionKey, config: {} })}
+          className={sel}
+        >
           {Object.entries(ACTIONS).map(([k, a]) => (
             <option key={k} value={k}>
               {a.label.charAt(0).toLowerCase() + a.label.slice(1)}

@@ -10,7 +10,8 @@ export const ACTIONS = {
 } as const;
 
 export type ActionKey = keyof typeof ACTIONS;
-export type RuleTrigger = "enter" | "idle";
+// daily: the stage is a queue and the rule releases up to perDay leads each business day
+export type RuleTrigger = "enter" | "idle" | "daily";
 
 export type RuleConfig = {
   text?: string;
@@ -22,6 +23,8 @@ export type RuleConfig = {
   templateName?: string;
   // WhatsApp: quick reply buttons shown with the text
   buttons?: string[];
+  // daily: how many leads leave the queue per business day
+  perDay?: number;
 };
 
 export const UNITS = [
@@ -44,7 +47,8 @@ export function delayLabel(minutes: number) {
   return `${amount} ${word}`;
 }
 
-export function triggerLabel(trigger: string, delayMinutes: number) {
+export function triggerLabel(trigger: string, delayMinutes: number, config: RuleConfig = {}) {
+  if (trigger === "daily") return `Fila: ${config.perDay ?? 100} leads por dia útil, das 9h às 18h`;
   if (trigger === "idle") return `Sem resposta do lead por ${delayLabel(delayMinutes)}`;
   return delayMinutes === 0 ? "Assim que entrar na etapa" : `${delayLabel(delayMinutes)} depois de entrar`;
 }

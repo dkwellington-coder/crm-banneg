@@ -1,12 +1,12 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Sparkles, Star } from "lucide-react";
+import { ArrowLeft, Bot, Sparkles, Star } from "lucide-react";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { Loading, btnGhostCls } from "@/components/ui";
-import type { RuleConfig } from "@/lib/rules";
-import { renamePipelineAction, setDefaultPipelineAction } from "../../../actions";
+import { Loading, btnCls, btnGhostCls, inputCls } from "@/components/ui";
+import type { RuleConfig, RuleTrigger } from "@/lib/rules";
+import { renamePipelineAction, savePipelineAiAction, setDefaultPipelineAction } from "../../../actions";
 import { StageCard, type StageData } from "./StageCard";
 import { AddStageForm, DeletePipelineButton } from "./PipelineControls";
 
@@ -32,11 +32,12 @@ async function Editor({ params }: { params: PageProps<"/funis/[id]">["params"] }
     },
   });
   if (!pipeline) notFound();
-  const [allStages, emails, sdrs, waTemplates] = await Promise.all([
+  const [allStages, emails, sdrs, waTemplates, pipelines] = await Promise.all([
     db.stage.findMany({ orderBy: [{ pipeline: { position: "asc" } }, { position: "asc" }], include: { pipeline: { select: { name: true } } } }),
     db.emailTemplate.findMany({ where: { active: true }, orderBy: { key: "asc" }, select: { key: true, name: true } }),
     db.sdrAgent.findMany({ where: { active: true }, select: { id: true, name: true } }),
     db.whatsAppTemplate.findMany({ orderBy: { name: "asc" }, select: { name: true, status: true } }),
+    db.pipeline.findMany({ where: { id: { not: id } }, orderBy: { position: "asc" }, select: { id: true, name: true } }),
   ]);
   const canEdit = user.role !== "SELLER";
   const options = {
@@ -54,7 +55,7 @@ async function Editor({ params }: { params: PageProps<"/funis/[id]">["params"] }
     leads: s._count.leads,
     rules: s.rules.map((r) => ({
       id: r.id,
-      trigger: r.trigger as "enter" | "idle",
+      trigger: r.trigger as RuleTrigger,
       delayMinutes: r.delayMinutes,
       action: r.action,
       config: r.config as RuleConfig,
@@ -105,6 +106,62 @@ async function Editor({ params }: { params: PageProps<"/funis/[id]">["params"] }
           </div>
         </div>
       </div>
+
+      <details className="mt-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" open={!pipeline.isDefault && !pipeline.aiGoal}>
+        <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold">
+          <Bot size={16} className="text-brand" /> A IA neste funil
+          <span className="font-normal text-slate-500">
+            {pipeline.aiGoal ? "objetivo próprio" : "roteiro de venda de franquia"}
+            {pipeline.slug ? ` · formulários usam "${pipeline.slug}"` : ""}
+          </span>
+        </summary>
+        <form action={savePipelineAiAction.bind(null, pipeline.id)} className="mt-3 space-y-3 text-sm">
+          <label className="block space-y-1">
+            <span className="font-medium text-slate-700">Objetivo da SDR de IA aqui</span>
+            <textarea
+              name="aiGoal"
+              rows={5}
+              defaultValue={pipeline.aiGoal ?? ""}
+              disabled={!canEdit}
+              placeholder="Vazio: a IA segue o roteiro de venda de franquia (qualificar e marcar reunião com o gerente)."
+              className={inputCls}
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="font-medium text-slate-700">Dados que a IA coleta (um por linha)</span>
+            <textarea
+              name="aiQuestions"
+              rows={4}
+              defaultValue={pipeline.aiQuestions.join("\n")}
+              disabled={!canEdit}
+              placeholder="Vazio: as perguntas de qualificação de Ajustes."
+              className={inputCls}
+            />
+          </label>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="block space-y-1">
+              <span className="font-medium text-slate-700">Nome curto para formulários e sites</span>
+              <input name="slug" defaultValue={pipeline.slug ?? ""} disabled={!canEdit} placeholder="ex.: sindicatos" className={inputCls} />
+            </label>
+            <label className="block space-y-1">
+              <span className="font-medium text-slate-700">Quando qualificar, continuar no funil</span>
+              <select name="nextPipelineId" defaultValue={pipeline.nextPipelineId ?? ""} disabled={!canEdit} className={inputCls}>
+                <option value="">este mesmo funil</option>
+                {pipelines.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {canEdit && (
+            <div className="flex justify-end">
+              <button className={btnCls}>Salvar</button>
+            </div>
+          )}
+        </form>
+      </details>
 
       <ol className="relative mt-6 space-y-4">
         {stages.map((s, i) => (

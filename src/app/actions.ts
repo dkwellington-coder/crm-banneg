@@ -312,6 +312,32 @@ export async function renamePipelineAction(pipelineId: string, form: FormData) {
   revalidatePath(`/funis/${pipelineId}`);
 }
 
+/** What the AI does in this funnel, the short name forms use, and where qualified leads go next. */
+export async function savePipelineAiAction(pipelineId: string, form: FormData) {
+  await requireManager();
+  const slug =
+    String(form.get("slug") ?? "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || null;
+  const nextPipelineId = String(form.get("nextPipelineId") ?? "") || null;
+  await db.pipeline.update({
+    where: { id: pipelineId },
+    data: {
+      aiGoal: String(form.get("aiGoal") ?? "").trim() || null,
+      aiQuestions: String(form.get("aiQuestions") ?? "")
+        .split("\n")
+        .map((q) => q.trim())
+        .filter(Boolean),
+      slug,
+      nextPipelineId: nextPipelineId === pipelineId ? null : nextPipelineId,
+    },
+  });
+  revalidatePath(`/funis/${pipelineId}`);
+}
+
 export async function setDefaultPipelineAction(pipelineId: string) {
   await requireManager();
   await db.$transaction([
@@ -413,11 +439,13 @@ export async function saveRuleAction(form: FormData) {
     toStageId: action === "move" ? pick("toStageId") : undefined,
     sdrId: action === "ai_on" ? pick("sdrId") : undefined,
   };
-  const trigger = form.get("trigger") === "idle" ? "idle" : "enter";
+  const rawTrigger = form.get("trigger");
+  const trigger = rawTrigger === "idle" ? "idle" : rawTrigger === "daily" && action === "move" ? "daily" : "enter";
+  if (trigger === "daily") config.perDay = Math.min(1000, Math.max(1, Number(form.get("perDay")) || 100));
   const data = {
     trigger,
     // "sem resposta por 0 minutos" makes no sense; at least one hour
-    delayMinutes: trigger === "idle" ? Math.max(60, amount * unit.minutes) : amount * unit.minutes,
+    delayMinutes: trigger === "idle" ? Math.max(60, amount * unit.minutes) : trigger === "daily" ? 0 : amount * unit.minutes,
     action,
     config: JSON.parse(JSON.stringify(config)),
     runAfterLeaving: form.get("runAfterLeaving") === "on",
@@ -481,6 +509,8 @@ export async function testIntegrationAction(_: TestState, form: FormData): Promi
   const user = await requireManager();
   const kind = String(form.get("kind"));
   const integrations = await import("@/lib/integrations");
+  // Moving where the WhatsApp messages arrive is the owner's call
+  if (kind.startsWith("webhook")) await requireOwner();
   const run = {
     ai: () => integrations.checkAi(),
     whatsapp: () => integrations.checkWhatsApp(),
@@ -488,6 +518,8 @@ export async function testIntegrationAction(_: TestState, form: FormData): Promi
     templates: () => integrations.importWhatsAppTemplates(),
     templates_submit: () => integrations.submitWhatsAppTemplates(),
     templates_sync: () => integrations.syncWhatsAppTemplates(),
+    webhook_here: () => integrations.receiveWhatsAppHere(),
+    webhook_back: () => integrations.giveWhatsAppBack(),
     email: () => integrations.sendEmailTest(String(form.get("to") || user.email)),
     calendar: () => integrations.checkCalendar(String(form.get("userId") || user.id)),
   }[kind];

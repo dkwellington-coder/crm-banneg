@@ -21,10 +21,11 @@ function needLead(lead: Lead | null): Lead {
 
 async function sdrContext(lead: Lead) {
   const settings = await getSettings();
-  const [agent, knowledge, messages] = await Promise.all([
+  const [agent, knowledge, messages, pipeline] = await Promise.all([
     lead.sdrId ? db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null,
     db.knowledgeItem.findMany({ orderBy: { title: "asc" } }),
     db.message.findMany({ where: { leadId: lead.id, channel: "WHATSAPP" }, orderBy: { createdAt: "desc" }, take: 40 }),
+    db.pipeline.findUnique({ where: { id: lead.pipelineId } }),
   ]);
   if (!agent) throw new Error("Lead sem SDR de IA atribuída.");
   const owner = lead.ownerId ? await db.user.findUnique({ where: { id: lead.ownerId } }) : await pickOwner();
@@ -38,6 +39,7 @@ async function sdrContext(lead: Lead) {
       agentName: agent.name,
       persona: agent.persona,
       settings,
+      funnel: pipeline ? { name: pipeline.name, goal: pipeline.aiGoal, questions: pipeline.aiQuestions } : undefined,
       knowledge,
       lead: {
         name: lead.name,
@@ -111,8 +113,9 @@ const handlers: Record<string, Handler> = {
       if (!res.ok) throw new Error(res.error);
       if (res.skipped) await logEvent(lead.id, "whatsapp.skipped", agent.name, res.skipped);
     }
-    // Funnels the team built may not have the AI's stage; then only the status changes
-    const target = await stageByKey(plan.stageKey, lead.pipelineId);
+    // Funnels the team built may not have the AI's stage: try the funnel this one hands leads to
+    // (old leads go on to Vendas de Franquias once qualified), else only the status changes
+    const target = await aiTargetStage(plan.stageKey, lead.pipelineId);
     if (target) await moveLead(lead.id, target.id, agent.name);
     else await db.lead.update({ where: { id: lead.id }, data: { status: plan.status } });
     if (plan.handoffTask) await ensureTask(lead.id, lead.ownerId ?? owner?.id ?? null, plan.handoffTask);
@@ -149,6 +152,13 @@ const handlers: Record<string, Handler> = {
     return `Lembrete ${sentHow(res)}.`;
   },
 };
+
+async function aiTargetStage(key: string, pipelineId: string) {
+  const own = await stageByKey(key, pipelineId);
+  if (own) return own;
+  const pipeline = await db.pipeline.findUnique({ where: { id: pipelineId } });
+  return pipeline?.nextPipelineId ? stageByKey(key, pipeline.nextPipelineId) : null;
+}
 
 /** "enviado", "simulado (modo teste)", "enviado pelo modelo da Meta"... for the job history. */
 function sentHow(res: { usedTemplate?: boolean; simulated?: boolean }) {
@@ -247,7 +257,7 @@ export async function bookMeeting(lead: Lead, userId: string, slot: Slot, actor:
   try {
     calendar = await createCalendarEvent({
       calendarId: user.calendarId ?? user.email,
-      summary: `Reunião de franquia · ${lead.name ?? lead.phone}`,
+      summary: `Reunião Banneg · ${lead.name ?? lead.phone}`,
       description: `Agendada por ${actor} pelo CRM.\n\n${lead.aiSummary ?? ""}`,
       slot,
       attendeeEmail: lead.email,

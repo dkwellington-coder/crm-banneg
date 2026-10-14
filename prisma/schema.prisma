@@ -85,14 +85,22 @@ model Session {
 }
 
 model Pipeline {
-  id        String   @id @default(cuid())
-  name      String
-  position  Int      @default(0)
+  id             String   @id @default(cuid())
+  name           String
+  position       Int      @default(0)
   // The funnel new leads land in when nothing else is said
-  isDefault Boolean  @default(false)
-  createdAt DateTime @default(now())
-  stages    Stage[]
-  leads     Lead[]
+  isDefault      Boolean  @default(false)
+  // Short name forms and landing pages use to drop leads here ("funil": "sindicatos")
+  slug           String?  @unique
+  // What the AI SDR is after in this funnel; empty = the franchise sales script
+  aiGoal         String?
+  // Data the AI collects here; empty = the questions in Ajustes
+  aiQuestions    String[] @default([])
+  // Where the AI sends a lead when this funnel lacks the stage (old leads go on to Vendas de Franquias)
+  nextPipelineId String?
+  createdAt      DateTime @default(now())
+  stages         Stage[]
+  leads          Lead[]
 }
 
 model Stage {

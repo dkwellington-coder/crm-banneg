@@ -44,6 +44,61 @@ async function graphGet<T>(path: string): Promise<T> {
   return json;
 }
 
+const PUBLIC_URL = (process.env.PUBLIC_BASE_URL ?? "https://crm-banneg-banneg.vercel.app").replace(/\/$/, "");
+export const WEBHOOK_URL = `${PUBLIC_URL}/api/whatsapp/webhook`;
+
+async function graphPost<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  const res = await fetch(`${GRAPH}/${path}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = (await res.json().catch(() => ({}))) as T & { error?: { message?: string; error_user_msg?: string } };
+  if (!res.ok) throw new Error(json.error?.error_user_msg ?? json.error?.message ?? `HTTP ${res.status}`);
+  return json;
+}
+
+/** Where Meta delivers this WhatsApp account's messages: the app's own address (old CRM) or this CRM. */
+export async function whatsappWebhookTarget(): Promise<{ here: boolean; uri: string | null }> {
+  const waba = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+  if (!waba || !process.env.WHATSAPP_TOKEN) throw new Error("Falta WHATSAPP_TOKEN ou WHATSAPP_BUSINESS_ACCOUNT_ID.");
+  const res = await graphGet<{ data: { override_callback_uri?: string }[] }>(`${waba}/subscribed_apps`);
+  const uri = res.data.find((a) => a.override_callback_uri)?.override_callback_uri ?? null;
+  return { here: uri === WEBHOOK_URL, uri };
+}
+
+/**
+ * Makes Meta deliver the number's messages to this CRM, overriding the app's address only for
+ * this WhatsApp account. Undo with giveWhatsAppBack: the app's own address (old CRM) comes back.
+ */
+export async function receiveWhatsAppHere(): Promise<CheckResult> {
+  const waba = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+  if (!waba || !process.env.WHATSAPP_TOKEN) return { ok: false, message: "Falta WHATSAPP_TOKEN ou WHATSAPP_BUSINESS_ACCOUNT_ID." };
+  if (!process.env.WHATSAPP_VERIFY_TOKEN) return { ok: false, message: "Falta WHATSAPP_VERIFY_TOKEN." };
+  try {
+    await graphPost(`${waba}/subscribed_apps`, { override_callback_uri: WEBHOOK_URL, verify_token: process.env.WHATSAPP_VERIFY_TOKEN });
+    const now = await whatsappWebhookTarget();
+    return now.here
+      ? { ok: true, message: "As mensagens do WhatsApp agora chegam neste CRM." }
+      : { ok: false, message: `A Meta aceitou, mas o endereço ainda é ${now.uri ?? "o do aplicativo"}.` };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+export async function giveWhatsAppBack(): Promise<CheckResult> {
+  const waba = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+  if (!waba || !process.env.WHATSAPP_TOKEN) return { ok: false, message: "Falta WHATSAPP_TOKEN ou WHATSAPP_BUSINESS_ACCOUNT_ID." };
+  try {
+    // Subscribing again without the override goes back to the address set in the Meta app
+    await graphPost(`${waba}/subscribed_apps`, {});
+    const now = await whatsappWebhookTarget();
+    return now.here ? { ok: false, message: "A Meta ainda aponta para este CRM." } : { ok: true, message: "As mensagens voltaram para o endereço do aplicativo da Meta (CRM antigo)." };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
 /** Reads the number's profile from Meta without sending anything. */
 export async function checkWhatsApp(): Promise<CheckResult> {
   const { WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID } = process.env;
@@ -60,6 +115,10 @@ export async function checkWhatsApp(): Promise<CheckResult> {
     }
     if (!process.env.WHATSAPP_APP_SECRET) details.push("Falta WHATSAPP_APP_SECRET: o webhook não consegue conferir a assinatura da Meta.");
     if (!process.env.WHATSAPP_VERIFY_TOKEN) details.push("Falta WHATSAPP_VERIFY_TOKEN para cadastrar o webhook.");
+    if (WHATSAPP_BUSINESS_ACCOUNT_ID) {
+      const target = await whatsappWebhookTarget().catch(() => null);
+      if (target) details.push(target.here ? "Mensagens recebidas: neste CRM." : "Mensagens recebidas: ainda no CRM antigo.");
+    }
     return { ok: true, message: `Conectado ao número ${n.display_phone_number} (${n.verified_name}).`, details };
   } catch (e) {
     return fail(e);

@@ -6,6 +6,7 @@ import {
   ArrowRightLeft,
   ArrowUp,
   Bot,
+  CalendarClock,
   CheckSquare,
   Clock,
   Hourglass,
@@ -190,7 +191,7 @@ export function StageCard({
 
 function RuleRow({ rule, label, canEdit, onEdit }: { rule: RuleData; label: string; canEdit: boolean; onEdit: () => void }) {
   const Icon = ACTION_ICON[rule.action] ?? Zap;
-  const TriggerIcon = rule.trigger === "idle" ? Hourglass : Clock;
+  const TriggerIcon = rule.trigger === "idle" ? Hourglass : rule.trigger === "daily" ? CalendarClock : Clock;
   return (
     <div className={`group flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50/60 px-3 py-2 ${rule.active ? "" : "opacity-50"}`}>
       <button
@@ -203,7 +204,7 @@ function RuleRow({ rule, label, canEdit, onEdit }: { rule: RuleData; label: stri
         <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${rule.active ? "left-[18px]" : "left-0.5"}`} />
       </button>
       <span className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-white px-2 py-1 text-xs font-medium text-slate-600 ring-1 ring-slate-200">
-        <TriggerIcon size={13} /> {triggerLabel(rule.trigger, rule.delayMinutes)}
+        <TriggerIcon size={13} /> {triggerLabel(rule.trigger, rule.delayMinutes, rule.config)}
       </span>
       <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${ACTION_TINT[rule.action] ?? ""}`}>
         <Icon size={15} />

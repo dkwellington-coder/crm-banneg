@@ -128,6 +128,8 @@ async function Integrations() {
         <TestButton kind="templates_submit" label={`Enviar modelos para aprovação da Meta (${drafts} aguardando envio)`} />
         <TestButton kind="templates_sync" label={`Conferir aprovação (${templates} aprovados, ${pending} em análise)`} />
         <TestButton kind="templates" label="Importar modelos já aprovados na Meta" />
+        <TestButton kind="webhook_here" label="Receber as mensagens do WhatsApp neste CRM" />
+        <TestButton kind="webhook_back" label="Devolver as mensagens ao CRM antigo" />
         <TestButton kind="whatsapp_send" label="Enviar mensagem de teste">
           <input name="phone" required placeholder="Seu celular com DDD" className={`${inputCls} w-56!`} />
         </TestButton>

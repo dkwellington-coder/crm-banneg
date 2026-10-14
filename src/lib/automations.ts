@@ -21,7 +21,8 @@ export type RuleJobPayload = {
  */
 export async function scheduleStageRules(lead: Pick<Lead, "id" | "stageId" | "stageEnteredAt">, only?: "idle") {
   const rules = await db.automationRule.findMany({
-    where: { stageId: lead.stageId, active: true, ...(only && { trigger: only }) },
+    // "daily" rules are not per lead: the batch runner releases a few leads a day (lib/batches)
+    where: { stageId: lead.stageId, active: true, trigger: only ?? { in: ["enter", "idle"] } },
     orderBy: { position: "asc" },
   });
   const now = new Date();

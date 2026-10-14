@@ -32,6 +32,8 @@ export type SdrContext = {
   agentName: string;
   persona: string;
   settings: CrmSettings;
+  // The funnel's own goal and questions (products, unions...); empty = franchise sales
+  funnel?: { name: string; goal: string | null; questions: string[] };
   knowledge: { title: string; content: string }[];
   lead: {
     name: string | null;
@@ -49,16 +51,20 @@ export type SdrContext = {
 };
 
 // Stable across leads so it is cached; anything lead-specific goes in the user turn.
-export function buildSystemPrompt(ctx: Pick<SdrContext, "agentName" | "persona" | "settings" | "knowledge">) {
+export function buildSystemPrompt(ctx: Pick<SdrContext, "agentName" | "persona" | "settings" | "knowledge" | "funnel">) {
   const kb = ctx.knowledge.map((k) => `### ${k.title}\n${k.content}`).join("\n\n");
-  return `Você é ${ctx.agentName}, SDR (pré-vendedora) do ${ctx.settings.companyName}, conversando com leads pelo WhatsApp.
+  const goal =
+    ctx.funnel?.goal?.trim() ||
+    "Seu trabalho: responder rápido, entender se o lead tem perfil, coletar os dados de qualificação e, quando ele estiver qualificado, marcar uma reunião com o gerente de negócios. Você não fecha venda e não negocia condições.";
+  const questions = ctx.funnel?.questions.length ? ctx.funnel.questions : ctx.settings.qualificationQuestions;
+  return `Você é ${ctx.agentName}, SDR (pré-vendedora) do ${ctx.settings.companyName}, conversando com leads pelo WhatsApp.${ctx.funnel ? ` Este lead está no funil "${ctx.funnel.name}".` : ""}
 
 ${ctx.persona}
 
-Seu trabalho: responder rápido, entender se o lead tem perfil, coletar os dados de qualificação e, quando ele estiver qualificado, marcar uma reunião com o gerente de negócios. Você não fecha venda e não negocia condições.
+${goal}
 
 Dados que você precisa coletar, um ou dois por mensagem, de forma natural:
-${ctx.settings.qualificationQuestions.map((q) => `- ${q}`).join("\n")}
+${questions.map((q) => `- ${q}`).join("\n")}
 
 Como decidir (campo "decision"):
 - continue: ainda faltam dados ou o lead está tirando dúvidas.

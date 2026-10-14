@@ -12,6 +12,23 @@ export async function stageByKey(key: string, pipelineId: string) {
   return db.stage.findUnique({ where: { pipelineId_key: { pipelineId, key } } });
 }
 
+/** A funnel by its short name ("sindicatos") or its name, ignoring accents and case. */
+export async function pipelineByRef(ref: string | null | undefined) {
+  const key = slugify(ref ?? "");
+  if (!key) return null;
+  const all = await db.pipeline.findMany({ select: { id: true, slug: true, name: true } });
+  return all.find((p) => p.slug === key) ?? all.find((p) => slugify(p.name) === key) ?? null;
+}
+
+export function slugify(s: string) {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
 export async function defaultPipeline() {
   const p = (await db.pipeline.findFirst({ where: { isDefault: true } })) ?? (await db.pipeline.findFirst({ orderBy: { position: "asc" } }));
   if (!p) throw new Error("Nenhum funil cadastrado. Rode o seed (npm run db:seed).");
@@ -40,6 +57,11 @@ export type NewLeadInput = {
   pipelineId?: string | null;
   // Old leads from Kommo go to reactivation instead of getting a welcome message right away
   reactivation?: boolean;
+  // Extra answers the form already collected (produto, empresa...), shown to the AI
+  qualification?: Record<string, string>;
+  // Imports keep the date the lead first came in, so "newest first" means something
+  createdAt?: Date | null;
+  stageId?: string | null;
 };
 
 export async function createLead(input: NewLeadInput, actor: string) {
@@ -51,8 +73,10 @@ export async function createLead(input: NewLeadInput, actor: string) {
       return { lead: existing, created: false };
     }
   }
-  const pipelineId = input.pipelineId || (await defaultPipeline()).id;
+  const chosen = input.stageId ? await db.stage.findUnique({ where: { id: input.stageId } }) : null;
+  const pipelineId = chosen?.pipelineId ?? (input.pipelineId || (await defaultPipeline()).id);
   const stage =
+    chosen ??
     (await stageByKey(STAGE_KEYS.NEW, pipelineId)) ??
     (await db.stage.findFirstOrThrow({ where: { pipelineId }, orderBy: { position: "asc" } }));
   const sdr = await pickSdr();
@@ -69,6 +93,8 @@ export async function createLead(input: NewLeadInput, actor: string) {
       pipelineId,
       stageId: stage.id,
       sdrId: sdr?.id,
+      ...(input.qualification && { qualification: input.qualification }),
+      ...(input.createdAt && { createdAt: input.createdAt, stageEnteredAt: input.createdAt }),
     },
   });
   await logEvent(lead.id, "lead.created", actor, `Lead criado (origem: ${input.source}).`);
