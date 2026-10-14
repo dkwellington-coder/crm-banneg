@@ -115,10 +115,7 @@ async function Config() {
                 <input name="hoursEnd" type="number" min={1} max={24} defaultValue={settings.businessHours.end} className={inputCls} />
               </label>
             </div>
-            <label className="block text-sm">
-              Follow-up sem resposta (dias, separados por vírgula)
-              <input name="followUpDays" defaultValue={settings.followUpDays.join(", ")} className={inputCls} />
-            </label>
+            <p className="text-xs text-slate-500">Follow-ups e lembretes agora ficam nas automações de cada etapa, em Funil › Editar funil.</p>
             <button className={btnCls}>Salvar</button>
           </fieldset>
         </form>

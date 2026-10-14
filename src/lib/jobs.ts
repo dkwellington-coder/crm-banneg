@@ -1,13 +1,15 @@
 import type { Job, Lead } from "@prisma/client";
 import { db } from "./db";
 import { logEvent } from "./events";
-import { backoffMs, enqueue } from "./queue";
+import { backoffMs, cancelJobs, enqueue } from "./queue";
 import { sendWhatsApp } from "./messaging";
 import { getSettings } from "./settings";
 import { createCalendarEvent, formatSlot, freeSlotsFor, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
 import { planFromDecision, STAGE_KEYS } from "./plan";
-import { ensureTask, moveLead, stageByKey, startEmailSequence } from "./leads";
+import { ensureTask, moveLead, pickSdr, stageByKey } from "./leads";
+import { fillVariables, type RuleConfig } from "./rules";
+import type { RuleJobPayload } from "./automations";
 import { renderTemplate, sendEmail } from "./email";
 
 type Handler = (job: Job, lead: Lead | null) => Promise<string>;
@@ -63,8 +65,9 @@ const handlers: Record<string, Handler> = {
     const body = `Olá${firstName ? `, ${firstName}` : ""}! Aqui é a ${agent.name}, da ${settings.companyName}. Recebi seu interesse na nossa franquia e queria entender um pouco do seu momento para te passar as informações certas. Pode falar agora?`;
     const res = await sendWhatsApp(lead, body, agent.name, "first_contact");
     if (!res.ok) throw new Error(res.error);
-    await moveLead(lead.id, (await stageByKey(STAGE_KEYS.AI_QUALIFYING)).id, agent.name);
-    await scheduleFollowUp(lead.id, 0);
+    const next = await stageByKey(STAGE_KEYS.AI_QUALIFYING, lead.pipelineId);
+    if (next) await moveLead(lead.id, next.id, agent.name);
+    else await db.lead.update({ where: { id: lead.id }, data: { status: "AI_QUALIFYING" } });
     return res.usedTemplate ? "Primeiro contato enviado por modelo aprovado." : "Primeiro contato enviado.";
   },
 
@@ -103,73 +106,30 @@ const handlers: Record<string, Handler> = {
       const res = await sendWhatsApp(fresh, reply, agent.name);
       if (!res.ok) throw new Error(res.error);
     }
-    await moveLead(lead.id, (await stageByKey(plan.stageKey)).id, agent.name);
+    // Funnels the team built may not have the AI's stage; then only the status changes
+    const target = await stageByKey(plan.stageKey, lead.pipelineId);
+    if (target) await moveLead(lead.id, target.id, agent.name);
+    else await db.lead.update({ where: { id: lead.id }, data: { status: plan.status } });
     if (plan.handoffTask) await ensureTask(lead.id, lead.ownerId ?? owner?.id ?? null, plan.handoffTask);
-    if (!plan.stopAi) await scheduleFollowUp(lead.id, 0);
     return `${decisionLabel[decision.decision]} (score ${decision.score})`;
   },
 
-  async "followup.check"(job, l) {
+  async "rule.run"(job, l) {
     const lead = needLead(l);
-    const payload = job.payload as { kind?: string; step?: number; since?: string };
-    const settings = await getSettings();
-    if (payload.kind === "proposal") {
-      const answered = lead.lastInboundAt && lead.lastInboundAt > job.createdAt;
-      if (answered) return "Lead respondeu depois da proposta.";
-      await ensureTask(lead.id, lead.ownerId, "Cobrar retorno da proposta enviada há 2 dias");
-      return "Tarefa de follow-up da proposta criada.";
-    }
-    if (payload.kind === "reactivation") {
-      if (lead.status !== "LOST") return "Lead não está mais perdido.";
-      await moveLead(lead.id, (await stageByKey(STAGE_KEYS.NEW)).id, "Automação", { aiPaused: false, followUpStep: 0 });
-      await enqueue("sdr.first_contact", { leadId: lead.id, dedupeKey: `first_contact:${lead.id}:${Date.now()}` });
-      return "Lead reativado após 90 dias.";
-    }
-    // No-answer cadence while the SDR is qualifying
-    if (lead.aiPaused || !["AI_QUALIFYING", "QUALIFIED"].includes(lead.status)) return "Ignorado: lead fora da qualificação.";
-    const since = payload.since ? new Date(payload.since) : job.createdAt;
-    if (lead.lastInboundAt && lead.lastInboundAt > since) return "Lead respondeu; follow-up cancelado.";
-    const step = payload.step ?? 0;
-    const agent = lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null;
-    const name = lead.name?.split(" ")[0] ?? "";
-    const texts = [
-      `Oi${name ? `, ${name}` : ""}! Conseguiu ver minha mensagem? Fico à disposição para tirar suas dúvidas sobre a franquia.`,
-      `${name ? `${name}, ` : ""}passando para saber se ainda faz sentido conversarmos sobre a franquia ${settings.companyName}.`,
-      `Vou encerrar por aqui para não te incomodar${name ? `, ${name}` : ""}. Se quiser retomar, é só responder esta mensagem.`,
-    ];
-    const res = await sendWhatsApp(lead, texts[Math.min(step, texts.length - 1)], agent?.name ?? "Automação", "followup");
-    if (!res.ok) throw new Error(res.error);
-    await db.lead.update({ where: { id: lead.id }, data: { followUpStep: step + 1 } });
-    if (step + 1 >= settings.followUpDays.length) {
-      await moveLead(lead.id, (await stageByKey(STAGE_KEYS.NURTURING)).id, "Automação");
-      return `Follow-up ${step + 1} enviado; sem resposta, lead foi para nutrição.`;
-    }
-    await scheduleFollowUp(lead.id, step + 1);
-    return `Follow-up ${step + 1} enviado.`;
+    const p = job.payload as RuleJobPayload;
+    const rule = await db.automationRule.findUnique({ where: { id: p.ruleId }, include: { stage: true } });
+    if (!rule || !rule.active) return "Ignorado: automação desligada ou removida.";
+    const stillThere = lead.stageId === p.stageId && lead.stageEnteredAt.toISOString() === p.enteredAt;
+    if (!p.keep && !stillThere) return "Ignorado: o lead já saiu da etapa.";
+    if (p.idle && lead.lastInboundAt && lead.lastInboundAt > new Date(p.since)) return "Ignorado: o lead respondeu.";
+    const result = await runAction(lead, rule.action, rule.config as RuleConfig);
+    await logEvent(lead.id, "automation.ran", "Automação", `${rule.stage.name}: ${result}`, { ruleId: rule.id });
+    return result;
   },
 
   async "email.send"(job, l) {
-    const lead = needLead(l);
     const { templateKey } = job.payload as { templateKey: string };
-    if (!lead.email) return "Ignorado: lead sem e-mail.";
-    if (lead.emailOptOut) return "Ignorado: lead pediu para não receber e-mails.";
-    if (["DISQUALIFIED", "WON", "LOST"].includes(lead.status)) return "Ignorado: lead encerrado.";
-    const t = await db.emailTemplate.findUnique({ where: { key: templateKey } });
-    if (!t || !t.active) return "Ignorado: modelo de e-mail inativo.";
-    const settings = await getSettings();
-    const vars = {
-      nome: lead.name?.split(" ")[0] ?? "",
-      empresa: settings.companyName,
-      cidade: lead.city ?? "",
-      apresentacao: settings.presentationUrl,
-    };
-    const subject = renderTemplate(t.subject, vars);
-    const body = renderTemplate(t.body, vars);
-    await sendEmail(lead.email, subject, body);
-    await db.message.create({
-      data: { leadId: lead.id, channel: "EMAIL", direction: "OUT", body: `${subject}\n\n${body}`, author: "E-mail automático", status: "SENT" },
-    });
-    return `E-mail "${t.name}" enviado.`;
+    return sendTemplateEmail(needLead(l), templateKey);
   },
 
   async "meeting.reminder"(job, l) {
@@ -193,16 +153,76 @@ const decisionLabel: Record<string, string> = {
   disqualify: "Descartou",
 };
 
-export async function scheduleFollowUp(leadId: string, step: number) {
+async function sendTemplateEmail(lead: Lead, templateKey: string) {
+  if (!lead.email) return "Ignorado: lead sem e-mail.";
+  if (lead.emailOptOut) return "Ignorado: lead pediu para não receber e-mails.";
+  if (["DISQUALIFIED", "WON", "LOST"].includes(lead.status)) return "Ignorado: lead encerrado.";
+  const t = await db.emailTemplate.findUnique({ where: { key: templateKey } });
+  if (!t || !t.active) return "Ignorado: modelo de e-mail inativo.";
   const settings = await getSettings();
-  const days = settings.followUpDays[step];
-  if (days === undefined) return;
-  await enqueue("followup.check", {
-    leadId,
-    payload: { step, since: new Date().toISOString() },
-    runAt: new Date(Date.now() + days * 86_400_000),
-    dedupeKey: `followup:${leadId}:${step}:${new Date().toISOString().slice(0, 13)}`,
+  const vars = {
+    nome: lead.name?.split(" ")[0] ?? "",
+    empresa: settings.companyName,
+    cidade: lead.city ?? "",
+    apresentacao: settings.presentationUrl,
+  };
+  const subject = renderTemplate(t.subject, vars);
+  const body = renderTemplate(t.body, vars);
+  await sendEmail(lead.email, subject, body);
+  await db.message.create({
+    data: { leadId: lead.id, channel: "EMAIL", direction: "OUT", body: `${subject}\n\n${body}`, author: "E-mail automático", status: "SENT" },
   });
+  return `E-mail "${t.name}" enviado.`;
+}
+
+/** Does what a rule says. Throws on a failure worth retrying (WhatsApp down, SMTP error). */
+export async function runAction(lead: Lead, action: string, config: RuleConfig): Promise<string> {
+  switch (action) {
+    case "whatsapp": {
+      if (!lead.phone) return "Ignorado: lead sem telefone.";
+      const settings = await getSettings();
+      const sdr = lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null;
+      const text = fillVariables(config.text ?? "", {
+        nome: lead.name?.split(" ")[0] ?? "",
+        empresa: settings.companyName,
+        cidade: lead.city ?? "",
+        sdr: sdr?.name ?? "",
+        apresentacao: settings.presentationUrl,
+      });
+      if (!text) return "Ignorado: mensagem vazia.";
+      const res = await sendWhatsApp(lead, text, sdr?.name ?? "Automação", "followup");
+      if (!res.ok) throw new Error(res.error);
+      return res.usedTemplate ? "WhatsApp enviado por modelo aprovado (janela de 24 h fechada)." : "WhatsApp enviado.";
+    }
+    case "email":
+      return sendTemplateEmail(lead, config.templateKey ?? "");
+    case "task": {
+      await ensureTask(lead.id, lead.ownerId, config.title || "Falar com o lead");
+      return `Tarefa criada: ${config.title}`;
+    }
+    case "move": {
+      const to = config.toStageId ? await db.stage.findUnique({ where: { id: config.toStageId } }) : null;
+      if (!to) return "Ignorado: a etapa de destino foi removida.";
+      await moveLead(lead.id, to.id, "Automação");
+      return `Movido para ${to.name}.`;
+    }
+    case "ai_on": {
+      const sdrId = config.sdrId || lead.sdrId || (await pickSdr())?.id;
+      if (!sdrId) return "Ignorado: nenhuma SDR de IA ativa.";
+      await db.lead.update({ where: { id: lead.id }, data: { aiPaused: false, sdrId } });
+      if (!lead.lastInboundAt && !lead.lastContactAt && lead.phone) {
+        await enqueue("sdr.first_contact", { leadId: lead.id, dedupeKey: `first_contact:${lead.id}` });
+        return "IA ativada; primeiro contato a caminho.";
+      }
+      return "IA ativada.";
+    }
+    case "ai_off":
+      await db.lead.update({ where: { id: lead.id }, data: { aiPaused: true } });
+      await cancelJobs(lead.id, ["sdr.first_contact", "sdr.reply"]);
+      return "IA pausada.";
+    default:
+      throw new Error(`Ação desconhecida: ${action}`);
+  }
 }
 
 export async function bookMeeting(lead: Lead, userId: string, slot: Slot, actor: string) {
@@ -286,20 +306,5 @@ export async function runDueJobs(limit = 20) {
       results.push({ id: job.id, type: job.type, ok: false, result: message });
     }
   }
-  await sweepStaleLeads();
   return results;
 }
-
-/** Leads parked longer than their stage allows get a task for the owner. */
-async function sweepStaleLeads() {
-  const stages = await db.stage.findMany({ where: { staleAfterDays: { not: null } } });
-  for (const stage of stages) {
-    const cutoff = new Date(Date.now() - stage.staleAfterDays! * 86_400_000);
-    const stale = await db.lead.findMany({ where: { stageId: stage.id, stageEnteredAt: { lt: cutoff } }, take: 50 });
-    for (const lead of stale) {
-      await ensureTask(lead.id, lead.ownerId, `Lead parado há mais de ${stage.staleAfterDays} dias em "${stage.name}"`);
-    }
-  }
-}
-
-export { startEmailSequence };

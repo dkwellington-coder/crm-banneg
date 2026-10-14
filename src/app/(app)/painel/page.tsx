@@ -3,7 +3,7 @@ import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { daysAgo } from "@/lib/time";
-import { Card, Loading, PageHeader, tabCls } from "@/components/ui";
+import { Card, Loading, PageHeader, Tabs, tabCls } from "@/components/ui";
 
 export default function PainelPage({ searchParams }: PageProps<"/painel">) {
   return (
@@ -66,13 +66,13 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
 
   return (
     <div className="space-y-4 px-6 pb-6">
-      <div className="flex gap-2">
+      <Tabs>
         {[7, 30, 90].map((d) => (
           <Link key={d} href={`/painel?d=${d}`} className={tabCls(d === days)}>
             {d} dias
           </Link>
         ))}
-      </div>
+      </Tabs>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <Kpi label="Leads recebidos" value={received} />
         <Kpi label="1ª resposta (mediana)" value={minutes(fr?.median_minutes)} hint={`média ${minutes(fr?.avg_minutes)}`} />

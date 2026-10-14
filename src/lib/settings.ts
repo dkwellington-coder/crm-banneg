@@ -10,8 +10,6 @@ export type CrmSettings = {
   qualifyScore: number;
   meetingMinutes: number;
   businessHours: BusinessHours;
-  // Follow-up cadence for leads that stop answering, in days
-  followUpDays: number[];
   presentationUrl: string;
 };
 
@@ -28,7 +26,6 @@ export const DEFAULT_SETTINGS: CrmSettings = {
   qualifyScore: 60,
   meetingMinutes: 30,
   businessHours: { start: 9, end: 18, days: [1, 2, 3, 4, 5], timezone: "America/Sao_Paulo" },
-  followUpDays: [1, 3, 7],
   presentationUrl: "https://crm.banneg.com.br/materiais/banneg-apresentacao-franquia.pdf",
 };
 

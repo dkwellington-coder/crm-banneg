@@ -1,20 +1,8 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { installDefaultPipeline } from "../src/lib/pipeline-defaults";
 
 const db = new PrismaClient();
-
-const STAGES = [
-  { key: "novo", name: "Novo", color: "#64748b", staleAfterDays: 1 },
-  { key: "qualificando", name: "IA qualificando", color: "#0ea5e9", staleAfterDays: null },
-  { key: "qualificado", name: "Qualificado", color: "#8b5cf6", staleAfterDays: 2 },
-  { key: "reuniao", name: "Reunião marcada", color: "#f59e0b", staleAfterDays: 7 },
-  { key: "com_gerente", name: "Com o gerente", color: "#ec4899", staleAfterDays: 3 },
-  { key: "proposta", name: "Proposta enviada", color: "#14b8a6", staleAfterDays: 5 },
-  { key: "nutricao", name: "Nutrição", color: "#a3a3a3", staleAfterDays: null },
-  { key: "ganho", name: "Ganho", color: "#16a34a", kind: "WON" as const, staleAfterDays: null },
-  { key: "perdido", name: "Perdido", color: "#dc2626", kind: "LOST" as const, staleAfterDays: null },
-  { key: "descartado", name: "Descartado", color: "#71717a", kind: "LOST" as const, staleAfterDays: null },
-];
 
 const PERSONA_BASE =
   "Você representa a área de expansão de franquias. Fale como uma pessoa real do time, nunca diga que é um robô a menos que perguntem diretamente; se perguntarem, diga que é a assistente virtual da equipe.";
@@ -100,13 +88,7 @@ Equipe de Expansão {{empresa}}`,
 ];
 
 async function main() {
-  for (const [position, s] of STAGES.entries()) {
-    await db.stage.upsert({
-      where: { key: s.key },
-      create: { ...s, position, kind: s.kind ?? "OPEN" },
-      update: { position },
-    });
-  }
+  await installDefaultPipeline(db);
   for (const [name, style] of [
     ["Duda", "Seu estilo: calorosa, animada e próxima."],
     ["Alice", "Seu estilo: objetiva, consultiva e muito clara."],

@@ -43,16 +43,54 @@ CREATE TABLE "Session" (
 );
 
 -- CreateTable
+CREATE TABLE "Pipeline" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "position" INTEGER NOT NULL DEFAULT 0,
+    "isDefault" BOOLEAN NOT NULL DEFAULT false,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "Pipeline_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "Stage" (
     "id" TEXT NOT NULL,
+    "pipelineId" TEXT NOT NULL,
     "key" TEXT,
     "name" TEXT NOT NULL,
     "position" INTEGER NOT NULL,
     "kind" "StageKind" NOT NULL DEFAULT 'OPEN',
     "color" TEXT NOT NULL DEFAULT '#64748b',
-    "staleAfterDays" INTEGER,
 
     CONSTRAINT "Stage_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "AutomationRule" (
+    "id" TEXT NOT NULL,
+    "stageId" TEXT NOT NULL,
+    "trigger" TEXT NOT NULL DEFAULT 'enter',
+    "delayMinutes" INTEGER NOT NULL DEFAULT 0,
+    "action" TEXT NOT NULL,
+    "config" JSONB NOT NULL DEFAULT '{}',
+    "runAfterLeaving" BOOLEAN NOT NULL DEFAULT false,
+    "active" BOOLEAN NOT NULL DEFAULT true,
+    "position" INTEGER NOT NULL DEFAULT 0,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "AutomationRule_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "Goal" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT,
+    "metric" TEXT NOT NULL,
+    "period" TEXT NOT NULL,
+    "target" INTEGER NOT NULL,
+
+    CONSTRAINT "Goal_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -77,13 +115,15 @@ CREATE TABLE "Lead" (
     "source" TEXT NOT NULL DEFAULT 'manual',
     "campaign" TEXT,
     "externalId" TEXT,
+    "pipelineId" TEXT NOT NULL,
     "stageId" TEXT NOT NULL,
+    "value" INTEGER,
+    "wonAt" TIMESTAMP(3),
     "status" "LeadStatus" NOT NULL DEFAULT 'NEW',
     "ownerId" TEXT,
     "sdrId" TEXT,
     "aiPaused" BOOLEAN NOT NULL DEFAULT false,
     "emailOptOut" BOOLEAN NOT NULL DEFAULT false,
-    "followUpStep" INTEGER NOT NULL DEFAULT 0,
     "score" INTEGER,
     "temperature" TEXT,
     "qualification" JSONB NOT NULL DEFAULT '{}',
@@ -232,7 +272,10 @@ CREATE TABLE "Setting" (
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Stage_key_key" ON "Stage"("key");
+CREATE UNIQUE INDEX "Stage_pipelineId_key_key" ON "Stage"("pipelineId", "key");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Goal_userId_metric_period_key" ON "Goal"("userId", "metric", "period");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "SdrAgent_name_key" ON "SdrAgent"("name");
@@ -269,6 +312,18 @@ CREATE UNIQUE INDEX "WhatsAppTemplate_name_key" ON "WhatsAppTemplate"("name");
 
 -- AddForeignKey
 ALTER TABLE "Session" ADD CONSTRAINT "Session_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Stage" ADD CONSTRAINT "Stage_pipelineId_fkey" FOREIGN KEY ("pipelineId") REFERENCES "Pipeline"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "AutomationRule" ADD CONSTRAINT "AutomationRule_stageId_fkey" FOREIGN KEY ("stageId") REFERENCES "Stage"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Goal" ADD CONSTRAINT "Goal_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Lead" ADD CONSTRAINT "Lead_pipelineId_fkey" FOREIGN KEY ("pipelineId") REFERENCES "Pipeline"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Lead" ADD CONSTRAINT "Lead_stageId_fkey" FOREIGN KEY ("stageId") REFERENCES "Stage"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

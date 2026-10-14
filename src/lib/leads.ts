@@ -1,14 +1,20 @@
 import type { Lead, LeadStatus, Prisma } from "@prisma/client";
 import { db } from "./db";
 import { logEvent } from "./events";
-import { cancelJobs, enqueue, enqueueDebounced } from "./queue";
+import { cancelJobs, enqueueDebounced } from "./queue";
+import { cancelRuleJobs, scheduleStageRules } from "./automations";
 import { normalizePhone } from "./whatsapp";
 import { STAGE_KEYS } from "./plan";
 
-export async function stageByKey(key: string) {
-  const stage = await db.stage.findUnique({ where: { key } });
-  if (!stage) throw new Error(`Etapa "${key}" não existe. Rode o seed (npm run db:seed).`);
-  return stage;
+/** A stage of the given funnel by its AI key; null when that funnel has no such stage. */
+export async function stageByKey(key: string, pipelineId: string) {
+  return db.stage.findUnique({ where: { pipelineId_key: { pipelineId, key } } });
+}
+
+export async function defaultPipeline() {
+  const p = (await db.pipeline.findFirst({ where: { isDefault: true } })) ?? (await db.pipeline.findFirst({ orderBy: { position: "asc" } }));
+  if (!p) throw new Error("Nenhum funil cadastrado. Rode o seed (npm run db:seed).");
+  return p;
 }
 
 /** Picks the active SDR with the fewest leads in qualification, so Duda and Alice share the load. */
@@ -30,6 +36,7 @@ export type NewLeadInput = {
   source: string;
   campaign?: string | null;
   externalId?: string | null;
+  pipelineId?: string | null;
   // Old leads from Kommo go to reactivation instead of getting a welcome message right away
   reactivation?: boolean;
 };
@@ -43,7 +50,10 @@ export async function createLead(input: NewLeadInput, actor: string) {
       return { lead: existing, created: false };
     }
   }
-  const stage = await stageByKey(STAGE_KEYS.NEW);
+  const pipelineId = input.pipelineId || (await defaultPipeline()).id;
+  const stage =
+    (await stageByKey(STAGE_KEYS.NEW, pipelineId)) ??
+    (await db.stage.findFirstOrThrow({ where: { pipelineId }, orderBy: { position: "asc" } }));
   const sdr = await pickSdr();
   const lead = await db.lead.create({
     data: {
@@ -55,6 +65,7 @@ export async function createLead(input: NewLeadInput, actor: string) {
       source: input.source,
       campaign: input.campaign ?? null,
       externalId: input.externalId ?? null,
+      pipelineId,
       stageId: stage.id,
       sdrId: sdr?.id,
     },
@@ -64,26 +75,9 @@ export async function createLead(input: NewLeadInput, actor: string) {
   return { lead, created: true };
 }
 
-/** What happens to every new lead: AI first contact on WhatsApp and the welcome email sequence. */
+/** Runs the automations of the stage the lead is in, as if it had just arrived there. */
 export async function startAutomations(lead: Lead) {
-  if (lead.phone && lead.sdrId) {
-    await enqueue("sdr.first_contact", { leadId: lead.id, dedupeKey: `first_contact:${lead.id}` });
-  }
-  await startEmailSequence(lead.id, "boas_vindas");
-}
-
-export async function startEmailSequence(leadId: string, prefix: string) {
-  const templates = await db.emailTemplate.findMany({
-    where: { active: true, key: { startsWith: prefix }, sequenceDay: { not: null } },
-  });
-  for (const t of templates) {
-    await enqueue("email.send", {
-      leadId,
-      payload: { templateKey: t.key },
-      runAt: new Date(Date.now() + (t.sequenceDay ?? 0) * 86_400_000 + 5 * 60_000),
-      dedupeKey: `email:${leadId}:${t.key}`,
-    });
-  }
+  await scheduleStageRules(lead);
 }
 
 export async function handleInbound(input: { phone: string; profileName?: string; body: string; externalId: string; at: Date }) {
@@ -110,9 +104,11 @@ export async function handleInbound(input: { phone: string; profileName?: string
   });
   lead = await db.lead.update({
     where: { id: lead.id },
-    data: { lastInboundAt: input.at, followUpStep: 0, name: lead.name ?? input.profileName ?? null },
+    data: { lastInboundAt: input.at, name: lead.name ?? input.profileName ?? null },
   });
-  await cancelJobs(lead.id, ["followup.check"]);
+  // The lead answered: the "sem resposta" clock starts over
+  await cancelRuleJobs(lead.id, "idle");
+  await scheduleStageRules(lead, "idle");
   if (lead.sdrId && !lead.aiPaused && ["NEW", "AI_QUALIFYING", "QUALIFIED", "NURTURING"].includes(lead.status)) {
     // Wait a few seconds so several short messages get one answer
     await enqueueDebounced("sdr.reply", lead.id, Number(process.env.SDR_DEBOUNCE_MS ?? 15_000));
@@ -133,47 +129,37 @@ const STATUS_BY_STAGE_KEY = Object.fromEntries(Object.entries(STAGE_KEYS).map(([
   LeadStatus
 >;
 
-/** Moves a lead (drag and drop or automation) and runs the stage's automations. */
+/** Moves a lead (drag and drop, the AI or a rule) and starts the new stage's automations. */
 export async function moveLead(leadId: string, stageId: string, actor: string, extra: Prisma.LeadUncheckedUpdateInput = {}) {
   const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId }, include: { stage: true } });
   const stage = await db.stage.findUniqueOrThrow({ where: { id: stageId } });
   if (lead.stageId === stageId && Object.keys(extra).length === 0) return lead;
-  const status = (stage.key && STATUS_BY_STAGE_KEY[stage.key]) || (stage.kind === "WON" ? "WON" : stage.kind === "LOST" ? "LOST" : lead.status);
+  const entering = lead.stageId !== stageId;
+  const status =
+    (stage.key && STATUS_BY_STAGE_KEY[stage.key]) || (stage.kind === "WON" ? "WON" : stage.kind === "LOST" ? "LOST" : lead.status);
   const updated = await db.lead.update({
     where: { id: leadId },
-    data: { stageId, status, stageEnteredAt: lead.stageId === stageId ? undefined : new Date(), ...extra },
+    data: {
+      stageId,
+      pipelineId: stage.pipelineId,
+      status,
+      ...(entering && { stageEnteredAt: new Date() }),
+      ...(entering && stage.kind === "WON" && { wonAt: new Date() }),
+      ...(entering && stage.kind !== "WON" && lead.stage.kind === "WON" && { wonAt: null }),
+      ...extra,
+    },
   });
-  if (lead.stageId !== stageId) {
-    await logEvent(leadId, "stage.changed", actor, `${lead.stage.name} → ${stage.name}`);
-    await onStageEntered(updated, stage.key);
+  if (entering) {
+    const crossed = stage.pipelineId !== lead.pipelineId ? " (outro funil)" : "";
+    await logEvent(leadId, "stage.changed", actor, `${lead.stage.name} → ${stage.name}${crossed}`);
+    if (stage.kind !== "OPEN") {
+      // Closing the deal stops everything that was still scheduled for this lead
+      await cancelRuleJobs(leadId, "all");
+      await cancelJobs(leadId, ["sdr.first_contact", "sdr.reply", "email.send", "meeting.reminder"]);
+    } else {
+      await cancelRuleJobs(leadId, "stage");
+    }
+    await scheduleStageRules(updated);
   }
   return updated;
-}
-
-async function onStageEntered(lead: Lead, key: string | null) {
-  if (key === STAGE_KEYS.NURTURING) await startEmailSequence(lead.id, "nutricao");
-  if (key === "proposta") {
-    await enqueue("followup.check", {
-      leadId: lead.id,
-      payload: { kind: "proposal" },
-      runAt: new Date(Date.now() + 2 * 86_400_000),
-      dedupeKey: `proposal_followup:${lead.id}:${Date.now()}`,
-    });
-  }
-  if (key === STAGE_KEYS.WON) {
-    await cancelJobs(lead.id, ["followup.check", "email.send", "sdr.reply"]);
-    await ensureTask(lead.id, lead.ownerId, "Iniciar onboarding do novo franqueado");
-  }
-  if (key === STAGE_KEYS.LOST || key === STAGE_KEYS.DISQUALIFIED) {
-    await cancelJobs(lead.id, ["followup.check", "email.send", "sdr.reply", "meeting.reminder"]);
-    if (key === STAGE_KEYS.LOST) {
-      // Reactivation in 90 days
-      await enqueue("followup.check", {
-        leadId: lead.id,
-        payload: { kind: "reactivation" },
-        runAt: new Date(Date.now() + 90 * 86_400_000),
-        dedupeKey: `reactivation:${lead.id}:${new Date().toISOString().slice(0, 10)}`,
-      });
-    }
-  }
 }

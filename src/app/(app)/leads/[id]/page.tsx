@@ -4,7 +4,7 @@ import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { isWindowOpen } from "@/lib/whatsapp";
-import { Card, Loading, STATUS_LABEL, TempBadge, btnGhostCls, fmt, inputCls, relTime } from "@/components/ui";
+import { Avatar, Card, Loading, STATUS_LABEL, TempBadge, btnGhostCls, fmt, inputCls, relTime } from "@/components/ui";
 import {
   addNoteAction,
   assignSdrAction,
@@ -49,7 +49,7 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
   });
   if (!lead) notFound();
   const [stages, agents, users, macros] = await Promise.all([
-    db.stage.findMany({ orderBy: { position: "asc" } }),
+    db.stage.findMany({ orderBy: [{ pipeline: { position: "asc" } }, { position: "asc" }], include: { pipeline: { select: { name: true } } } }),
     db.sdrAgent.findMany({ where: { active: true } }),
     db.user.findMany({ orderBy: { name: "asc" } }),
     db.macro.findMany({ orderBy: { title: "asc" } }),
@@ -69,12 +69,17 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
           ← Funil
         </Link>
         <div>
-          <h1 className="text-xl font-bold">{lead.name ?? "Sem nome"}</h1>
-          <div className="text-sm text-slate-500">
-            {lead.phone ?? "sem telefone"} · origem {lead.source}
+          <div className="flex items-center gap-3">
+            <Avatar name={lead.name ?? lead.phone ?? "?"} size={44} />
+            <div className="min-w-0">
+              <h1 className="truncate text-xl font-bold">{lead.name ?? "Sem nome"}</h1>
+              <div className="text-sm text-slate-500">
+                {lead.phone ?? "sem telefone"} · origem {lead.source}
+              </div>
+            </div>
           </div>
         </div>
-        <StageSelect leadId={lead.id} stageId={lead.stageId} stages={stages.map((s) => ({ id: s.id, name: s.name }))} />
+        <StageSelect leadId={lead.id} stageId={lead.stageId} stages={stages.map((s) => ({ id: s.id, name: s.name, pipeline: s.pipeline.name }))} />
 
         <Card className="space-y-2">
           <div className="flex items-center justify-between">
@@ -157,6 +162,17 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
               <input name="city" defaultValue={lead.city ?? ""} placeholder="Cidade" className={inputCls} />
               <input name="state" defaultValue={lead.state ?? ""} placeholder="UF" className={`${inputCls} w-20`} />
             </div>
+            <div className="relative">
+              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">R$</span>
+              <input
+                name="value"
+                inputMode="numeric"
+                defaultValue={lead.value ? lead.value.toLocaleString("pt-BR") : ""}
+                placeholder="Valor do negócio"
+                title="Conta na meta de receita quando o lead for ganho"
+                className={`${inputCls} pl-9`}
+              />
+            </div>
             <select name="ownerId" defaultValue={lead.ownerId ?? ""} className={inputCls}>
               <option value="">Sem responsável</option>
               {users.map((u) => (
@@ -219,7 +235,7 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
 const JOB_LABEL: Record<string, string> = {
   "sdr.first_contact": "primeiro contato da IA",
   "sdr.reply": "resposta da IA",
-  "followup.check": "follow-up",
+  "rule.run": "automação da etapa",
   "email.send": "e-mail automático",
   "meeting.reminder": "lembrete de reunião",
 };

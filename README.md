@@ -9,7 +9,10 @@ CRM de expansão de franquias com SDR de IA no WhatsApp. Feito para substituir o
 - **SDRs de IA (Duda e Alice)**: respondem o lead no WhatsApp, fazem as perguntas de qualificação, dão nota (score e temperatura), oferecem horários livres do gerente e marcam a reunião sozinhas. Passam para uma pessoa quando o lead pede, reclama, quer negociar ou pergunta algo fora da base de conhecimento.
 - **Janela de 24 h resolvida**: o CRM escolhe sozinho entre texto livre e modelo aprovado pela Meta.
 - **Alerta de conta**: erro de pagamento, bloqueio ou token vencido da Meta aparece numa faixa vermelha em todas as telas.
-- **Automações com registro**: primeiro contato, follow-up sem resposta (1, 3 e 7 dias), lembretes de reunião (1 dia e 1 hora antes), follow-up de proposta, reativação de perdidos em 90 dias e aviso de lead parado. Toda automação tem nova tentativa automática e aparece no registro com o erro, se falhar.
+- **Vários funis, você monta**: crie funis (Expansão, Revenda, Pós-venda...), renomeie, reordene, pinte e exclua etapas.
+- **Automações por etapa, em uma frase**: "Quando o lead *entrar nesta etapa* / *ficar sem responder* por X min, horas ou dias, então *enviar WhatsApp*, *enviar e-mail*, *criar tarefa*, *mover para etapa* (até de outro funil), *ativar a SDR de IA* ou *pausar a IA*". Tem atalhos prontos e um botão para ligar e desligar cada uma. O funil Expansão já vem com o primeiro contato da IA, boas-vindas por e-mail, follow-up de 1, 3 e 7 dias sem resposta, nutrição, cobrança de proposta, onboarding e reativação de perdidos em 90 dias.
+- **Metas**: atendimentos, reuniões, vendas e receita do mês, da equipe e de cada pessoa, com projeção e o quanto falta por dia.
+- **Automações com registro**: toda automação tem nova tentativa automática, aparece na linha do tempo do lead e no registro com o erro, se falhar. Lembretes de reunião (1 dia e 1 hora antes) são automáticos.
 - **E-mails automáticos**: sequência de boas-vindas com a apresentação (dia 0, 2 e 5) e de nutrição (dia 7 e 30), editáveis em Ajustes.
 - **Importação** de planilha do Kommo, RD ou Excel, sem duplicar leads.
 - **Painel**: leads, tempo de primeira resposta, qualificados, reuniões, vendas, desempenho de cada SDR e de cada origem.

@@ -1,20 +1,22 @@
 "use client";
 
+import { Upload } from "lucide-react";
 import { useActionState, useState } from "react";
 import { importCsvAction } from "../../actions";
 import { btnCls, btnGhostCls } from "@/components/ui";
 
-export function ImportButton() {
+export function ImportButton({ pipelineId }: { pipelineId: string }) {
   const [open, setOpen] = useState(false);
   const [state, action, pending] = useActionState(importCsvAction, null);
   return (
     <>
       <button className={btnGhostCls} onClick={() => setOpen(true)}>
-        Importar planilha
+        <Upload size={16} /> Importar
       </button>
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={() => setOpen(false)}>
           <form action={action} className="w-full max-w-md space-y-3 rounded-2xl bg-white p-6" onClick={(e) => e.stopPropagation()}>
+            <input type="hidden" name="pipelineId" value={pipelineId} />
             <h2 className="text-lg font-bold">Importar leads (CSV do Kommo, RD ou Excel)</h2>
             <input name="file" type="file" accept=".csv,text/csv" className="text-sm" />
             <label className="flex items-start gap-2 text-sm">

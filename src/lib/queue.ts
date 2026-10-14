@@ -4,7 +4,7 @@ import { db } from "./db";
 export type JobType =
   | "sdr.first_contact"
   | "sdr.reply"
-  | "followup.check"
+  | "rule.run"
   | "email.send"
   | "meeting.reminder"
   | "whatsapp.retry";
@@ -44,7 +44,7 @@ export async function enqueueDebounced(type: JobType, leadId: string, delayMs: n
 export async function cancelJobs(leadId: string, types: JobType[]) {
   await db.job.updateMany({
     where: { leadId, type: { in: types }, status: "PENDING" },
-    data: { status: "CANCELLED", finishedAt: new Date(), result: "Cancelado: o lead mudou de etapa ou respondeu." },
+    data: { status: "CANCELLED", finishedAt: new Date(), dedupeKey: null, result: "Cancelado: o lead mudou de etapa ou respondeu." },
   });
 }
 

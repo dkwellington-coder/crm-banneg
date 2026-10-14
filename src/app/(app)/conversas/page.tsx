@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { Loading, PageHeader, tabCls, relTime } from "@/components/ui";
+import { Avatar, Loading, PageHeader, Tabs, tabCls, relTime } from "@/components/ui";
 
 export default function ConversasPage({ searchParams }: PageProps<"/conversas">) {
   return (
@@ -45,19 +45,22 @@ async function Inbox({ searchParams }: { searchParams: PageProps<"/conversas">["
   ];
   return (
     <div className="px-6 pb-6">
-      <div className="mb-3 flex flex-wrap gap-2">
-        {tabs.map(([k, label]) => (
-          <Link key={k} href={`/conversas?f=${k}`} className={tabCls(filter === k)}>
-            {label}
-          </Link>
-        ))}
+      <div className="mb-3">
+        <Tabs>
+          {tabs.map(([k, label]) => (
+            <Link key={k} href={`/conversas?f=${k}`} className={tabCls(filter === k)}>
+              {label}
+            </Link>
+          ))}
+        </Tabs>
       </div>
-      <div className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
         {shown.length === 0 && <p className="p-4 text-sm text-slate-400">Nada por aqui.</p>}
         {shown.map((l) => {
           const m = l.messages[0];
           return (
             <Link key={l.id} href={`/leads/${l.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50">
+              <Avatar name={l.name ?? l.phone ?? "?"} size={38} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="truncate font-semibold">{l.name ?? l.phone}</span>

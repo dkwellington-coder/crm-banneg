@@ -10,6 +10,8 @@ import { sendWhatsApp } from "@/lib/messaging";
 import { enqueue } from "@/lib/queue";
 import { getSettings, saveSettings } from "@/lib/settings";
 import { parseCsv, mapRow } from "@/lib/csv";
+import { ACTIONS, UNITS, type RuleConfig } from "@/lib/rules";
+import { METRICS } from "@/lib/goals";
 
 export async function loginAction(_: unknown, form: FormData) {
   const user = await login(String(form.get("email") ?? ""), String(form.get("password") ?? ""));
@@ -37,6 +39,7 @@ export async function createLeadAction(form: FormData) {
       email: String(form.get("email") ?? "") || null,
       city: String(form.get("city") ?? "") || null,
       source: "manual",
+      pipelineId: String(form.get("pipelineId") ?? "") || null,
     },
     user.name,
   );
@@ -96,6 +99,7 @@ export async function updateLeadAction(leadId: string, form: FormData) {
       city: pick("city"),
       state: pick("state"),
       ownerId: pick("ownerId"),
+      value: parseMoney(pick("value")),
       emailOptOut: form.get("emailOptOut") === "on",
     },
   });
@@ -114,7 +118,11 @@ export async function markLostAction(leadId: string, form: FormData) {
   const user = await requireUser();
   const reason = String(form.get("reason") ?? "").trim();
   if (!reason) return;
-  const stage = await db.stage.findUniqueOrThrow({ where: { key: "perdido" } });
+  const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId } });
+  const stage =
+    (await db.stage.findFirst({ where: { pipelineId: lead.pipelineId, key: "perdido" } })) ??
+    (await db.stage.findFirst({ where: { pipelineId: lead.pipelineId, kind: "LOST" }, orderBy: { position: "asc" } }));
+  if (!stage) throw new Error("Este funil não tem etapa de perdido.");
   await moveLead(leadId, stage.id, user.name, { lostReason: reason, aiPaused: true });
   revalidatePath(`/leads/${leadId}`);
 }
@@ -134,7 +142,10 @@ export async function importCsvAction(_: unknown, form: FormData) {
       skipped++;
       continue;
     }
-    const res = await createLead({ ...input, source: input.source ?? "importação", reactivation: true }, user.name);
+    const res = await createLead(
+      { ...input, source: input.source ?? "importação", pipelineId: String(form.get("pipelineId") ?? "") || null, reactivation: true },
+      user.name,
+    );
     if (!res.created) {
       duplicates++;
       continue;
@@ -160,7 +171,6 @@ export async function saveSettingsAction(form: FormData) {
     qualificationQuestions: lines("qualificationQuestions"),
     qualifyScore: Number(form.get("qualifyScore") ?? current.qualifyScore),
     meetingMinutes: Number(form.get("meetingMinutes") ?? current.meetingMinutes),
-    followUpDays: lines("followUpDays").flatMap((s) => s.split(/[,\s]+/)).map(Number).filter((n) => n > 0),
     businessHours: {
       ...current.businessHours,
       start: Number(form.get("hoursStart") ?? current.businessHours.start),
@@ -258,4 +268,197 @@ export async function saveMacroAction(form: FormData) {
   else if (id) await db.macro.update({ where: { id }, data: { title, body } });
   else if (title) await db.macro.create({ data: { title, body } });
   revalidatePath("/configuracoes");
+}
+
+/** "R$ 150.000,00" or "150000" → 150000 (whole reais). */
+function parseMoney(v: string | null) {
+  if (!v) return null;
+  const n = Number(v.replace(/[^\d,]/g, "").replace(",", "."));
+  return Number.isFinite(n) ? Math.round(n) : null;
+}
+
+async function requireManager() {
+  const user = await requireUser();
+  if (user.role === "SELLER") throw new Error("Apenas gestores podem editar funis e metas.");
+  return user;
+}
+
+// ---------- Funis ----------
+
+const BLANK_STAGES = [
+  { name: "Novo", color: "#64748b", kind: "OPEN" as const },
+  { name: "Em contato", color: "#0ea5e9", kind: "OPEN" as const },
+  { name: "Proposta", color: "#8b5cf6", kind: "OPEN" as const },
+  { name: "Ganho", color: "#16a34a", kind: "WON" as const },
+  { name: "Perdido", color: "#dc2626", kind: "LOST" as const },
+];
+
+export async function createPipelineAction(form: FormData) {
+  await requireManager();
+  const name = String(form.get("name") ?? "").trim() || "Novo funil";
+  const position = await db.pipeline.count();
+  const pipeline = await db.pipeline.create({
+    data: { name, position, stages: { create: BLANK_STAGES.map((s, i) => ({ ...s, position: i })) } },
+  });
+  revalidatePath("/funil");
+  redirect(`/funis/${pipeline.id}`);
+}
+
+export async function renamePipelineAction(pipelineId: string, form: FormData) {
+  await requireManager();
+  const name = String(form.get("name") ?? "").trim();
+  if (name) await db.pipeline.update({ where: { id: pipelineId }, data: { name } });
+  revalidatePath(`/funis/${pipelineId}`);
+}
+
+export async function setDefaultPipelineAction(pipelineId: string) {
+  await requireManager();
+  await db.$transaction([
+    db.pipeline.updateMany({ data: { isDefault: false } }),
+    db.pipeline.update({ where: { id: pipelineId }, data: { isDefault: true } }),
+  ]);
+  revalidatePath(`/funis/${pipelineId}`);
+}
+
+export async function deletePipelineAction(pipelineId: string) {
+  await requireManager();
+  const p = await db.pipeline.findUniqueOrThrow({ where: { id: pipelineId }, include: { _count: { select: { leads: true } } } });
+  if (p.isDefault) throw new Error("O funil padrão não pode ser excluído.");
+  if (p._count.leads > 0) throw new Error("Mova os leads deste funil antes de excluí-lo.");
+  await db.pipeline.delete({ where: { id: pipelineId } });
+  redirect("/funil");
+}
+
+export async function addStageAction(pipelineId: string, form: FormData) {
+  await requireManager();
+  const name = String(form.get("name") ?? "").trim();
+  if (!name) return;
+  const stages = await db.stage.findMany({ where: { pipelineId }, orderBy: { position: "asc" } });
+  // New stages go before Ganho/Perdido
+  const at = stages.findIndex((s) => s.kind !== "OPEN");
+  const index = at === -1 ? stages.length : at;
+  await db.$transaction([
+    ...stages.slice(index).map((s, i) => db.stage.update({ where: { id: s.id }, data: { position: index + i + 1 } })),
+    db.stage.create({ data: { pipelineId, name, position: index, color: String(form.get("color") || "#6366f1") } }),
+  ]);
+  revalidatePath(`/funis/${pipelineId}`);
+}
+
+export async function updateStageAction(stageId: string, form: FormData) {
+  await requireManager();
+  const kind = String(form.get("kind") ?? "OPEN");
+  const stage = await db.stage.update({
+    where: { id: stageId },
+    data: {
+      name: String(form.get("name") ?? "").trim() || undefined,
+      color: String(form.get("color") || "#64748b"),
+      kind: kind === "WON" || kind === "LOST" ? kind : "OPEN",
+    },
+  });
+  revalidatePath(`/funis/${stage.pipelineId}`);
+}
+
+export async function moveStageAction(stageId: string, dir: -1 | 1) {
+  await requireManager();
+  const stage = await db.stage.findUniqueOrThrow({ where: { id: stageId } });
+  const stages = await db.stage.findMany({ where: { pipelineId: stage.pipelineId }, orderBy: { position: "asc" } });
+  const i = stages.findIndex((s) => s.id === stageId);
+  const j = i + dir;
+  if (j < 0 || j >= stages.length) return;
+  [stages[i], stages[j]] = [stages[j], stages[i]];
+  await db.$transaction(stages.map((s, position) => db.stage.update({ where: { id: s.id }, data: { position } })));
+  revalidatePath(`/funis/${stage.pipelineId}`);
+}
+
+export async function deleteStageAction(stageId: string) {
+  const user = await requireManager();
+  const stage = await db.stage.findUniqueOrThrow({ where: { id: stageId } });
+  if (stage.key) throw new Error("Esta etapa é usada pela SDR de IA e não pode ser excluída. Você pode renomeá-la.");
+  const fallback = await db.stage.findFirst({
+    where: { pipelineId: stage.pipelineId, id: { not: stageId } },
+    orderBy: { position: "asc" },
+  });
+  if (!fallback) throw new Error("O funil precisa de pelo menos uma etapa.");
+  const leads = await db.lead.findMany({ where: { stageId }, select: { id: true } });
+  for (const l of leads) await moveLead(l.id, fallback.id, user.name);
+  await db.stage.delete({ where: { id: stageId } });
+  revalidatePath(`/funis/${stage.pipelineId}`);
+}
+
+// ---------- Automações ----------
+
+export async function saveRuleAction(form: FormData) {
+  await requireManager();
+  const id = String(form.get("id") ?? "");
+  const stageId = String(form.get("stageId"));
+  const action = String(form.get("action"));
+  if (!(action in ACTIONS)) throw new Error("Ação inválida.");
+  const unit = UNITS.find((u) => u.key === form.get("unit")) ?? UNITS[2];
+  const amount = Math.max(0, Number(form.get("amount") ?? 0) || 0);
+  const pick = (k: string) => String(form.get(k) ?? "").trim() || undefined;
+  const config: RuleConfig = {
+    text: action === "whatsapp" ? pick("text") : undefined,
+    templateKey: action === "email" ? pick("templateKey") : undefined,
+    title: action === "task" ? pick("title") : undefined,
+    toStageId: action === "move" ? pick("toStageId") : undefined,
+    sdrId: action === "ai_on" ? pick("sdrId") : undefined,
+  };
+  const trigger = form.get("trigger") === "idle" ? "idle" : "enter";
+  const data = {
+    trigger,
+    // "sem resposta por 0 minutos" makes no sense; at least one hour
+    delayMinutes: trigger === "idle" ? Math.max(60, amount * unit.minutes) : amount * unit.minutes,
+    action,
+    config: JSON.parse(JSON.stringify(config)),
+    runAfterLeaving: form.get("runAfterLeaving") === "on",
+  };
+  if (id) await db.automationRule.update({ where: { id }, data });
+  else {
+    const position = await db.automationRule.count({ where: { stageId } });
+    await db.automationRule.create({ data: { ...data, stageId, position } });
+  }
+  const stage = await db.stage.findUniqueOrThrow({ where: { id: stageId } });
+  revalidatePath(`/funis/${stage.pipelineId}`);
+}
+
+export async function toggleRuleAction(ruleId: string) {
+  await requireManager();
+  const rule = await db.automationRule.findUniqueOrThrow({ where: { id: ruleId }, include: { stage: true } });
+  await db.automationRule.update({ where: { id: ruleId }, data: { active: !rule.active } });
+  revalidatePath(`/funis/${rule.stage.pipelineId}`);
+}
+
+export async function deleteRuleAction(ruleId: string) {
+  await requireManager();
+  const rule = await db.automationRule.delete({ where: { id: ruleId }, include: { stage: true } });
+  await db.job.updateMany({
+    where: { type: "rule.run", status: "PENDING", payload: { path: ["ruleId"], equals: ruleId } },
+    data: { status: "CANCELLED", dedupeKey: null, finishedAt: new Date(), result: "Cancelado: automação excluída." },
+  });
+  revalidatePath(`/funis/${rule.stage.pipelineId}`);
+}
+
+// ---------- Metas ----------
+
+export async function saveGoalsAction(form: FormData) {
+  await requireManager();
+  const period = String(form.get("period"));
+  if (!/^\d{4}-\d{2}$/.test(period)) throw new Error("Período inválido.");
+  const users = await db.user.findMany({ select: { id: true } });
+  for (const who of [null, ...users.map((u) => u.id)]) {
+    for (const m of METRICS) {
+      const raw = String(form.get(`${m.key}:${who ?? "team"}`) ?? "").trim();
+      const target = m.money ? parseMoney(raw) : raw ? Math.round(Number(raw)) : null;
+      const existing = await db.goal.findFirst({ where: { userId: who, metric: m.key, period } });
+      if (target === null || !Number.isFinite(target) || target <= 0) {
+        if (existing) await db.goal.delete({ where: { id: existing.id } });
+      } else if (existing) {
+        await db.goal.update({ where: { id: existing.id }, data: { target } });
+      } else {
+        await db.goal.create({ data: { userId: who, metric: m.key, period, target } });
+      }
+    }
+  }
+  revalidatePath("/metas");
+  redirect(`/metas?p=${period}`);
 }

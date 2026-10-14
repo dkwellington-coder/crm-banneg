@@ -72,6 +72,7 @@ model User {
   tasks        Task[]
   meetings     Meeting[]
   sessions     Session[]
+  goals        Goal[]
 }
 
 model Session {
@@ -81,17 +82,63 @@ model Session {
   expiresAt DateTime
 }
 
+model Pipeline {
+  id        String   @id @default(cuid())
+  name      String
+  position  Int      @default(0)
+  // The funnel new leads land in when nothing else is said
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  stages    Stage[]
+  leads     Lead[]
+}
+
 model Stage {
-  id             String    @id @default(cuid())
-  // Stable key the automations use (novo, qualificando, ...); null for stages the team creates
-  key            String?   @unique
-  name           String
-  position       Int
-  kind           StageKind @default(OPEN)
-  color          String    @default("#64748b")
-  // Days a lead may stay here before the stale-card automation fires (null = never)
-  staleAfterDays Int?
-  leads          Lead[]
+  id         String           @id @default(cuid())
+  pipelineId String
+  pipeline   Pipeline         @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  // Stable key the AI uses (novo, qualificando, ...); null for stages the team creates
+  key        String?
+  name       String
+  position   Int
+  kind       StageKind        @default(OPEN)
+  color      String           @default("#64748b")
+  leads      Lead[]
+  rules      AutomationRule[]
+
+  @@unique([pipelineId, key])
+}
+
+// "When the lead enters this stage (or stops answering), after X time, do Y"
+model AutomationRule {
+  id              String   @id @default(cuid())
+  stageId         String
+  stage           Stage    @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  // enter = entrou na etapa; idle = ficou sem responder
+  trigger         String   @default("enter")
+  delayMinutes    Int      @default(0)
+  // whatsapp | email | task | move | ai_on | ai_off
+  action          String
+  config          Json     @default("{}")
+  // false = only runs while the lead is still in this stage
+  runAfterLeaving Boolean  @default(false)
+  active          Boolean  @default(true)
+  position        Int      @default(0)
+  createdAt       DateTime @default(now())
+}
+
+model Goal {
+  id     String  @id @default(cuid())
+  // null = meta da equipe
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // atendimentos | reunioes | vendas | receita
+  metric String
+  // YYYY-MM
+  period String
+  target Int
+
+  @@unique([userId, metric, period])
 }
 
 model SdrAgent {
@@ -113,8 +160,13 @@ model Lead {
   source         String      @default("manual")
   campaign       String?
   externalId     String?
+  pipelineId     String
+  pipeline       Pipeline    @relation(fields: [pipelineId], references: [id])
   stageId        String
   stage          Stage       @relation(fields: [stageId], references: [id])
+  // Deal value in reais, for the sales goal
+  value          Int?
+  wonAt          DateTime?
   status         LeadStatus  @default(NEW)
   ownerId        String?
   owner          User?       @relation(fields: [ownerId], references: [id])
@@ -122,7 +174,6 @@ model Lead {
   sdr            SdrAgent?   @relation(fields: [sdrId], references: [id])
   aiPaused       Boolean     @default(false)
   emailOptOut    Boolean     @default(false)
-  followUpStep   Int         @default(0)
   score          Int?
   temperature    String?
   // Answers the SDR collected (capital, region, timeline, decision maker...)
