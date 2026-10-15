@@ -440,12 +440,22 @@ export async function saveRuleAction(form: FormData) {
     sdrId: action === "ai_on" ? pick("sdrId") : undefined,
   };
   const rawTrigger = form.get("trigger");
-  const trigger = rawTrigger === "idle" ? "idle" : rawTrigger === "daily" && action === "move" ? "daily" : "enter";
+  const trigger =
+    rawTrigger === "idle" ? "idle" : rawTrigger === "daily" && action === "move" ? "daily" : rawTrigger === "answer" ? "answer" : "enter";
   if (trigger === "daily") config.perDay = Math.min(1000, Math.max(1, Number(form.get("perDay")) || 100));
+  if (trigger === "answer") {
+    config.answers = String(form.get("answers") ?? "")
+      .split("|")
+      .map((a) => a.trim())
+      .filter(Boolean)
+      .slice(0, 10);
+    if (!config.answers.length) throw new Error("Diga qual resposta do lead dispara a automação.");
+    config.aiReplies = form.get("aiReplies") === "on" || undefined;
+  }
   const data = {
     trigger,
     // "sem resposta por 0 minutos" makes no sense; at least one hour
-    delayMinutes: trigger === "idle" ? Math.max(60, amount * unit.minutes) : trigger === "daily" ? 0 : amount * unit.minutes,
+    delayMinutes: trigger === "idle" ? Math.max(60, amount * unit.minutes) : trigger === "daily" || trigger === "answer" ? 0 : amount * unit.minutes,
     action,
     config: JSON.parse(JSON.stringify(config)),
     runAfterLeaving: form.get("runAfterLeaving") === "on",
@@ -523,6 +533,7 @@ export async function testIntegrationAction(_: TestState, form: FormData): Promi
     email: () => integrations.sendEmailTest(String(form.get("to") || user.email)),
     calendar: () => integrations.checkCalendar(String(form.get("userId") || user.id)),
     meta_forms: () => integrations.checkMetaLeads(),
+    meta_ads: () => integrations.checkMetaAds(),
   }[kind];
   if (!run) return { kind, ok: false, message: "Teste desconhecido." };
   const res = await run();
@@ -531,6 +542,21 @@ export async function testIntegrationAction(_: TestState, form: FormData): Promi
     revalidatePath("/integracoes");
   }
   return { kind, ...res };
+}
+
+/** Which funnel a Facebook or Instagram form feeds, chosen on the Integrações screen. */
+export async function setFormFunnelAction(formId: string, form: FormData) {
+  await requireManager();
+  const slug = String(form.get("funnel") ?? "");
+  const row = await db.setting.findUnique({ where: { key: "meta_leads" } });
+  const state = (row?.value ?? {}) as { forms?: Record<string, string>; names?: Record<string, { funnel: string | null }> };
+  const forms = { ...state.forms };
+  if (slug) forms[formId] = slug;
+  else delete forms[formId];
+  const names = state.names?.[formId] ? { ...state.names, [formId]: { ...state.names[formId], funnel: slug || null } } : state.names;
+  const value = JSON.parse(JSON.stringify({ ...state, forms, names }));
+  await db.setting.upsert({ where: { key: "meta_leads" }, create: { key: "meta_leads", value }, update: { value } });
+  revalidatePath("/integracoes");
 }
 
 export async function saveTestModeAction(form: FormData) {

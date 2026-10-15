@@ -1,12 +1,16 @@
 import { Suspense, type ReactNode } from "react";
 import { headers } from "next/headers";
-import { Bot, CalendarDays, ClipboardList, Copy, FlaskConical, Mail, MessageCircle, ShieldCheck, Webhook, type LucideIcon } from "lucide-react";
+import { BadgeDollarSign, Bot, CalendarDays, ClipboardList, Copy, FlaskConical, Mail, MessageCircle, ShieldCheck, Webhook, type LucideIcon } from "lucide-react";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { Card, Loading, PageHeader, btnCls, inputCls, relTime } from "@/components/ui";
 import { saveTestModeAction } from "../../actions";
 import { TestButton } from "./TestButton";
+import { FormFunnelSelect } from "./FormFunnelSelect";
+import { funnelForForm } from "@/lib/meta-leads";
+import type { MetaAdsState } from "@/lib/meta-ads";
+import { daysAgo } from "@/lib/time";
 
 export default function IntegracoesPage() {
   return (
@@ -57,7 +61,7 @@ async function Integrations() {
   const user = await requireUser();
   const h = await headers();
   const origin = `${h.get("x-forwarded-proto") ?? "https"}://${h.get("host")}`;
-  const [settings, lastInbound, users, templates, drafts, pending, formsRow, pipelines] = await Promise.all([
+  const [settings, lastInbound, users, templates, drafts, pending, formsRow, pipelines, adsRow, spend30] = await Promise.all([
     getSettings(),
     db.message.findFirst({ where: { direction: "IN", channel: "WHATSAPP" }, orderBy: { createdAt: "desc" } }),
     db.user.findMany({ where: { role: { in: ["OWNER", "MANAGER"] } }, orderBy: { name: "asc" } }),
@@ -66,9 +70,19 @@ async function Integrations() {
     db.whatsAppTemplate.count({ where: { status: "PENDING" } }),
     db.setting.findUnique({ where: { key: "meta_leads" } }),
     db.pipeline.findMany({ select: { slug: true, name: true, isDefault: true }, orderBy: { position: "asc" } }),
+    db.setting.findUnique({ where: { key: "meta_ads" } }),
+    db.adSpend.aggregate({ where: { date: { gte: daysAgo(30) } }, _sum: { spend: true } }),
   ]);
+  const ads = adsRow?.value as MetaAdsState | undefined;
   const forms = formsRow?.value as
-    | { at?: string; error?: string | null; found?: number; created?: number; names?: Record<string, { name: string; page: string; funnel: string | null }> }
+    | {
+        at?: string;
+        error?: string | null;
+        found?: number;
+        created?: number;
+        forms?: Record<string, string>;
+        names?: Record<string, { name: string; page: string; funnel: string | null }>;
+      }
     | undefined;
   const fallbackFunnel = (pipelines.find((p) => p.isDefault) ?? pipelines[0])?.name ?? "funil padrão";
   const funnelName = (slug: string | null) => pipelines.find((p) => p.slug === slug)?.name ?? fallbackFunnel;
@@ -184,12 +198,37 @@ async function Integrations() {
               .map(([id, f]) => (
                 <li key={id} className="flex items-center justify-between gap-3 px-3 py-1.5">
                   <span className="truncate text-slate-700">{f.name}</span>
-                  <span className="shrink-0 text-xs text-slate-500">{funnelName(f.funnel)}</span>
+                  <FormFunnelSelect
+                    formId={id}
+                    value={forms.forms?.[id] ?? ""}
+                    automatic={funnelName(funnelForForm(f.name))}
+                    funnels={pipelines.filter((p): p is typeof p & { slug: string } => !!p.slug)}
+                  />
                 </li>
               ))}
           </ul>
         )}
         <TestButton kind="meta_forms" label="Conferir formulários" />
+      </Block>
+
+      <Block icon={BadgeDollarSign} color="#0866ff" title="Investimento dos anúncios (Meta Ads)" missing={process.env.META_ADS_TOKEN || process.env.META_LEADS_TOKEN ? [] : ["META_LEADS_TOKEN"]}>
+        <p className="text-sm text-slate-600">
+          O CRM lê quanto cada campanha gastou por dia e cruza com os leads que ela trouxe. O Painel mostra custo por lead, por reunião e por venda, por
+          campanha e por funil.
+        </p>
+        <ol className="list-decimal space-y-1 pl-5">
+          <Step>Meta Business &gt; Usuários do sistema &gt; CRM Banneg: em Atribuir ativos &gt; Contas de anúncios, dê acesso de leitura à conta do Banneg.</Step>
+          <Step>Gere o token de novo com as permissões de antes mais ads_read e troque o valor de META_LEADS_TOKEN no Vercel.</Step>
+          <Step>Clique em Conferir anúncios. Na primeira leitura vêm os últimos 90 dias.</Step>
+        </ol>
+        {ads?.at && (
+          <div className={`text-sm ${ads.error ? "text-amber-700" : "text-emerald-700"}`}>
+            {ads.error
+              ? `Última tentativa ${relTime(new Date(ads.at))}: ${ads.error}`
+              : `Lido ${relTime(new Date(ads.at))}: ${(ads.accounts ?? []).map((a) => a.name).join(", ")}. Investimento nos últimos 30 dias: ${(spend30._sum.spend ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}.`}
+          </div>
+        )}
+        <TestButton kind="meta_ads" label="Conferir anúncios" />
       </Block>
 
       <Block icon={Mail} color="#0284c7" title="E-mails automáticos" missing={has("SMTP_HOST", "SMTP_USER", "SMTP_PASS")}>

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { daysAgo } from "@/lib/time";
+import { campaignReport } from "@/lib/campaign-report";
 import { Card, Loading, PageHeader, Tabs, tabCls } from "@/components/ui";
 
 export default function PainelPage({ searchParams }: PageProps<"/painel">) {
@@ -25,7 +26,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
   const since = daysAgo(days);
   const inPeriod = { createdAt: { gte: since } };
 
-  const [received, qualified, meetings, won, stages, stageCounts, firstResponse, bySdr, bySource, jobs] = await Promise.all([
+  const [received, qualified, meetings, won, stages, stageCounts, firstResponse, bySdr, bySource, jobs, report] = await Promise.all([
     db.lead.count({ where: inPeriod }),
     db.lead.count({ where: { ...inPeriod, status: { in: [...ADVANCED] } } }),
     db.meeting.count({ where: inPeriod }),
@@ -53,6 +54,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
         COUNT(*) FILTER (WHERE status IN ('QUALIFIED','MEETING_BOOKED','HANDED_OFF','WON')) AS advanced
       FROM "Lead" WHERE "createdAt" >= ${since} GROUP BY source ORDER BY leads DESC LIMIT 10`,
     db.job.groupBy({ by: ["type", "status"], where: { createdAt: { gte: since } }, _count: true }),
+    campaignReport(since),
   ]);
 
   const countBy = new Map(stageCounts.map((c) => [c.stageId, c._count]));
@@ -63,6 +65,9 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
     v === null || v === undefined ? "—" : v < 60 ? `${Math.round(v)} min` : `${(v / 60).toFixed(1)} h`;
   const jobTypes = [...new Set(jobs.map((j) => j.type))];
   const jobCount = (type: string, status: string) => jobs.find((j) => j.type === type && j.status === status)?._count ?? 0;
+  const brl = (v: number) => (v ? v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 }) : "—");
+  const per = (spend: number, n: number) => (spend && n ? brl(spend / n) : "—");
+  const roi = (revenue: number, spend: number) => (spend && revenue ? `${(revenue / spend).toFixed(1).replace(".", ",")}x` : "—");
 
   return (
     <div className="space-y-4 px-6 pb-6">
@@ -124,6 +129,44 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
           </Card>
         </div>
       </div>
+      <Card>
+        <h2 className="font-bold">Resultado e custo por funil</h2>
+        <p className="mb-2 text-xs text-slate-500">
+          Leads de campanhas que chegaram no período e até onde foram, ao lado do que a Meta cobrou.
+          {!report.hasSpend && " O investimento aparece quando a conta de anúncios estiver ligada em Integrações."}
+        </p>
+        <Table
+          head={["Funil", "Investimento", "Leads", "Custo por lead", "Reuniões", "Vendas", "Custo por venda", "Receita", "Retorno"]}
+          rows={report.funnels.map((f) => [
+            f.funnel ?? "Sem leads no CRM",
+            brl(f.spend),
+            f.leads,
+            per(f.spend, f.leads),
+            f.meetings,
+            f.won,
+            per(f.spend, f.won),
+            brl(f.revenue),
+            roi(f.revenue, f.spend),
+          ])}
+        />
+      </Card>
+      <Card>
+        <h2 className="mb-2 font-bold">Resultado e custo por campanha</h2>
+        <Table
+          head={["Campanha", "Funil", "Investimento", "Leads (Meta)", "Leads no CRM", "Custo por lead", "Qualificados", "Vendas", "Receita"]}
+          rows={report.campaigns.map((c) => [
+            c.campaign,
+            c.funnel ?? "—",
+            brl(c.spend),
+            c.metaLeads || "—",
+            c.leads,
+            per(c.spend, c.leads),
+            c.qualified,
+            c.won,
+            brl(c.revenue),
+          ])}
+        />
+      </Card>
     </div>
   );
 }

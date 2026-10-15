@@ -60,13 +60,25 @@ export function sendText(to: string, body: string) {
   return post({ to, type: "text", text: { body, preview_url: true } });
 }
 
-/** Text with up to 3 tap-to-answer buttons (only inside the 24 h window). Titles are cut to Meta's 20 characters. */
-export function sendButtons(to: string, body: string, buttons: string[]) {
+export type MediaKind = "video" | "document" | "image";
+
+/** "video" for .mp4, "document" for .pdf, "image" for .jpg/.png; null for anything else. */
+export function mediaKind(url: string): MediaKind | null {
+  const file = url.split("?")[0];
+  return /\.mp4$/i.test(file) ? "video" : /\.pdf$/i.test(file) ? "document" : /\.(jpe?g|png)$/i.test(file) ? "image" : null;
+}
+
+/**
+ * Text with up to 3 tap-to-answer buttons (only inside the 24 h window), optionally with a video,
+ * PDF or photo on top. Titles are cut to Meta's 20 characters.
+ */
+export function sendButtons(to: string, body: string, buttons: string[], header?: { kind: MediaKind; link: string; filename?: string }) {
   return post({
     to,
     type: "interactive",
     interactive: {
       type: "button",
+      ...(header && { header: { type: header.kind, [header.kind]: { link: header.link, ...(header.filename && { filename: header.filename }) } } }),
       body: { text: body.slice(0, 1024) },
       action: {
         buttons: buttons.slice(0, 3).map((title, i) => ({ type: "reply", reply: { id: `b${i}`, title: title.slice(0, 20) } })),
@@ -83,16 +95,12 @@ export function sendMedia(to: string, kind: "video" | "document" | "image", link
   return post({ to, type: kind, [kind]: media });
 }
 
-export function sendTemplate(to: string, name: string, language: string, params: string[]) {
-  return post({
-    to,
-    type: "template",
-    template: {
-      name,
-      language: { code: language },
-      components: params.length ? [{ type: "body", parameters: params.map((text) => ({ type: "text", text })) }] : [],
-    },
-  });
+export function sendTemplate(to: string, name: string, language: string, params: string[], headerUrl?: string | null) {
+  const kind = headerUrl ? mediaKind(headerUrl) : null;
+  const components: Record<string, unknown>[] = [];
+  if (kind && headerUrl) components.push({ type: "header", parameters: [{ type: kind, [kind]: { link: headerUrl } }] });
+  if (params.length) components.push({ type: "body", parameters: params.map((text) => ({ type: "text", text })) });
+  return post({ to, type: "template", template: { name, language: { code: language }, components } });
 }
 
 export type WhatsAppHealth = { code?: number; message: string; at: string } | null;
@@ -176,14 +184,40 @@ async function graph<T>(path: string, init?: { method: "POST"; body: unknown }):
   return json;
 }
 
-/** Meta's template body: {{1}} is the lead's first name and {{2}} the SDR's, with examples so review can read it. */
-export function templateComponents(t: { body: string; buttons: string[] }) {
+/**
+ * Meta's template body: {{1}} is the lead's first name and {{2}} the SDR's, with examples so review
+ * can read it. A media header needs a sample Meta already holds (headerHandle).
+ */
+export function templateComponents(t: { body: string; buttons: string[]; headerKind?: MediaKind | null; headerHandle?: string }) {
   const example = ["Maria", "Duda"].slice(0, t.body.includes("{{2}}") ? 2 : t.body.includes("{{1}}") ? 1 : 0);
-  const components: Record<string, unknown>[] = [
-    { type: "BODY", text: t.body, ...(example.length && { example: { body_text: [example] } }) },
-  ];
+  const components: Record<string, unknown>[] = [];
+  if (t.headerKind && t.headerHandle) components.push({ type: "HEADER", format: t.headerKind.toUpperCase(), example: { header_handle: [t.headerHandle] } });
+  components.push({ type: "BODY", text: t.body, ...(example.length && { example: { body_text: [example] } }) });
   if (t.buttons.length) components.push({ type: "BUTTONS", buttons: t.buttons.map((text) => ({ type: "QUICK_REPLY", text: text.slice(0, 25) })) });
   return components;
+}
+
+/** Uploads a sample of a template's header (the video itself) so Meta's review can see it. */
+async function uploadHeaderSample(url: string) {
+  const token = process.env.WHATSAPP_TOKEN!;
+  const file = await fetch(url);
+  if (!file.ok) throw new Error(`Não consegui baixar o arquivo do cabeçalho (${url}): HTTP ${file.status}`);
+  const bytes = Buffer.from(await file.arrayBuffer());
+  const type = file.headers.get("content-type")?.split(";")[0] || "video/mp4";
+  const appId = process.env.META_APP_ID || (await graph<{ id: string }>("app")).id;
+  const name = encodeURIComponent(url.split("/").pop() ?? "header");
+  const session = await graph<{ id: string }>(`${appId}/uploads?file_name=${name}&file_length=${bytes.length}&file_type=${encodeURIComponent(type)}`, {
+    method: "POST",
+    body: {},
+  });
+  const res = await fetch(`${GRAPH}/${session.id}`, {
+    method: "POST",
+    headers: { Authorization: `OAuth ${token}`, file_offset: "0" },
+    body: bytes,
+  });
+  const json = (await res.json().catch(() => ({}))) as { h?: string; error?: { message?: string } };
+  if (!res.ok || !json.h) throw new Error(`Envio do vídeo do cabeçalho para a Meta falhou: ${json.error?.message ?? `HTTP ${res.status}`}`);
+  return json.h;
 }
 
 /** Sends every template still only in the CRM to Meta for review. */
@@ -195,9 +229,16 @@ export async function submitTemplates() {
   const failed: string[] = [];
   for (const t of drafts) {
     try {
+      const headerKind = t.headerUrl ? mediaKind(t.headerUrl) : null;
+      const headerHandle = headerKind && t.headerUrl ? await uploadHeaderSample(t.headerUrl) : undefined;
       const res = await graph<{ id: string; status: string }>(`${waba}/message_templates`, {
         method: "POST",
-        body: { name: t.name, language: t.language, category: t.category, components: templateComponents({ body: t.body, buttons: t.buttons as string[] }) },
+        body: {
+          name: t.name,
+          language: t.language,
+          category: t.category,
+          components: templateComponents({ body: t.body, buttons: t.buttons as string[], headerKind, headerHandle }),
+        },
       });
       await db.whatsAppTemplate.update({ where: { id: t.id }, data: { status: res.status ?? "PENDING", active: res.status === "APPROVED", metaNote: null } });
       done.push(t.name);

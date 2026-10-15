@@ -48,6 +48,7 @@ const PRESETS: { label: string; draft: Partial<Draft> }[] = [
   { label: "Ligar a SDR de IA", draft: { trigger: "enter", when: "now", action: "ai_on", config: {} } },
   { label: "Mover se sumir", draft: { trigger: "idle", amount: 7, unit: "d", action: "move", config: {} } },
   { label: "Fila: soltar leads por dia", draft: { trigger: "daily", action: "move", config: { perDay: 100 } } },
+  { label: "Mover quando tocar no botão", draft: { trigger: "answer", action: "move", config: { answers: ["Quero ver"] } } },
 ];
 
 const VARIABLES = ["nome", "empresa", "cidade", "sdr", "apresentacao", "video_ganhos", "simulacoes", "por_que_investir", "video_fundador", "video_bottini"];
@@ -76,7 +77,8 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
   const set = (patch: Partial<Draft>) => setD((cur) => ({ ...cur, ...patch }));
   const setConfig = (patch: RuleConfig) => setD((cur) => ({ ...cur, config: { ...cur.config, ...patch } }));
   const daily = d.trigger === "daily";
-  const later = !daily && (d.trigger === "idle" || d.when === "later");
+  const answer = d.trigger === "answer";
+  const later = !daily && !answer && (d.trigger === "idle" || d.when === "later");
 
   function insertVar(v: string) {
     const el = text.current;
@@ -106,6 +108,7 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
       <input type="hidden" name="unit" value={d.unit} />
       <input type="hidden" name="action" value={d.action} />
       {daily && <input type="hidden" name="perDay" value={d.config.perDay ?? 100} />}
+      {answer && <input type="hidden" name="answers" value={(d.config.answers ?? []).join(" | ")} />}
 
       {!rule && (
         <div className="flex flex-wrap items-center gap-1.5">
@@ -133,15 +136,29 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
           onChange={(e) => {
             const trigger = e.target.value as RuleTrigger;
             // A queue only releases leads to another stage
-            set(trigger === "daily" ? { trigger, action: "move", config: { perDay: 100 } } : { trigger });
+            set(
+              trigger === "daily"
+                ? { trigger, action: "move", config: { perDay: 100 } }
+                : trigger === "answer"
+                  ? { trigger, config: { ...d.config, answers: d.config.answers ?? [] } }
+                  : { trigger },
+            );
           }}
           className={sel}
         >
           <option value="enter">entrar nesta etapa</option>
           <option value="idle">ficar sem responder</option>
           <option value="daily">estiver na fila desta etapa</option>
+          <option value="answer">responder</option>
         </select>
-        {daily ? (
+        {answer ? (
+          <input
+            value={(d.config.answers ?? []).join(" | ")}
+            onChange={(e) => setConfig({ answers: e.target.value.split("|").map((a) => a.trim()).filter(Boolean) })}
+            placeholder="Quero ver | Sim"
+            className={`${sel} w-56`}
+          />
+        ) : daily ? (
           <>
             <span className={word}>soltar</span>
             <input
@@ -293,6 +310,12 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
       )}
 
       <div className="flex flex-wrap items-center gap-3">
+        {answer && (
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input type="checkbox" name="aiReplies" checked={!!d.config.aiReplies} onChange={(e) => setConfig({ aiReplies: e.target.checked || undefined })} />
+            A IA também responde a mensagem
+          </label>
+        )}
         {d.trigger === "enter" && later && (
           <label className="flex items-center gap-2 text-sm text-slate-600">
             <input

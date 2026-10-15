@@ -4,6 +4,7 @@ import { getHealth, setHealth, submitTemplates, syncTemplateStatus } from "@/lib
 import { checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
 import { runDailyBatches } from "@/lib/batches";
 import { pullMetaLeads } from "@/lib/meta-leads";
+import { syncAdSpend } from "@/lib/meta-ads";
 
 // Called every minute by the server's scheduler (cron, Vercel Cron, or the worker script).
 export async function GET(request: Request) {
@@ -25,6 +26,10 @@ export async function GET(request: Request) {
   if (minute % 2 === 1 && (process.env.META_LEADS_TOKEN || process.env.WHATSAPP_TOKEN)) {
     // New Facebook and Instagram form leads, read straight from the forms
     meta.forms = await pullMetaLeads().catch((e: Error) => ({ error: e.message }));
+  }
+  if (minute % 30 === 20 && (process.env.META_ADS_TOKEN || process.env.META_LEADS_TOKEN)) {
+    // What each campaign spent, to put a cost on leads and sales (the first read brings 90 days)
+    meta.ads = await syncAdSpend().catch((e: Error) => ({ error: e.message }));
   }
   if (minute % 10 === 5) {
     // Meta's own answer on whether the number can send (a pending payment blocks it): pauses the

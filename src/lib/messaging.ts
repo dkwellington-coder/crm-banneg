@@ -1,7 +1,7 @@
 import type { Lead } from "@prisma/client";
 import { db } from "./db";
 import { logEvent } from "./events";
-import { isWindowOpen, sendButtons, sendMedia, sendTemplate, sendText, type SendResult } from "./whatsapp";
+import { isWindowOpen, mediaKind, sendButtons, sendMedia, sendTemplate, sendText, type SendResult } from "./whatsapp";
 import { getSettings, isTestContact } from "./settings";
 
 export type SendOptions = {
@@ -33,7 +33,7 @@ export function findMaterial(body: string, materials: string[]) {
   const url = materials.find((m) => m && body.includes(m));
   if (!url) return null;
   const file = url.split("/").pop() ?? "";
-  const kind = /\.mp4$/i.test(file) ? "video" : /\.pdf$/i.test(file) ? "document" : /\.(jpe?g|png)$/i.test(file) ? "image" : null;
+  const kind = mediaKind(file);
   if (!kind) return null;
   // "está aqui: <link>. Depois..." -> "está aqui. Depois..."; "vídeo do Wellington: <link>\n\nSe puder" -> "vídeo do Wellington.\n\nSe puder"
   const at = body.indexOf(url);
@@ -59,7 +59,7 @@ export async function sendWhatsApp(lead: Lead, body: string, author: string, opt
   const simulated = settings.testMode && !isTestContact(settings, lead.phone);
   const open = isWindowOpen(lead.lastInboundAt);
 
-  let template: { name: string; language: string; body: string; active: boolean } | null = null;
+  let template: { name: string; language: string; body: string; active: boolean; headerUrl: string | null } | null = null;
   if (!open) {
     if (o.templateName) {
       template = await db.whatsAppTemplate.findUnique({ where: { name: o.templateName } });
@@ -97,10 +97,13 @@ export async function sendWhatsApp(lead: Lead, body: string, author: string, opt
   }
   let res: SendResult;
   if (template) {
-    res = await sendTemplate(lead.phone, template.name, template.language, params);
+    res = await sendTemplate(lead.phone, template.name, template.language, params, template.headerUrl);
   } else {
     const material = findMaterial(body, Object.values(settings.materials));
-    if (material) res = await sendMedia(lead.phone, material.kind, material.url, material.caption, material.filename);
+    // Video and buttons in one message: the video on top, the text and the buttons below
+    if (material && o.buttons?.length)
+      res = await sendButtons(lead.phone, material.caption, o.buttons, { kind: material.kind, link: material.url, filename: material.filename });
+    else if (material) res = await sendMedia(lead.phone, material.kind, material.url, material.caption, material.filename);
     else if (o.buttons?.length) res = await sendButtons(lead.phone, body, o.buttons);
     else res = await sendText(lead.phone, body);
   }

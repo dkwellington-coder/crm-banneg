@@ -6,6 +6,7 @@ import { formatSlot, freeSlotsFor, googleAccessToken, googleBusy } from "./calen
 import { getSettings } from "./settings";
 import { normalizePhone, sendTemplate, sendText, submitTemplates, syncTemplateStatus } from "./whatsapp";
 import { funnelForForm, leadForms, retryMetaLeadsNow } from "./meta-leads";
+import { adAccounts, syncAdSpend } from "./meta-ads";
 
 export type CheckResult = { ok: boolean; message: string; details?: string[] };
 
@@ -200,6 +201,22 @@ export async function checkMetaLeads(): Promise<CheckResult> {
     );
     await retryMetaLeadsNow();
     return { ok: true, message: `${count} formulários ativos. Os leads novos entram sozinhos a cada 2 minutos.`, details };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+/** Reads the ad accounts and brings their spend now, instead of waiting for the next half hour. */
+export async function checkMetaAds(): Promise<CheckResult> {
+  try {
+    const accounts = await adAccounts();
+    const res = await syncAdSpend();
+    if ("error" in res) return { ok: false, message: res.error ?? "Erro ao ler os anúncios." };
+    return {
+      ok: true,
+      message: `${accounts.length} conta(s) de anúncios lida(s). O investimento por campanha aparece no Painel.`,
+      details: accounts.map((a) => a.name),
+    };
   } catch (e) {
     return fail(e);
   }

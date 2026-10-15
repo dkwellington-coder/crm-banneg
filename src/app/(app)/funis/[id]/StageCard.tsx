@@ -10,6 +10,7 @@ import {
   CheckSquare,
   Clock,
   Hourglass,
+  MousePointerClick,
   Mail,
   MessageCircle,
   Pause,
@@ -191,7 +192,7 @@ export function StageCard({
 
 function RuleRow({ rule, label, canEdit, onEdit }: { rule: RuleData; label: string; canEdit: boolean; onEdit: () => void }) {
   const Icon = ACTION_ICON[rule.action] ?? Zap;
-  const TriggerIcon = rule.trigger === "idle" ? Hourglass : rule.trigger === "daily" ? CalendarClock : Clock;
+  const TriggerIcon = rule.trigger === "idle" ? Hourglass : rule.trigger === "daily" ? CalendarClock : rule.trigger === "answer" ? MousePointerClick : Clock;
   return (
     <div className={`group flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50/60 px-3 py-2 ${rule.active ? "" : "opacity-50"}`}>
       <button

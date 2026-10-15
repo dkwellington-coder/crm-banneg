@@ -2,7 +2,7 @@ import type { Lead, LeadStatus, Prisma } from "@prisma/client";
 import { db } from "./db";
 import { logEvent } from "./events";
 import { cancelJobs, enqueueDebounced } from "./queue";
-import { cancelRuleJobs, scheduleStageRules } from "./automations";
+import { cancelRuleJobs, scheduleAnswerRules, scheduleStageRules } from "./automations";
 import { normalizePhone } from "./whatsapp";
 import { sendWhatsApp } from "./messaging";
 import { STAGE_KEYS } from "./plan";
@@ -137,6 +137,9 @@ export async function handleInbound(input: { phone: string; profileName?: string
   // The lead answered: the "sem resposta" clock starts over
   await cancelRuleJobs(lead.id, "idle");
   await scheduleStageRules(lead, "idle");
+  // A tapped button ("Quero ver") moves the lead on and the next stage's message answers it
+  const answered = await scheduleAnswerRules(lead, input.body, input.externalId);
+  if (answered.matched && !answered.aiReplies) return lead;
   if (lead.sdrId && !lead.aiPaused && ["NEW", "AI_QUALIFYING", "QUALIFIED", "NURTURING"].includes(lead.status)) {
     // Wait a few seconds so several short messages get one answer
     await enqueueDebounced("sdr.reply", lead.id, Number(process.env.SDR_DEBOUNCE_MS ?? 15_000));

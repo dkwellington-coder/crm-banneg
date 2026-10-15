@@ -11,7 +11,8 @@ export const ACTIONS = {
 
 export type ActionKey = keyof typeof ACTIONS;
 // daily: the stage is a queue and the rule releases up to perDay leads each business day
-export type RuleTrigger = "enter" | "idle" | "daily";
+// answer: the lead answered with one of config.answers (usually a button it tapped)
+export type RuleTrigger = "enter" | "idle" | "daily" | "answer";
 
 export type RuleConfig = {
   text?: string;
@@ -25,7 +26,25 @@ export type RuleConfig = {
   buttons?: string[];
   // daily: how many leads leave the queue per business day
   perDay?: number;
+  // answer: what the lead answered, usually the title of a button it tapped
+  answers?: string[];
+  // answer: the AI also answers the message (by default the stage's own messages do)
+  aiReplies?: boolean;
 };
+
+const normalizeAnswer = (s: string) =>
+  s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+
+/** Whether what the lead wrote is one of the rule's answers: the tapped button, or the same words typed. */
+export function matchesAnswer(body: string, answers: string[] = []) {
+  const said = normalizeAnswer(body);
+  return !!said && answers.some((a) => normalizeAnswer(a) === said);
+}
 
 export const UNITS = [
   { key: "min", label: "minutos", minutes: 1 },
@@ -50,6 +69,7 @@ export function delayLabel(minutes: number) {
 export function triggerLabel(trigger: string, delayMinutes: number, config: RuleConfig = {}) {
   if (trigger === "daily") return `Fila: ${config.perDay ?? 100} leads por dia útil, das 9h às 18h`;
   if (trigger === "idle") return `Sem resposta do lead por ${delayLabel(delayMinutes)}`;
+  if (trigger === "answer") return `Quando o lead responder ${(config.answers ?? []).map((a) => `“${a}”`).join(" ou ")}${config.aiReplies ? " (a IA também responde)" : ""}`;
   return delayMinutes === 0 ? "Assim que entrar na etapa" : `${delayLabel(delayMinutes)} depois de entrar`;
 }
 

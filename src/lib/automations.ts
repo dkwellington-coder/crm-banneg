@@ -1,7 +1,7 @@
 import type { Lead, Prisma } from "@prisma/client";
 import { db } from "./db";
 import { enqueue } from "./queue";
-import { ruleRunAt } from "./rules";
+import { matchesAnswer, ruleRunAt, type RuleConfig } from "./rules";
 
 export type RuleJobPayload = {
   ruleId: string;
@@ -46,6 +46,38 @@ export async function scheduleStageRules(lead: Pick<Lead, "id" | "stageId" | "st
     });
   }
   return rules.length;
+}
+
+/**
+ * The lead answered: runs the stage's "answer" rules whose answer matches (usually the button it
+ * tapped), in order. Says whether any matched, so the AI stays quiet while the stage's own
+ * messages answer, unless a rule asks the AI to answer too.
+ */
+export async function scheduleAnswerRules(lead: Pick<Lead, "id" | "stageId" | "stageEnteredAt">, body: string, messageKey: string) {
+  const rules = await db.automationRule.findMany({
+    where: { stageId: lead.stageId, active: true, trigger: "answer" },
+    orderBy: { position: "asc" },
+  });
+  const matched = rules.filter((r) => matchesAnswer(body, (r.config as RuleConfig).answers));
+  const now = new Date();
+  for (const rule of matched) {
+    const payload: RuleJobPayload = {
+      ruleId: rule.id,
+      stageId: lead.stageId,
+      enteredAt: lead.stageEnteredAt.toISOString(),
+      idle: false,
+      keep: false,
+      since: now.toISOString(),
+    };
+    await enqueue("rule.run", {
+      leadId: lead.id,
+      payload,
+      runAt: ruleRunAt(now, rule.delayMinutes, rule.position),
+      dedupeKey: `rule:${rule.id}:${lead.id}:answer:${messageKey}`,
+      maxAttempts: rule.action === "whatsapp" || rule.action === "email" ? 5 : 3,
+    });
+  }
+  return { matched: matched.length > 0, aiReplies: matched.some((r) => (r.config as RuleConfig).aiReplies) };
 }
 
 /**

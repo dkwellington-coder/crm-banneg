@@ -297,21 +297,23 @@ model EmailTemplate {
 }
 
 model WhatsAppTemplate {
-  id       String  @id @default(cuid())
-  name     String  @unique
-  language String  @default("pt_BR")
-  body     String
-  purpose  String  @default("reengagement")
+  id        String  @id @default(cuid())
+  name      String  @unique
+  language  String  @default("pt_BR")
+  body      String
+  purpose   String  @default("reengagement")
   // true = approved by Meta, so the CRM may send it
-  active   Boolean @default(true)
+  active    Boolean @default(true)
   // MARKETING | UTILITY, as submitted to Meta
-  category String  @default("MARKETING")
+  category  String  @default("MARKETING")
   // Quick reply button labels, in order
-  buttons  Json    @default("[]")
+  buttons   Json    @default("[]")
+  // Public video, PDF or image shown above the text (a video header goes with the message itself)
+  headerUrl String?
   // draft (only in the CRM) | PENDING | APPROVED | REJECTED | PAUSED | DISABLED, as Meta reports it
-  status   String  @default("APPROVED")
+  status    String  @default("APPROVED")
   // Meta's reason when it rejects the template
-  metaNote String?
+  metaNote  String?
 }
 
 model Macro {
@@ -331,4 +333,23 @@ model KnowledgeItem {
 model Setting {
   key   String @id
   value Json
+}
+
+// What Meta charged per campaign per day, read from the ad accounts, to put a cost on each lead and sale
+model AdSpend {
+  // date:campaignId
+  id           String   @id
+  date         DateTime @db.Date
+  accountId    String
+  campaignId   String
+  campaignName String
+  // Reais
+  spend        Float    @default(0)
+  impressions  Int      @default(0)
+  clicks       Int      @default(0)
+  // Leads Meta counted for the campaign, to compare with what reached the CRM
+  metaLeads    Int      @default(0)
+  updatedAt    DateTime @updatedAt
+
+  @@index([date])
 }
