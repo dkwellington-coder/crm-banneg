@@ -50,7 +50,7 @@ async function get<T>(path: string, accessToken: string): Promise<T> {
     const message = json.error?.message ?? `HTTP ${res.status}`;
     throw new Error(
       code !== undefined && PERMISSION_CODES.has(code)
-        ? `O token da Meta não tem permissão para ler os formulários (${message}). Ele precisa da Página atribuída com acesso a leads e das permissões leads_retrieval e pages_show_list.`
+        ? `O token da Meta não tem permissão para ler os formulários (${message}). Ele precisa da Página atribuída e das permissões leads_retrieval, pages_show_list, pages_read_engagement e pages_manage_ads.`
         : message,
     );
   }
@@ -113,6 +113,12 @@ async function loadState(): Promise<MetaLeadsState> {
 
 async function saveState(value: MetaLeadsState) {
   await db.setting.upsert({ where: { key: "meta_leads" }, create: { key: "meta_leads", value }, update: { value } });
+}
+
+/** After a successful check from the screen, the next tick reads the forms without waiting out the retry. */
+export async function retryMetaLeadsNow() {
+  const state = await loadState();
+  if (state.error) await saveState({ ...state, error: null });
 }
 
 /** Reads the new leads of every active form and creates them in the right funnel. Called by the cron. */

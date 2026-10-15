@@ -5,7 +5,7 @@ import { sendEmail } from "./email";
 import { formatSlot, freeSlotsFor, googleAccessToken, googleBusy } from "./calendar";
 import { getSettings } from "./settings";
 import { normalizePhone, sendTemplate, sendText, submitTemplates, syncTemplateStatus } from "./whatsapp";
-import { funnelForForm, leadForms } from "./meta-leads";
+import { funnelForForm, leadForms, retryMetaLeadsNow } from "./meta-leads";
 
 export type CheckResult = { ok: boolean; message: string; details?: string[] };
 
@@ -198,6 +198,7 @@ export async function checkMetaLeads(): Promise<CheckResult> {
     const details = groups.flatMap((g) =>
       g.forms.length ? g.forms.map((f) => `${g.page.name}: "${f.name}" entra no funil ${funnelForForm(f.name) ?? "franquias (padrão)"}`) : [`${g.page.name}: nenhum formulário ativo`],
     );
+    await retryMetaLeadsNow();
     return { ok: true, message: `${count} formulários ativos. Os leads novos entram sozinhos a cada 2 minutos.`, details };
   } catch (e) {
     return fail(e);

@@ -123,4 +123,12 @@ describe.skipIf(!dbUrl)("reading the forms", () => {
     failWith = null;
     expect(await metaLeads.pullMetaLeads(at("2026-10-15T13:31:00Z"))).toEqual({ created: 0, forms: 2 });
   });
+
+  it("a successful check from the screen lets the next tick read right away", async () => {
+    failWith = { code: 200, message: "(#200) Requires leads_retrieval permission" };
+    await metaLeads.pullMetaLeads(at("2026-10-15T13:00:00Z"));
+    failWith = null;
+    await metaLeads.retryMetaLeadsNow();
+    expect(await metaLeads.pullMetaLeads(at("2026-10-15T13:02:00Z"))).toEqual({ created: 0, forms: 2 });
+  });
 });

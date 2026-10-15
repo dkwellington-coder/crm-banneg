@@ -161,8 +161,9 @@ async function Integrations() {
           formulário). O CRM antigo continua recebendo também, então nada é cortado.
         </p>
         <ol className="list-decimal space-y-1 pl-5">
-          <Step>Meta Business &gt; Usuários do sistema: atribua a Página do Banneg ao usuário, com acesso a leads.</Step>
-          <Step>Gere um token com leads_retrieval, pages_show_list e pages_read_engagement e cole em META_LEADS_TOKEN (ou use o mesmo do WhatsApp, se ele já tiver essas permissões).</Step>
+          <Step>Meta Business &gt; Usuários do sistema: no usuário do WhatsApp, atribua a Página do Banneg com controle total.</Step>
+          <Step>Gere um token novo desse usuário com leads_retrieval, pages_show_list, pages_read_engagement e pages_manage_ads e salve no Vercel como META_LEADS_TOKEN.</Step>
+          <Step>Clique em Conferir formulários: os leads novos começam a entrar em até 2 minutos.</Step>
         </ol>
         {forms?.at && (
           <div className={`text-sm ${forms.error ? "text-amber-700" : "text-emerald-700"}`}>
