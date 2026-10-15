@@ -29,6 +29,8 @@ type MetaLeadsState = {
   seen?: string[];
   // Funnel chosen by hand for a form: { formId: "produtos" }
   forms?: Record<string, string>;
+  // The active forms as last read, with the funnel each one feeds (null = the default funnel)
+  names?: Record<string, { name: string; page: string; funnel: string | null }>;
   at?: string;
   error?: string | null;
   found?: number;
@@ -128,11 +130,14 @@ export async function pullMetaLeads(now = new Date()) {
   if (state.error && state.at && now.getTime() - Date.parse(state.at) < RETRY_AFTER_ERROR_MS) return { skipped: state.error };
   const cursors = { ...state.cursors };
   const seen = new Set(state.seen ?? []);
+  const names: NonNullable<MetaLeadsState["names"]> = {};
   let created = 0;
   try {
     const groups = await leadForms();
-    for (const { token: pageToken, forms } of groups) {
+    for (const { page, token: pageToken, forms } of groups) {
       for (const form of forms) {
+        const funnel = state.forms?.[form.id] ?? funnelForForm(form.name);
+        names[form.id] = { name: form.name, page: page.name, funnel };
         const since = cursors[form.id];
         if (since === undefined) {
           // Older form leads come in with the exports of the old CRM, into the old-leads queue
@@ -150,7 +155,7 @@ export async function pullMetaLeads(now = new Date()) {
           seen.add(l.id);
           const fields = mapFields(l.field_data);
           if (!fields.phone && !fields.email) continue;
-          const pipeline = await pipelineByRef(state.forms?.[form.id] ?? funnelForForm(form.name));
+          const pipeline = await pipelineByRef(funnel);
           const r = await createLead(
             {
               name: fields.name,
@@ -172,7 +177,7 @@ export async function pullMetaLeads(now = new Date()) {
       }
     }
     const found = groups.reduce((n, g) => n + g.forms.length, 0);
-    await saveState({ ...state, cursors, seen: [...seen].slice(-500), at: now.toISOString(), error: null, found, created: (state.created ?? 0) + created });
+    await saveState({ ...state, cursors, names, seen: [...seen].slice(-500), at: now.toISOString(), error: null, found, created: (state.created ?? 0) + created });
     return { created, forms: found };
   } catch (e) {
     const error = (e as Error).message;

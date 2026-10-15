@@ -57,7 +57,7 @@ async function Integrations() {
   const user = await requireUser();
   const h = await headers();
   const origin = `${h.get("x-forwarded-proto") ?? "https"}://${h.get("host")}`;
-  const [settings, lastInbound, users, templates, drafts, pending, formsRow] = await Promise.all([
+  const [settings, lastInbound, users, templates, drafts, pending, formsRow, pipelines] = await Promise.all([
     getSettings(),
     db.message.findFirst({ where: { direction: "IN", channel: "WHATSAPP" }, orderBy: { createdAt: "desc" } }),
     db.user.findMany({ where: { role: { in: ["OWNER", "MANAGER"] } }, orderBy: { name: "asc" } }),
@@ -65,8 +65,13 @@ async function Integrations() {
     db.whatsAppTemplate.count({ where: { status: "draft" } }),
     db.whatsAppTemplate.count({ where: { status: "PENDING" } }),
     db.setting.findUnique({ where: { key: "meta_leads" } }),
+    db.pipeline.findMany({ select: { slug: true, name: true, isDefault: true }, orderBy: { position: "asc" } }),
   ]);
-  const forms = formsRow?.value as { at?: string; error?: string | null; found?: number; created?: number } | undefined;
+  const forms = formsRow?.value as
+    | { at?: string; error?: string | null; found?: number; created?: number; names?: Record<string, { name: string; page: string; funnel: string | null }> }
+    | undefined;
+  const fallbackFunnel = (pipelines.find((p) => p.isDefault) ?? pipelines[0])?.name ?? "funil padrão";
+  const funnelName = (slug: string | null) => pipelines.find((p) => p.slug === slug)?.name ?? fallbackFunnel;
   const owner = user.role === "OWNER";
 
   return (
@@ -171,6 +176,18 @@ async function Integrations() {
               ? `Última tentativa ${relTime(new Date(forms.at))}: ${forms.error}`
               : `Lido ${relTime(new Date(forms.at))}: ${forms.found ?? 0} formulários ativos, ${forms.created ?? 0} leads novos trazidos até agora.`}
           </div>
+        )}
+        {!forms?.error && forms?.names && Object.keys(forms.names).length > 0 && (
+          <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 text-sm">
+            {Object.entries(forms.names)
+              .sort(([, a], [, b]) => a.name.localeCompare(b.name))
+              .map(([id, f]) => (
+                <li key={id} className="flex items-center justify-between gap-3 px-3 py-1.5">
+                  <span className="truncate text-slate-700">{f.name}</span>
+                  <span className="shrink-0 text-xs text-slate-500">{funnelName(f.funnel)}</span>
+                </li>
+              ))}
+          </ul>
         )}
         <TestButton kind="meta_forms" label="Conferir formulários" />
       </Block>

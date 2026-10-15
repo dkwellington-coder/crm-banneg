@@ -96,6 +96,11 @@ describe.skipIf(!dbUrl)("reading the forms", () => {
     leadsByForm.f1 = [lead("L0", "2026-10-01T10:00:00+0000", { full_name: "Velho", phone_number: "11900000001" })];
     expect(await metaLeads.pullMetaLeads(at("2026-10-15T13:00:00Z"))).toEqual({ created: 0, forms: 2 });
     expect(await db.lead.count()).toBe(0);
+    const state = (await db.setting.findUniqueOrThrow({ where: { key: "meta_leads" } })).value as { names: Record<string, unknown> };
+    expect(state.names).toEqual({
+      f1: { name: "Franquia Banneg", page: "Banneg", funnel: "franquias" },
+      f2: { name: "Cotação seguro auto", page: "Banneg", funnel: "produtos" },
+    });
 
     leadsByForm.f1 = [lead("L1", "2026-10-15T13:01:00+0000", { full_name: "Ana Souza", phone_number: "+55 11 98888-7777", cidade: "Campinas" })];
     leadsByForm.f2 = [lead("L2", "2026-10-15T13:01:30+0000", { full_name: "Caio Reis", email: "caio@x.com", "qual_seguro?": "Auto" }, "ig")];
