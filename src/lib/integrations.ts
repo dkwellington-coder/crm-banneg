@@ -7,6 +7,7 @@ import { getSettings } from "./settings";
 import { normalizePhone, sendTemplate, sendText, submitTemplates, syncTemplateStatus } from "./whatsapp";
 import { funnelForForm, leadForms, retryMetaLeadsNow } from "./meta-leads";
 import { adAccounts, syncAdSpend } from "./meta-ads";
+import { forwardTarget } from "./whatsapp-forward";
 
 export type CheckResult = { ok: boolean; message: string; details?: string[] };
 
@@ -80,8 +81,14 @@ export async function receiveWhatsAppHere(): Promise<CheckResult> {
   try {
     await graphPost(`${waba}/subscribed_apps`, { override_callback_uri: WEBHOOK_URL, verify_token: process.env.WHATSAPP_VERIFY_TOKEN });
     const now = await whatsappWebhookTarget();
+    const copy = await forwardTarget().catch(() => null);
     return now.here
-      ? { ok: true, message: "As mensagens do WhatsApp agora chegam neste CRM." }
+      ? {
+          ok: true,
+          message: copy
+            ? `As mensagens do WhatsApp agora chegam neste CRM, e uma cópia continua indo para o CRM antigo (${new URL(copy).host}).`
+            : "As mensagens do WhatsApp agora chegam neste CRM.",
+        }
       : { ok: false, message: `A Meta aceitou, mas o endereço ainda é ${now.uri ?? "o do aplicativo"}.` };
   } catch (e) {
     return fail(e);
@@ -139,6 +146,11 @@ export async function checkWhatsApp(): Promise<CheckResult> {
     if (WHATSAPP_BUSINESS_ACCOUNT_ID) {
       const target = await whatsappWebhookTarget().catch(() => null);
       if (target) details.push(target.here ? "Mensagens recebidas: neste CRM." : "Mensagens recebidas: ainda no CRM antigo.");
+      const copy = await forwardTarget().catch(() => null);
+      if (copy)
+        details.push(
+          `${target?.here ? "Uma cópia de cada mensagem continua indo" : "Quando as mensagens vierem para cá, uma cópia continua indo"} para o CRM antigo (${new URL(copy).host}).`,
+        );
     }
     return { ok: true, message: `Conectado ao número ${n.display_phone_number} (${n.verified_name}).`, details };
   } catch (e) {

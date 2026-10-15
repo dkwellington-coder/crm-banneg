@@ -5,6 +5,7 @@ import { checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
 import { runDailyBatches } from "@/lib/batches";
 import { pullMetaLeads } from "@/lib/meta-leads";
 import { syncAdSpend } from "@/lib/meta-ads";
+import { forwardTarget } from "@/lib/whatsapp-forward";
 
 // Called every minute by the server's scheduler (cron, Vercel Cron, or the worker script).
 export async function GET(request: Request) {
@@ -38,6 +39,8 @@ export async function GET(request: Request) {
     if (sending?.problem) await setHealth(sending.problem);
     else if (sending?.canSend && (await getHealth())) await setHealth(null);
     if (sending) meta.sending = sending;
+    // Where copies of the WhatsApp messages go (the old CRM); asked from Meta at most once an hour
+    meta.copyTo = await forwardTarget().catch((e: Error) => ({ error: e.message }));
   }
   if (minute % 30 === 0) {
     // Kept for the Integrações screen and for support: which number is connected and its sending tier

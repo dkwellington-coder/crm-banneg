@@ -1,7 +1,9 @@
+import { after } from "next/server";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { handleInbound } from "@/lib/leads";
 import { classifyError, messageText, setHealth, verifySignature, type WebhookPayload } from "@/lib/whatsapp";
+import { forwardCopy } from "@/lib/whatsapp-forward";
 
 // Meta calls this once to confirm the webhook URL
 export async function GET(request: Request) {
@@ -17,6 +19,8 @@ export async function POST(request: Request) {
   if (!verifySignature(raw, request.headers.get("x-hub-signature-256"))) {
     return new Response("invalid signature", { status: 401 });
   }
+  // The old CRM keeps getting every message too (Wellington's choice while both are in use)
+  after(() => forwardCopy(raw, request.headers));
   const payload = JSON.parse(raw) as WebhookPayload;
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
