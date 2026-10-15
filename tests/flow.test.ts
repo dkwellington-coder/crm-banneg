@@ -225,6 +225,15 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect((await db.message.findFirstOrThrow({ where: { leadId: mine.id, direction: "OUT" } })).status).toBe("SENT");
   });
 
+  it("first contact prefers a utility template, which Meta does not hold back from people who never wrote", async () => {
+    await db.whatsAppTemplate.deleteMany();
+    await db.whatsAppTemplate.create({ data: { name: "a_primeiro_contato", body: "Olá, {{1}}! Posso te enviar?", purpose: "first_contact", category: "MARKETING" } });
+    await db.whatsAppTemplate.create({ data: { name: "z_cadastro_recebido", body: "Olá, {{1}}! Recebemos o seu cadastro.", purpose: "first_contact", category: "UTILITY" } });
+    await leads.createLead({ name: "Iara Melo", phone: "11922223333", source: "site" }, "teste");
+    await drain();
+    expect(raw.at(-1)).toMatchObject({ type: "template", template: { name: "z_cadastro_recebido" } });
+  });
+
   it("sends the kit: template signed by the lead's SDR, materials as video, and stops on request", async () => {
     await db.whatsAppTemplate.deleteMany();
     await db.whatsAppTemplate.create({

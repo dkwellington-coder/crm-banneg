@@ -217,10 +217,13 @@ export async function syncTemplateStatus() {
   const changed: string[] = [];
   for (const m of res.data) {
     const local = await db.whatsAppTemplate.findUnique({ where: { name: m.name } });
-    if (!local || local.status === m.status) continue;
+    if (!local) continue;
+    // Meta may move a utility template to marketing, which it can hold back from people who never wrote
+    const category = m.category ?? local.category;
+    if (local.status === m.status && local.category === category) continue;
     const note = m.rejected_reason && m.rejected_reason !== "NONE" ? m.rejected_reason : null;
-    await db.whatsAppTemplate.update({ where: { id: local.id }, data: { status: m.status, active: m.status === "APPROVED", metaNote: note } });
-    changed.push(`${m.name}: ${m.status}`);
+    await db.whatsAppTemplate.update({ where: { id: local.id }, data: { status: m.status, active: m.status === "APPROVED", metaNote: note, category } });
+    changed.push(`${m.name}: ${m.status}${category !== local.category ? ` (${category})` : ""}`);
   }
   return { changed };
 }

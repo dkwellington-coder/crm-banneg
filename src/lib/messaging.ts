@@ -69,7 +69,11 @@ export async function sendWhatsApp(lead: Lead, body: string, author: string, opt
     } else if (o.purpose || !o.automatic) {
       const usable = simulated ? {} : { active: true };
       // Never an unrelated template: a lead in proposal must not get the "pausing your service" one
-      template = await db.whatsAppTemplate.findFirst({ where: { ...usable, purpose: o.purpose ?? "reengagement" }, orderBy: [{ active: "desc" }, { name: "asc" }] });
+      // Utility before marketing: Meta can hold marketing templates back from people who never wrote
+      template = await db.whatsAppTemplate.findFirst({
+        where: { ...usable, purpose: o.purpose ?? "reengagement" },
+        orderBy: [{ active: "desc" }, { category: "desc" }, { name: "asc" }],
+      });
       if (!template && o.automatic) return { ok: true, skipped: "Ignorado: janela de 24 h fechada e o modelo da Meta para esta mensagem ainda não foi aprovado." };
       if (!template) throw new Error("Janela de 24 h fechada: o lead não escreve há mais de 24 h e o modelo de retomada ainda não foi aprovado pela Meta.");
     } else {
