@@ -5,6 +5,7 @@ import { sendEmail } from "./email";
 import { formatSlot, freeSlotsFor, googleAccessToken, googleBusy } from "./calendar";
 import { getSettings } from "./settings";
 import { normalizePhone, sendTemplate, sendText, submitTemplates, syncTemplateStatus } from "./whatsapp";
+import { funnelForForm, leadForms } from "./meta-leads";
 
 export type CheckResult = { ok: boolean; message: string; details?: string[] };
 
@@ -187,6 +188,20 @@ export async function sendWhatsAppTest(rawPhone: string): Promise<CheckResult> {
   return res.ok
     ? { ok: true, message: `Enviado pelo modelo "${template.name}" (o número não escreveu nas últimas 24 h). Responda no celular para testar o recebimento.` }
     : { ok: false, message: res.error };
+}
+
+/** Lists the Facebook and Instagram lead forms the CRM reads and the funnel each one feeds. */
+export async function checkMetaLeads(): Promise<CheckResult> {
+  try {
+    const groups = await leadForms();
+    const count = groups.reduce((n, g) => n + g.forms.length, 0);
+    const details = groups.flatMap((g) =>
+      g.forms.length ? g.forms.map((f) => `${g.page.name}: "${f.name}" entra no funil ${funnelForForm(f.name) ?? "franquias (padrão)"}`) : [`${g.page.name}: nenhum formulário ativo`],
+    );
+    return { ok: true, message: `${count} formulários ativos. Os leads novos entram sozinhos a cada 2 minutos.`, details };
+  } catch (e) {
+    return fail(e);
+  }
 }
 
 /** Sends the kit's templates to Meta for review, straight from the CRM. */

@@ -522,6 +522,7 @@ export async function testIntegrationAction(_: TestState, form: FormData): Promi
     webhook_back: () => integrations.giveWhatsAppBack(),
     email: () => integrations.sendEmailTest(String(form.get("to") || user.email)),
     calendar: () => integrations.checkCalendar(String(form.get("userId") || user.id)),
+    meta_forms: () => integrations.checkMetaLeads(),
   }[kind];
   if (!run) return { kind, ok: false, message: "Teste desconhecido." };
   const res = await run();

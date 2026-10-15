@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { getHealth, setHealth, submitTemplates, syncTemplateStatus } from "@/lib/whatsapp";
 import { checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
 import { runDailyBatches } from "@/lib/batches";
+import { pullMetaLeads } from "@/lib/meta-leads";
 
 // Called every minute by the server's scheduler (cron, Vercel Cron, or the worker script).
 export async function GET(request: Request) {
@@ -20,6 +21,10 @@ export async function GET(request: Request) {
     // Templates under Meta's review: start using the approved ones
     if (await db.whatsAppTemplate.count({ where: { status: { in: ["PENDING", "IN_APPEAL"] } } }))
       meta.synced = await syncTemplateStatus().catch((e: Error) => e.message);
+  }
+  if (minute % 2 === 1 && (process.env.META_LEADS_TOKEN || process.env.WHATSAPP_TOKEN)) {
+    // New Facebook and Instagram form leads, read straight from the forms
+    meta.forms = await pullMetaLeads().catch((e: Error) => ({ error: e.message }));
   }
   if (minute % 10 === 5) {
     // Meta's own answer on whether the number can send (a pending payment blocks it): pauses the

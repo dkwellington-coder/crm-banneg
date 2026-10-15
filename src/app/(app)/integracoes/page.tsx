@@ -1,6 +1,6 @@
 import { Suspense, type ReactNode } from "react";
 import { headers } from "next/headers";
-import { Bot, CalendarDays, Copy, FlaskConical, Mail, MessageCircle, ShieldCheck, Webhook, type LucideIcon } from "lucide-react";
+import { Bot, CalendarDays, ClipboardList, Copy, FlaskConical, Mail, MessageCircle, ShieldCheck, Webhook, type LucideIcon } from "lucide-react";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
@@ -57,14 +57,16 @@ async function Integrations() {
   const user = await requireUser();
   const h = await headers();
   const origin = `${h.get("x-forwarded-proto") ?? "https"}://${h.get("host")}`;
-  const [settings, lastInbound, users, templates, drafts, pending] = await Promise.all([
+  const [settings, lastInbound, users, templates, drafts, pending, formsRow] = await Promise.all([
     getSettings(),
     db.message.findFirst({ where: { direction: "IN", channel: "WHATSAPP" }, orderBy: { createdAt: "desc" } }),
     db.user.findMany({ where: { role: { in: ["OWNER", "MANAGER"] } }, orderBy: { name: "asc" } }),
     db.whatsAppTemplate.count({ where: { active: true } }),
     db.whatsAppTemplate.count({ where: { status: "draft" } }),
     db.whatsAppTemplate.count({ where: { status: "PENDING" } }),
+    db.setting.findUnique({ where: { key: "meta_leads" } }),
   ]);
+  const forms = formsRow?.value as { at?: string; error?: string | null; found?: number; created?: number } | undefined;
   const owner = user.role === "OWNER";
 
   return (
@@ -151,6 +153,25 @@ async function Integrations() {
             Leads do site e formulários: POST em {origin}/api/leads com o cabeçalho Authorization: Bearer LEADS_API_TOKEN.
           </div>
         </div>
+      </Block>
+
+      <Block icon={ClipboardList} color="#1877f2" title="Formulários do Facebook e Instagram" missing={process.env.META_LEADS_TOKEN || process.env.WHATSAPP_TOKEN ? [] : ["META_LEADS_TOKEN"]}>
+        <p className="text-sm text-slate-600">
+          O CRM lê os leads novos direto dos formulários a cada 2 minutos e coloca cada um no funil certo (franquia, produtos ou sindicatos, pelo nome do
+          formulário). O CRM antigo continua recebendo também, então nada é cortado.
+        </p>
+        <ol className="list-decimal space-y-1 pl-5">
+          <Step>Meta Business &gt; Usuários do sistema: atribua a Página do Banneg ao usuário, com acesso a leads.</Step>
+          <Step>Gere um token com leads_retrieval, pages_show_list e pages_read_engagement e cole em META_LEADS_TOKEN (ou use o mesmo do WhatsApp, se ele já tiver essas permissões).</Step>
+        </ol>
+        {forms?.at && (
+          <div className={`text-sm ${forms.error ? "text-amber-700" : "text-emerald-700"}`}>
+            {forms.error
+              ? `Última tentativa ${relTime(new Date(forms.at))}: ${forms.error}`
+              : `Lido ${relTime(new Date(forms.at))}: ${forms.found ?? 0} formulários ativos, ${forms.created ?? 0} leads novos trazidos até agora.`}
+          </div>
+        )}
+        <TestButton kind="meta_forms" label="Conferir formulários" />
       </Block>
 
       <Block icon={Mail} color="#0284c7" title="E-mails automáticos" missing={has("SMTP_HOST", "SMTP_USER", "SMTP_PASS")}>
