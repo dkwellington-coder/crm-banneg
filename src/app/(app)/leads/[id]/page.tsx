@@ -4,7 +4,8 @@ import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { isWindowOpen } from "@/lib/whatsapp";
-import { getSettings, messageVars } from "@/lib/settings";
+import { getSettings, isTestContact, messageVars } from "@/lib/settings";
+import { manualPurpose, templateFor } from "@/lib/messaging";
 import { fillVariables } from "@/lib/rules";
 import { Avatar, Card, Loading, STATUS_LABEL, TempBadge, btnGhostCls, fmt, inputCls, relTime } from "@/components/ui";
 import {
@@ -34,7 +35,7 @@ const QUAL_LABEL: Record<string, string> = {
 };
 
 async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"] }) {
-  await requireUser();
+  const user = await requireUser();
   const { id } = await params;
   const lead = await db.lead.findUnique({
     where: { id },
@@ -60,6 +61,12 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
   // Macros arrive ready to send: name, links to videos and PDFs already filled in
   const vars = messageVars(settings, lead, lead.sdr?.name ?? "");
   const windowOpen = isWindowOpen(lead.lastInboundAt);
+  // With the window closed, what the team types does not go: Meta only lets an approved template through
+  const closedTemplate =
+    !windowOpen && lead.phone ? await templateFor(manualPurpose(lead), settings.testMode && !isTestContact(settings, lead.phone)) : null;
+  const closedText = closedTemplate?.body
+    .replace("{{1}}", lead.name?.split(" ")[0] || "tudo bem")
+    .replace("{{2}}", lead.sdr?.name ?? user.name);
   const feed = [
     ...lead.messages.map((m) => ({ kind: "msg" as const, at: m.createdAt, m })),
     ...lead.events.filter((e) => e.type !== "lead.updated").map((e) => ({ kind: "event" as const, at: e.createdAt, e })),
@@ -226,7 +233,9 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
           <div className="mb-2 text-xs text-slate-500">
             {windowOpen
               ? `Janela de 24 h aberta (última mensagem do lead ${relTime(lead.lastInboundAt)}). Você pode escrever livremente.`
-              : "Janela de 24 h fechada: o CRM envia automaticamente um modelo aprovado pela Meta para reabrir a conversa."}
+              : closedText
+                ? `Janela de 24 h fechada: a Meta só deixa passar um modelo aprovado. Ao enviar, vai este, e não o que você escrever: “${closedText}” Quando o lead responder, você escreve livremente.`
+                : "Janela de 24 h fechada e não há modelo aprovado pela Meta para reabrir a conversa."}
             {lead.sdr && !lead.aiPaused && " Ao enviar, a IA pausa neste lead."}
           </div>
           <Composer leadId={lead.id} macros={macros.map((m) => ({ title: m.title, body: fillVariables(m.body, vars) }))} />

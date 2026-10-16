@@ -8,6 +8,7 @@ import { normalizePhone, sendTemplate, sendText, submitTemplates, syncTemplateSt
 import { funnelForForm, leadForms, retryMetaLeadsNow } from "./meta-leads";
 import { adAccounts, syncAdSpend } from "./meta-ads";
 import { forwardTarget } from "./whatsapp-forward";
+import { templateFor } from "./messaging";
 
 export type CheckResult = { ok: boolean; message: string; details?: string[] };
 
@@ -159,8 +160,9 @@ export async function checkWhatsApp(): Promise<CheckResult> {
 }
 
 /**
- * Copies the templates Meta already approved into the CRM, so the 24-hour rule works without
- * typing them by hand. Purpose is guessed from the name and can be changed in Ajustes.
+ * Copies the templates Meta already approved into the CRM, so automations can use them by name.
+ * They come from the old CRM ("reunião confirmada", "copa desconto"...), so they are never picked on
+ * their own for a use: that is for the CRM's own templates. The use can be changed in Ajustes.
  */
 export async function importWhatsAppTemplates(): Promise<CheckResult> {
   const waba = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
@@ -171,11 +173,9 @@ export async function importWhatsAppTemplates(): Promise<CheckResult> {
     const approved = res.data.filter((t) => t.status === "APPROVED");
     for (const t of approved) {
       const body = t.components.find((c) => c.type === "BODY")?.text ?? "";
-      const n = t.name.toLowerCase();
-      const purpose = /lembr|remind/.test(n) ? "reminder" : /follow|retom|cobr/.test(n) ? "followup" : /boas|bem_vindo|welcome|primeir|contato/.test(n) ? "first_contact" : "reengagement";
       await db.whatsAppTemplate.upsert({
         where: { name: t.name },
-        create: { name: t.name, language: t.language, body, purpose, status: "APPROVED", active: true },
+        create: { name: t.name, language: t.language, body, purpose: "importado", status: "APPROVED", active: true },
         update: { language: t.language, body, status: "APPROVED", active: true, metaNote: null },
       });
     }
@@ -193,8 +193,7 @@ export async function sendWhatsAppTest(rawPhone: string): Promise<CheckResult> {
   if (text.ok) return { ok: true, message: `Mensagem enviada para ${phone}. Responda no celular e veja se ela aparece em Conversas.` };
   // 131047: more than 24 h since the person last wrote to this number
   const template =
-    (await db.whatsAppTemplate.findFirst({ where: { active: true, purpose: "reengagement" }, orderBy: { name: "asc" } })) ??
-    (await db.whatsAppTemplate.findFirst({ where: { active: true }, orderBy: { name: "asc" } }));
+    (await templateFor("reengagement")) ?? (await db.whatsAppTemplate.findFirst({ where: { active: true }, orderBy: { name: "asc" } }));
   if (!template) return { ok: false, message: `${text.error} Para números que não escreveram nas últimas 24 h é preciso um modelo aprovado: envie os modelos para a Meta.` };
   const params = template.body.includes("{{2}}") ? ["teste", "Duda"] : template.body.includes("{{1}}") ? ["teste"] : [];
   const res = await sendTemplate(phone, template.name, template.language, params);

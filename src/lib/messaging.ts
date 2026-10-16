@@ -39,6 +39,20 @@ export function findMaterial(body: string, materials: string[]) {
   return { url, kind, caption, filename: materialFileName(url) } as const;
 }
 
+/** What a message typed by the team goes out as when the window is closed: someone who never wrote gets the first contact, not "any questions left?". */
+export function manualPurpose(lead: Pick<Lead, "lastInboundAt">) {
+  return lead.lastInboundAt ? "reengagement" : "first_contact";
+}
+
+/** The approved template for a use. Utility before marketing: Meta can hold marketing templates back from people who never wrote. */
+export function templateFor(purpose: string, simulated = false) {
+  return db.whatsAppTemplate.findFirst({
+    // The CRM fills {{1}} and {{2}} only: a template asking for a date or a link ({{3}}, {{4}}) would fail at Meta
+    where: { ...(simulated ? {} : { active: true }), purpose, NOT: { body: { contains: "{{3}}" } } },
+    orderBy: [{ active: "desc" }, { category: "desc" }, { name: "asc" }],
+  });
+}
+
 /**
  * Sends a WhatsApp message choosing the right path by itself: free text inside the 24-hour window,
  * an approved template outside it. The team never has to think about Meta's window rule.
@@ -59,13 +73,8 @@ export async function sendWhatsApp(lead: Lead, body: string, author: string, opt
       // In test mode the flow can be tried before Meta approves the template
       if (!template.active && !simulated) return { ok: true, skipped: `Ignorado: janela de 24 h fechada e o modelo ${o.templateName} ainda não foi aprovado pela Meta.` };
     } else if (o.purpose || !o.automatic) {
-      const usable = simulated ? {} : { active: true };
       // Never an unrelated template: a lead in proposal must not get the "pausing your service" one
-      // Utility before marketing: Meta can hold marketing templates back from people who never wrote
-      template = await db.whatsAppTemplate.findFirst({
-        where: { ...usable, purpose: o.purpose ?? "reengagement" },
-        orderBy: [{ active: "desc" }, { category: "desc" }, { name: "asc" }],
-      });
+      template = await templateFor(o.purpose ?? manualPurpose(lead), simulated);
       if (!template && o.automatic) return { ok: true, skipped: "Ignorado: janela de 24 h fechada e o modelo da Meta para esta mensagem ainda não foi aprovado." };
       if (!template) throw new Error("Janela de 24 h fechada: o lead não escreve há mais de 24 h e o modelo de retomada ainda não foi aprovado pela Meta.");
     } else {

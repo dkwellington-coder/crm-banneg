@@ -234,6 +234,22 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(raw.at(-1)).toMatchObject({ type: "template", template: { name: "z_cadastro_recebido" } });
   });
 
+  it("a message typed by the team with the window closed goes as the CRM's own template, never an imported one", async () => {
+    await db.whatsAppTemplate.deleteMany();
+    await db.whatsAppTemplate.create({ data: { name: "banneg_reuniao_confirmada_v1", body: "Olá, {{1}}. Sua reunião está confirmada para {{2}}.", purpose: "importado", category: "UTILITY" } });
+    await db.whatsAppTemplate.create({ data: { name: "banneg_retomada", body: "Oi, {{1}}! Ficou alguma dúvida?", purpose: "reengagement" } });
+    await db.whatsAppTemplate.create({ data: { name: "banneg_cadastro_recebido", body: "Olá, {{1}}! Aqui é a {{2}}. Recebemos o seu cadastro.", purpose: "first_contact", category: "UTILITY" } });
+    const { sendWhatsApp } = await import("@/lib/messaging");
+    const { lead } = await leads.createLead({ name: "Lucas Dias", phone: "61993330000", source: "Instagram" }, "teste");
+    // Never wrote: the first contact, signed by the lead's SDR
+    await sendWhatsApp(lead, "Oi Lucas, tudo bem?", "Wellington");
+    expect(raw.at(-1)).toMatchObject({ type: "template", template: { name: "banneg_cadastro_recebido", components: [{ parameters: [{ text: "Lucas" }, { text: "Duda" }] }] } });
+    // Wrote two days ago: the CRM's own "any questions?"
+    const wrote = await db.lead.update({ where: { id: lead.id }, data: { lastInboundAt: new Date(Date.now() - 2 * 86_400_000) } });
+    await sendWhatsApp(wrote, "Oi Lucas, tudo bem?", "Wellington");
+    expect(raw.at(-1)).toMatchObject({ type: "template", template: { name: "banneg_retomada" } });
+  });
+
   it("sends the kit: template signed by the lead's SDR, materials as video, and stops on request", async () => {
     await db.whatsAppTemplate.deleteMany();
     await db.whatsAppTemplate.create({

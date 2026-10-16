@@ -172,7 +172,7 @@ async function Config() {
         ))}
       </Section>
 
-      <Section id="modelos" title="Modelos do WhatsApp" hint="Cadastre aqui os modelos já aprovados no Meta, com o mesmo nome. Use {{1}} para o primeiro nome. Finalidades: first_contact, followup, reminder, reengagement.">
+      <Section id="modelos" title="Modelos do WhatsApp" hint="Cadastre aqui os modelos já aprovados no Meta, com o mesmo nome. Use {{1}} para o primeiro nome. Finalidades: first_contact, followup, reminder, reengagement, prospeccao. Os importados do CRM antigo (importado) só vão pelo nome, nas automações.">
         {[...waTemplates, null].map((t) => (
           <form key={t?.id ?? "new"} action={saveWaTemplateAction} className="space-y-2 border-t border-slate-100 pt-2 first:border-0 first:pt-0">
             <fieldset disabled={!owner} className="space-y-2">
