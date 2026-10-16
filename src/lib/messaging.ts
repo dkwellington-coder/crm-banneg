@@ -3,7 +3,7 @@ import { db } from "./db";
 import { logEvent } from "./events";
 import { isWindowOpen, mediaKind, sendAudio, sendButtons, sendMedia, sendTemplate, sendText, type SendResult } from "./whatsapp";
 import { AUDIO_MARK, WHATSAPP_AUDIO, baseMime, transcribe, uploadWhatsAppMedia, webmToOgg } from "./audio";
-import { getSettings, isTestContact, materialFileName } from "./settings";
+import { getSettings, materialFileName, whatsappIsReal } from "./settings";
 
 export type SendOptions = {
   // Picks the approved template by its use when the 24-hour window is closed (first_contact, reminder, reengagement)
@@ -63,7 +63,7 @@ export async function sendWhatsApp(lead: Lead, body: string, author: string, opt
   if (!lead.phone) throw new Error("Lead sem telefone.");
   if (o.automatic && lead.whatsappOptOut) return { ok: true, skipped: "Ignorado: o lead pediu para parar as mensagens." };
   const settings = await getSettings();
-  const simulated = settings.testMode && !isTestContact(settings, lead.phone);
+  const simulated = !whatsappIsReal(settings, lead);
   const open = isWindowOpen(lead.lastInboundAt);
 
   let template: { name: string; language: string; body: string; active: boolean; headerUrl: string | null } | null = null;
@@ -136,7 +136,7 @@ export async function sendAudioMessage(lead: Lead, audio: Uint8Array, mimeType: 
   }
   if (!WHATSAPP_AUDIO.has(type)) throw new Error(`O WhatsApp não aceita áudio no formato ${type}.`);
   const settings = await getSettings();
-  const simulated = settings.testMode && !isTestContact(settings, lead.phone);
+  const simulated = !whatsappIsReal(settings, lead);
   const msg = await db.message.create({
     data: {
       leadId: lead.id,

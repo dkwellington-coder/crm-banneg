@@ -28,6 +28,20 @@ export function normalizePhone(raw: string) {
   return digits;
 }
 
+/**
+ * A Brazilian mobile written both ways: WhatsApp still sends older numbers without the 9
+ * (556193258573) while forms carry it (5561993258573). Both are the same person.
+ */
+export function phoneVariants(raw: string) {
+  const phone = normalizePhone(raw);
+  const withNine = /^55(\d{2})9(\d{8})$/.exec(phone);
+  if (withNine) return [phone, `55${withNine[1]}${withNine[2]}`];
+  // Without the 9 only a mobile (6 to 9) can be the same number; 2 to 5 are landlines
+  const withoutNine = /^55(\d{2})([6-9]\d{7})$/.exec(phone);
+  if (withoutNine) return [phone, `55${withoutNine[1]}9${withoutNine[2]}`];
+  return phone ? [phone] : [];
+}
+
 export function classifyError(code: number | undefined, message: string) {
   const accountMessage = code !== undefined ? ACCOUNT_ERRORS[code] : undefined;
   return { accountLevel: !!accountMessage, friendly: accountMessage ?? message };

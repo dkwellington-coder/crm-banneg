@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { actionLabel, delayLabel, fillVariables, splitDelay, triggerLabel } from "@/lib/rules";
-import { isTestContact } from "@/lib/settings";
+import { isTestContact, whatsappIsReal } from "@/lib/settings";
 import { currentPeriod, pace, periodRange, shiftPeriod } from "@/lib/goals";
 
 describe("automation rules", () => {
@@ -54,5 +54,24 @@ describe("test mode", () => {
     expect(isTestContact(s, "wellington@banneg.com.br")).toBe(true);
     expect(isTestContact(s, "5541999990001")).toBe(false);
     expect(isTestContact({ testContacts: [] }, "5541999990000")).toBe(false);
+  });
+
+  it("recognizes a released number that WhatsApp sends without the 9", () => {
+    const s = { testContacts: ["61 99325-8573"] };
+    expect(isTestContact(s, "556193258573")).toBe(true);
+    expect(isTestContact({ testContacts: ["61 9325-8573"] }, "5561993258573")).toBe(true);
+    expect(isTestContact(s, "556193258574")).toBe(false);
+  });
+
+  it("in test mode can still answer whoever wrote in the last 24 hours", () => {
+    const now = Date.now();
+    const wrote = { phone: "5511993781411", lastInboundAt: new Date(now - 60_000) };
+    const never = { phone: "5511993781411", lastInboundAt: null };
+    const base = { testMode: true, testContacts: [], answerInbound: false };
+    expect(whatsappIsReal(base, wrote)).toBe(false);
+    expect(whatsappIsReal({ ...base, answerInbound: true }, wrote)).toBe(true);
+    expect(whatsappIsReal({ ...base, answerInbound: true }, never)).toBe(false);
+    expect(whatsappIsReal({ ...base, answerInbound: true }, { ...wrote, lastInboundAt: new Date(now - 25 * 3_600_000) })).toBe(false);
+    expect(whatsappIsReal({ ...base, testMode: false }, never)).toBe(true);
   });
 });

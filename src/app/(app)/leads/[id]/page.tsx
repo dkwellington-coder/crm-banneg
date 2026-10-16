@@ -4,7 +4,7 @@ import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { isWindowOpen } from "@/lib/whatsapp";
-import { getSettings, isTestContact, messageVars } from "@/lib/settings";
+import { getSettings, messageVars, whatsappIsReal } from "@/lib/settings";
 import { manualPurpose, templateFor } from "@/lib/messaging";
 import { fillVariables } from "@/lib/rules";
 import { Avatar, Card, Loading, STATUS_LABEL, TempBadge, btnGhostCls, fmt, inputCls, relTime } from "@/components/ui";
@@ -62,9 +62,11 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
   // Macros arrive ready to send: name, links to videos and PDFs already filled in
   const vars = messageVars(settings, lead, lead.sdr?.name ?? "");
   const windowOpen = isWindowOpen(lead.lastInboundAt);
+  // Test mode records the messages to this lead without sending them: say so before anyone types
+  const sendsForReal = whatsappIsReal(settings, lead);
   // With the window closed, what the team types does not go: Meta only lets an approved template through
   const closedTemplate =
-    !windowOpen && lead.phone ? await templateFor(manualPurpose(lead), settings.testMode && !isTestContact(settings, lead.phone)) : null;
+    !windowOpen && lead.phone ? await templateFor(manualPurpose(lead), !sendsForReal) : null;
   const closedText = closedTemplate?.body
     .replace("{{1}}", lead.name?.split(" ")[0] || "tudo bem")
     .replace("{{2}}", lead.sdr?.name ?? user.name);
@@ -231,6 +233,16 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
           )}
         </div>
         <div className="border-t border-slate-200 bg-white p-3">
+          {lead.phone && !sendsForReal && (
+            <div className="mb-2 rounded-lg bg-amber-100 px-3 py-2 text-sm font-medium text-amber-900">
+              Modo teste: o que for mandado para este lead fica só simulado e não chega ao WhatsApp dele. Para atender de verdade, coloque o
+              número dele nos contatos de teste em{" "}
+              <Link href="/integracoes" className="underline">
+                Integrações
+              </Link>
+              .
+            </div>
+          )}
           <div className="mb-2 text-xs text-slate-500">
             {windowOpen
               ? `Janela de 24 h aberta (última mensagem do lead ${relTime(lead.lastInboundAt)}). Você pode escrever livremente.`

@@ -225,6 +225,15 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect((await db.message.findFirstOrThrow({ where: { leadId: mine.id, direction: "OUT" } })).status).toBe("SENT");
   });
 
+  it("a lead whose WhatsApp comes without the 9 lands on the lead the form created", async () => {
+    const { lead } = await leads.createLead({ name: "Lucas", phone: "61 99325-8573", source: "Instagram" }, "teste");
+    await leads.handleInbound({ phone: "556193258573", body: "Confirmo", externalId: "nine1", at: new Date() });
+    expect(await db.lead.count({ where: { phone: { in: ["5561993258573", "556193258573"] } } })).toBe(1);
+    expect(await db.message.findFirstOrThrow({ where: { externalId: "nine1" } })).toMatchObject({ leadId: lead.id });
+    const again = await leads.createLead({ name: "Lucas", phone: "556193258573", source: "site" }, "teste");
+    expect(again).toMatchObject({ created: false, lead: { id: lead.id } });
+  });
+
   it("first contact prefers a utility template, which Meta does not hold back from people who never wrote", async () => {
     await db.whatsAppTemplate.deleteMany();
     await db.whatsAppTemplate.create({ data: { name: "a_primeiro_contato", body: "Olá, {{1}}! Posso te enviar?", purpose: "first_contact", category: "MARKETING" } });

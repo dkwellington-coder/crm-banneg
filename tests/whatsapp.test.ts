@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { classifyError, isWindowOpen, normalizePhone, verifySignature } from "@/lib/whatsapp";
+import { classifyError, isWindowOpen, normalizePhone, phoneVariants, verifySignature } from "@/lib/whatsapp";
 import { renderTemplate } from "@/lib/email";
 import { createHmac } from "node:crypto";
 
@@ -14,6 +14,13 @@ describe("whatsapp helpers", () => {
   it("normalizes Brazilian phone numbers", () => {
     expect(normalizePhone("(11) 92013-8123")).toBe("5511920138123");
     expect(normalizePhone("+55 11 92013-8123")).toBe("5511920138123");
+  });
+
+  it("knows a mobile WhatsApp sends without the 9 is the same number", () => {
+    expect(phoneVariants("61 99325-8573")).toEqual(["5561993258573", "556193258573"]);
+    expect(phoneVariants("556193258573")).toEqual(["556193258573", "5561993258573"]);
+    // Landlines (2 to 5) never had a 9 to lose
+    expect(phoneVariants("(11) 3456-7890")).toEqual(["551134567890"]);
   });
 
   it("flags the Meta payment error as an account problem", () => {

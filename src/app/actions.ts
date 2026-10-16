@@ -564,6 +564,7 @@ export async function saveTestModeAction(form: FormData) {
   await requireOwner();
   await saveSettings({
     testMode: form.get("testMode") === "on",
+    answerInbound: form.get("answerInbound") === "on",
     testContacts: String(form.get("testContacts") ?? "")
       .split(/[\n,;]+/)
       .map((s) => s.trim())

@@ -137,6 +137,10 @@ async function Integrations() {
               <label className="flex items-center gap-2 text-sm font-medium">
                 <input type="checkbox" name="testMode" defaultChecked={settings.testMode} /> Modo teste
               </label>
+              <label className="flex max-w-56 items-start gap-2 text-sm" title="As filas de leads antigos e os primeiros contatos continuam simulados">
+                <input type="checkbox" name="answerInbound" defaultChecked={settings.answerInbound} className="mt-1" /> Responder de verdade quem
+                escreveu nas últimas 24 h
+              </label>
               <button className={btnCls}>Salvar</button>
             </div>
           </fieldset>

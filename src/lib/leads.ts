@@ -3,7 +3,7 @@ import { db } from "./db";
 import { logEvent } from "./events";
 import { cancelJobs, enqueueDebounced } from "./queue";
 import { cancelRuleJobs, scheduleAnswerRules, scheduleStageRules } from "./automations";
-import { normalizePhone } from "./whatsapp";
+import { normalizePhone, phoneVariants } from "./whatsapp";
 import { AUDIO_MARK, downloadWhatsAppMedia, transcribe } from "./audio";
 import { sendWhatsApp } from "./messaging";
 import { STAGE_KEYS } from "./plan";
@@ -65,10 +65,18 @@ export type NewLeadInput = {
   stageId?: string | null;
 };
 
+/** The lead with this number, or else the oldest one with it written with or without the 9. */
+async function leadByPhone(phone: string) {
+  return (
+    (await db.lead.findUnique({ where: { phone } })) ??
+    (await db.lead.findFirst({ where: { phone: { in: phoneVariants(phone) } }, orderBy: { createdAt: "asc" } }))
+  );
+}
+
 export async function createLead(input: NewLeadInput, actor: string) {
   const phone = input.phone ? normalizePhone(input.phone) : null;
   if (phone) {
-    const existing = await db.lead.findUnique({ where: { phone } });
+    const existing = await leadByPhone(phone);
     if (existing) {
       await logEvent(existing.id, "lead.duplicate", actor, `Entrou de novo pela origem "${input.source}".`);
       return { lead: existing, created: false };
@@ -139,7 +147,7 @@ export async function handleInbound(input: {
   const phone = normalizePhone(input.phone);
   const dup = await db.message.findUnique({ where: { externalId: input.externalId } });
   if (dup) return null;
-  let lead = await db.lead.findUnique({ where: { phone } });
+  let lead = await leadByPhone(phone);
   if (!lead) {
     lead = (await createLead({ phone, name: input.profileName, source: "whatsapp" }, "WhatsApp")).lead;
     // The lead wrote first, so the SDR answers the message instead of sending a cold opening

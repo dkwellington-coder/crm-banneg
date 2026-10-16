@@ -1,4 +1,5 @@
 import { db } from "./db";
+import { isWindowOpen, phoneVariants } from "./whatsapp";
 
 export type BusinessHours = { start: number; end: number; days: number[]; timezone: string };
 
@@ -14,6 +15,8 @@ export type CrmSettings = {
   // While on, WhatsApp and e-mail only really go to testContacts; the rest is recorded as simulated
   testMode: boolean;
   testContacts: string[];
+  // In test mode, still really answer whoever wrote in the last 24 hours (old-lead queues stay simulated)
+  answerInbound: boolean;
   // Files the AI, the automations and the e-mails send as links: {{video_ganhos}} -> URL
   materials: Record<string, string>;
 };
@@ -63,6 +66,7 @@ export const DEFAULT_SETTINGS: CrmSettings = {
   presentationUrl: DEFAULT_MATERIALS.apresentacao,
   testMode: true,
   testContacts: [],
+  answerInbound: false,
   materials: DEFAULT_MATERIALS,
 };
 
@@ -70,13 +74,25 @@ export const DEFAULT_SETTINGS: CrmSettings = {
 export function isTestContact(settings: Pick<CrmSettings, "testContacts">, contact: string) {
   const c = contact.trim().toLowerCase();
   const digits = c.replace(/\D/g, "");
+  const mine = phoneVariants(digits);
   return settings.testContacts.some((t) => {
     const x = t.trim().toLowerCase();
     if (x.includes("@")) return x === c;
     const xd = x.replace(/\D/g, "");
-    // 41999990000 matches 5541999990000
-    return xd.length >= 8 && digits.length >= 8 && (digits.endsWith(xd) || xd.endsWith(digits));
+    if (xd.length < 8 || digits.length < 8) return false;
+    // 41999990000 matches 5541999990000, and 61 99325-8573 matches WhatsApp's 556193258573
+    return phoneVariants(xd).some((v) => mine.includes(v)) || digits.endsWith(xd) || xd.endsWith(digits);
   });
+}
+
+/** Whether a WhatsApp to this lead really goes out, or is only recorded as simulated (test mode). */
+export function whatsappIsReal(
+  settings: Pick<CrmSettings, "testMode" | "testContacts" | "answerInbound">,
+  lead: { phone: string | null; lastInboundAt: Date | null },
+) {
+  if (!settings.testMode) return true;
+  if (lead.phone && isTestContact(settings, lead.phone)) return true;
+  return settings.answerInbound && isWindowOpen(lead.lastInboundAt);
 }
 
 export async function getSettings(): Promise<CrmSettings> {
