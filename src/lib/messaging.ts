@@ -2,7 +2,7 @@ import type { Lead } from "@prisma/client";
 import { db } from "./db";
 import { logEvent } from "./events";
 import { isWindowOpen, mediaKind, sendButtons, sendMedia, sendTemplate, sendText, type SendResult } from "./whatsapp";
-import { getSettings, isTestContact } from "./settings";
+import { getSettings, isTestContact, materialFileName } from "./settings";
 
 export type SendOptions = {
   // Picks the approved template by its use when the 24-hour window is closed (first_contact, reminder, reengagement)
@@ -20,14 +20,6 @@ export type SendOutcome =
   | { ok: true; skipped?: undefined; id: string; messageId: string; usedTemplate: boolean; simulated: boolean }
   | { ok: false; skipped?: undefined; error: string; code?: number; messageId: string; usedTemplate: boolean; simulated: false };
 
-// Pretty file names for PDFs the lead receives
-const FILE_NAMES: Record<string, string> = {
-  "apresentacao-de-valor.pdf": "Banneg - Apresentação de Valor.pdf",
-  "por-que-investir.pdf": "Banneg - Por que investir.pdf",
-  "simulacoes-de-rentabilidade.pdf": "Banneg - Simulações de rentabilidade.pdf",
-  "catalogo-lojas-3d.pdf": "Banneg - Catálogo de Lojas.pdf",
-};
-
 /** A material link in the text becomes a real video, PDF or photo in WhatsApp, with the rest as its caption. */
 export function findMaterial(body: string, materials: string[]) {
   const url = materials.find((m) => m && body.includes(m));
@@ -44,7 +36,7 @@ export function findMaterial(body: string, materials: string[]) {
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return { url, kind, caption, filename: FILE_NAMES[file] ?? file } as const;
+  return { url, kind, caption, filename: materialFileName(url) } as const;
 }
 
 /**

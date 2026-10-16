@@ -10,7 +10,7 @@ import { planFromDecision, STAGE_KEYS } from "./plan";
 import { ensureTask, moveLead, pickSdr, stageByKey } from "./leads";
 import { fillVariables, type RuleConfig } from "./rules";
 import type { RuleJobPayload } from "./automations";
-import { renderTemplate, sendEmail } from "./email";
+import { attachMaterials, renderTemplate, sendEmail } from "./email";
 
 type Handler = (job: Job, lead: Lead | null) => Promise<string>;
 
@@ -186,9 +186,9 @@ async function sendTemplateEmail(lead: Lead, templateKey: string) {
   const sdr = lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null;
   const vars = messageVars(settings, lead, sdr?.name ?? "Duda");
   const subject = renderTemplate(t.subject, vars);
-  const body = renderTemplate(t.body, vars);
+  const { text: body, attachments } = attachMaterials(renderTemplate(t.body, vars), Object.values(settings.materials));
   const simulated = settings.testMode && !isTestContact(settings, lead.email);
-  if (!simulated) await sendEmail(lead.email, subject, body);
+  if (!simulated) await sendEmail(lead.email, subject, body, attachments);
   await db.message.create({
     data: {
       leadId: lead.id,

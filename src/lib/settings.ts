@@ -34,6 +34,19 @@ export const DEFAULT_MATERIALS: Record<string, string> = {
   foto_fachada: `${MATERIALS_BASE}/fachada-loja.jpg`,
 };
 
+// Pretty file names for the PDFs the lead receives, on WhatsApp and as e-mail attachments
+const FILE_NAMES: Record<string, string> = {
+  "apresentacao-de-valor.pdf": "Banneg - Apresentação de Valor.pdf",
+  "por-que-investir.pdf": "Banneg - Por que investir.pdf",
+  "simulacoes-de-rentabilidade.pdf": "Banneg - Simulações de rentabilidade.pdf",
+  "catalogo-lojas-3d.pdf": "Banneg - Catálogo de Lojas.pdf",
+};
+
+export function materialFileName(url: string) {
+  const file = url.split("?")[0].split("/").pop() ?? "";
+  return FILE_NAMES[file] ?? file;
+}
+
 export const DEFAULT_SETTINGS: CrmSettings = {
   companyName: "Banneg",
   qualificationQuestions: [

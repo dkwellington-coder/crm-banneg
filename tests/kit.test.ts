@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { templateComponents } from "@/lib/whatsapp";
 import { findMaterial } from "@/lib/messaging";
+import { attachMaterials } from "@/lib/email";
 import { isStopRequest } from "@/lib/leads";
 import { DEFAULT_MATERIALS } from "@/lib/settings";
 import { fillVariables } from "@/lib/rules";
@@ -27,6 +28,15 @@ describe("content kit", () => {
     expect(pdf).toMatchObject({ kind: "document", caption: "A simulação está aqui. Estimativa, antes de impostos.", filename: "Banneg - Simulações de rentabilidade.pdf" });
     expect(findMaterial(`${DEFAULT_MATERIALS.video_bottini}\n\nQuer ver mais?`, Object.values(DEFAULT_MATERIALS))).toMatchObject({ caption: "Quer ver mais?" });
     expect(findMaterial("Sem material aqui", Object.values(DEFAULT_MATERIALS))).toBeNull();
+  });
+
+  it("attaches the PDFs to e-mails instead of linking them, and keeps videos as links", () => {
+    const body = fillVariables("Aqui está a apresentação completa:\n{{apresentacao}}\n\nE o vídeo de 1 minuto:\n{{video_ganhos}}", DEFAULT_MATERIALS);
+    expect(attachMaterials(body, Object.values(DEFAULT_MATERIALS))).toEqual({
+      text: `Aqui está a apresentação completa:\nBanneg - Apresentação de Valor.pdf (em anexo)\n\nE o vídeo de 1 minuto:\n${DEFAULT_MATERIALS.video_ganhos}`,
+      attachments: [{ filename: "Banneg - Apresentação de Valor.pdf", href: DEFAULT_MATERIALS.apresentacao }],
+    });
+    expect(attachMaterials("Sem material", Object.values(DEFAULT_MATERIALS))).toEqual({ text: "Sem material", attachments: [] });
   });
 
   it("recognizes a request to stop messages, and only that", () => {
