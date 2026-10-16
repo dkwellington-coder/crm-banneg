@@ -219,9 +219,21 @@ model Message {
   externalId String?       @unique
   template   String?
   error      String?
+  // "audio" for a voice note or audio file: the body holds its transcript and the bytes live in MessageMedia
+  mediaKind  String?
+  mediaType  String?
+  media      MessageMedia?
   createdAt  DateTime      @default(now())
 
   @@index([leadId, createdAt])
+}
+
+// The file of an audio message, kept apart so loading a conversation never loads the audio
+model MessageMedia {
+  messageId String  @id
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  mimeType  String
+  data      Bytes
 }
 
 // Timeline: everything that happened to a lead, including each AI decision.

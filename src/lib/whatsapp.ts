@@ -95,6 +95,11 @@ export function sendMedia(to: string, kind: "video" | "document" | "image", link
   return post({ to, type: kind, [kind]: media });
 }
 
+/** An audio already uploaded to Meta (uploadWhatsAppMedia). Ogg Opus shows as a voice message. */
+export function sendAudio(to: string, mediaId: string) {
+  return post({ to, type: "audio", audio: { id: mediaId } });
+}
+
 export function sendTemplate(to: string, name: string, language: string, params: string[], headerUrl?: string | null) {
   const kind = headerUrl ? mediaKind(headerUrl) : null;
   const components: Record<string, unknown>[] = [];
@@ -138,6 +143,8 @@ export type InboundMessage = {
   text?: { body: string };
   button?: { text: string };
   interactive?: { button_reply?: { title: string }; list_reply?: { title: string } };
+  // Voice notes come with voice: true; both are files kept at Meta for a while
+  audio?: { id: string; mime_type?: string; voice?: boolean };
 };
 
 // Shape of the parts of the Cloud API webhook we use

@@ -34,6 +34,7 @@ export async function POST(request: Request) {
           body: messageText(m),
           externalId: m.id,
           at: new Date(Number(m.timestamp) * 1000),
+          audio: m.audio && { id: m.audio.id, mimeType: m.audio.mime_type?.split(";")[0] },
         });
       }
       for (const st of value.statuses ?? []) {

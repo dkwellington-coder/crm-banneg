@@ -4,6 +4,7 @@ import { logEvent } from "./events";
 import { cancelJobs, enqueueDebounced } from "./queue";
 import { cancelRuleJobs, scheduleAnswerRules, scheduleStageRules } from "./automations";
 import { normalizePhone } from "./whatsapp";
+import { AUDIO_MARK, downloadWhatsAppMedia, transcribe } from "./audio";
 import { sendWhatsApp } from "./messaging";
 import { STAGE_KEYS } from "./plan";
 
@@ -107,7 +108,34 @@ export async function startAutomations(lead: Lead) {
   await scheduleStageRules(lead);
 }
 
-export async function handleInbound(input: { phone: string; profileName?: string; body: string; externalId: string; at: Date }) {
+/**
+ * A lead's audio: kept so the team can listen in the CRM, and written out so the AI can read it.
+ * Returns what the lead said, or null when it could not be heard (the team then listens).
+ */
+export async function receiveAudio(messageId: string, mediaId: string) {
+  try {
+    const file = await downloadWhatsAppMedia(mediaId);
+    await db.messageMedia.create({ data: { messageId, mimeType: file.mimeType, data: Buffer.from(file.data) } });
+    await db.message.update({ where: { id: messageId }, data: { mediaType: file.mimeType } });
+    const text = await transcribe(file.data, file.mimeType);
+    if (!text) throw new Error("O áudio não tem fala que dê para entender.");
+    await db.message.update({ where: { id: messageId }, data: { body: `${AUDIO_MARK} ${text}` } });
+    return text;
+  } catch (e) {
+    const msg = await db.message.update({ where: { id: messageId }, data: { body: `${AUDIO_MARK} Áudio sem transcrição` } });
+    await logEvent(msg.leadId, "audio.failed", "WhatsApp", `Não deu para transcrever o áudio: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+export async function handleInbound(input: {
+  phone: string;
+  profileName?: string;
+  body: string;
+  externalId: string;
+  at: Date;
+  audio?: { id: string; mimeType?: string };
+}) {
   const phone = normalizePhone(input.phone);
   const dup = await db.message.findUnique({ where: { externalId: input.externalId } });
   if (dup) return null;
@@ -117,28 +145,34 @@ export async function handleInbound(input: { phone: string; profileName?: string
     // The lead wrote first, so the SDR answers the message instead of sending a cold opening
     await cancelJobs(lead.id, ["sdr.first_contact"]);
   }
-  await db.message.create({
+  const msg = await db.message.create({
     data: {
       leadId: lead.id,
       channel: "WHATSAPP",
       direction: "IN",
-      body: input.body,
+      body: input.audio ? `${AUDIO_MARK} Áudio` : input.body,
       author: lead.name ?? "Lead",
       status: "RECEIVED",
       externalId: input.externalId,
       createdAt: input.at,
+      ...(input.audio && { mediaKind: "audio", mediaType: input.audio.mimeType ?? null }),
     },
   });
   lead = await db.lead.update({
     where: { id: lead.id },
     data: { lastInboundAt: input.at, name: lead.name ?? input.profileName ?? null },
   });
-  if (isStopRequest(input.body)) return optOut(lead);
+  const said = input.audio ? await receiveAudio(msg.id, input.audio.id) : input.body;
+  if (said !== null && isStopRequest(said)) return optOut(lead);
   // The lead answered: the "sem resposta" clock starts over
   await cancelRuleJobs(lead.id, "idle");
   await scheduleStageRules(lead, "idle");
+  if (said === null) {
+    await ensureTask(lead.id, lead.ownerId, "Ouvir o áudio do lead: não deu para transcrever");
+    return lead;
+  }
   // A tapped button ("Quero ver") moves the lead on and the next stage's message answers it
-  const answered = await scheduleAnswerRules(lead, input.body, input.externalId);
+  const answered = await scheduleAnswerRules(lead, said, input.externalId);
   if (answered.matched && !answered.aiReplies) return lead;
   if (lead.sdrId && !lead.aiPaused && ["NEW", "AI_QUALIFYING", "QUALIFIED", "NURTURING"].includes(lead.status)) {
     // Wait a few seconds so several short messages get one answer

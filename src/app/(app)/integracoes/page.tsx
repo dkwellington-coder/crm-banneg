@@ -57,6 +57,24 @@ function Block({ icon: Icon, color, title, missing, children }: { icon: LucideIc
 
 const Step = ({ children }: { children: ReactNode }) => <li className="text-sm text-slate-600">{children}</li>;
 
+/** Lead audios become text for the AI through Vercel's AI Gateway; checked once a day by the cron. */
+async function AudioCheck() {
+  const check = (await db.setting.findUnique({ where: { key: "audio_check" } }))?.value as { ok?: boolean; message?: string; at?: string } | undefined;
+  return (
+    <div className="space-y-2 border-t border-slate-100 pt-3">
+      <p className="text-sm text-slate-600">
+        <span className="font-medium text-slate-800">Áudios do WhatsApp:</span> a IA lê a transcrição de cada áudio do lead, e a equipe pode ouvir e gravar áudios na conversa.{" "}
+        {check?.message && (
+          <span className={check.ok ? "text-emerald-700" : "text-red-700"}>
+            {check.message} {check.at && `(${relTime(new Date(check.at))})`}
+          </span>
+        )}
+      </p>
+      <TestButton kind="transcription" label="Testar transcrição de áudio" />
+    </div>
+  );
+}
+
 async function Integrations() {
   const user = await requireUser();
   const h = await headers();
@@ -132,6 +150,7 @@ async function Integrations() {
           <Step>Teste aqui e depois converse com a SDR no Simulador.</Step>
         </ol>
         <TestButton kind="ai" label="Testar IA" />
+        <AudioCheck />
       </Block>
 
       <Block

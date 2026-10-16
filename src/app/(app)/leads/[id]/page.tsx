@@ -18,6 +18,7 @@ import {
 } from "../../../actions";
 import { StageSelect } from "./StageSelect";
 import { Composer } from "./Composer";
+import { AudioRecorder } from "./AudioRecorder";
 
 export default function LeadPage({ params }: PageProps<"/leads/[id]">) {
   return (
@@ -239,6 +240,11 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
             {lead.sdr && !lead.aiPaused && " Ao enviar, a IA pausa neste lead."}
           </div>
           <Composer leadId={lead.id} macros={macros.map((m) => ({ title: m.title, body: fillVariables(m.body, vars) }))} />
+          {lead.phone && (
+            <div className="mt-2">
+              <AudioRecorder leadId={lead.id} windowOpen={windowOpen} />
+            </div>
+          )}
           <form action={addNoteAction.bind(null, lead.id)} className="mt-2 flex gap-2">
             <input name="note" placeholder="Nota interna (o lead não vê)" className={inputCls} />
             <button className={btnGhostCls}>Anotar</button>
@@ -257,7 +263,20 @@ const JOB_LABEL: Record<string, string> = {
   "meeting.reminder": "lembrete de reunião",
 };
 
-function MessageBubble({ m }: { m: { channel: string; direction: string; body: string; author: string; status: string; error: string | null; template: string | null; createdAt: Date } }) {
+type BubbleMessage = {
+  id: string;
+  channel: string;
+  direction: string;
+  body: string;
+  author: string;
+  status: string;
+  error: string | null;
+  template: string | null;
+  mediaKind: string | null;
+  createdAt: Date;
+};
+
+function MessageBubble({ m }: { m: BubbleMessage }) {
   const out = m.direction === "OUT";
   const note = m.channel === "NOTE";
   const cls = note
@@ -275,7 +294,8 @@ function MessageBubble({ m }: { m: { channel: string; direction: string; body: s
           {m.author}
           {m.template ? ` · modelo ${m.template}` : ""}
         </div>
-        <div className="whitespace-pre-wrap break-words">{m.body}</div>
+        {m.mediaKind === "audio" && <audio controls preload="none" src={`/api/media/${m.id}`} className="mb-1 h-9 w-64 max-w-full" />}
+        <div className={`whitespace-pre-wrap break-words ${m.mediaKind === "audio" ? "text-slate-600 italic" : ""}`}>{m.body}</div>
         <div className="mt-1 text-right text-[11px] text-slate-400">
           {fmt(m.createdAt)}
           {out && !note && ` · ${STATUS_PT[m.status] ?? m.status}`}

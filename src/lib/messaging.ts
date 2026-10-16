@@ -1,7 +1,8 @@
 import type { Lead } from "@prisma/client";
 import { db } from "./db";
 import { logEvent } from "./events";
-import { isWindowOpen, mediaKind, sendButtons, sendMedia, sendTemplate, sendText, type SendResult } from "./whatsapp";
+import { isWindowOpen, mediaKind, sendAudio, sendButtons, sendMedia, sendTemplate, sendText, type SendResult } from "./whatsapp";
+import { AUDIO_MARK, WHATSAPP_AUDIO, baseMime, transcribe, uploadWhatsAppMedia, webmToOgg } from "./audio";
 import { getSettings, isTestContact, materialFileName } from "./settings";
 
 export type SendOptions = {
@@ -116,4 +117,63 @@ export async function sendWhatsApp(lead: Lead, body: string, author: string, opt
   await db.message.update({ where: { id: msg.id }, data: { status: "FAILED", error: res.error } });
   await logEvent(lead.id, "whatsapp.failed", author, `Mensagem não enviada: ${res.error}`, { code: res.code ?? null });
   return { ok: false, error: res.error, code: res.code, messageId: msg.id, usedTemplate: !!template, simulated: false };
+}
+
+const AUDIO_EXT: Record<string, string> = { "audio/ogg": "ogg", "audio/mp4": "m4a", "audio/mpeg": "mp3", "audio/aac": "aac", "audio/amr": "amr" };
+
+/**
+ * An audio recorded in the CRM goes as a WhatsApp voice message. Only inside the 24-hour window:
+ * Meta has no audio templates. Chrome records WebM, which is turned into Ogg without re-encoding.
+ */
+export async function sendAudioMessage(lead: Lead, audio: Uint8Array, mimeType: string, author: string): Promise<SendOutcome> {
+  if (!lead.phone) throw new Error("Lead sem telefone.");
+  if (!isWindowOpen(lead.lastInboundAt)) throw new Error("Janela de 24 h fechada: o áudio só pode ir depois que o lead responder. Mande um texto primeiro.");
+  let type = baseMime(mimeType);
+  let data = audio;
+  if (type === "audio/webm") {
+    data = webmToOgg(audio);
+    type = "audio/ogg";
+  }
+  if (!WHATSAPP_AUDIO.has(type)) throw new Error(`O WhatsApp não aceita áudio no formato ${type}.`);
+  const settings = await getSettings();
+  const simulated = settings.testMode && !isTestContact(settings, lead.phone);
+  const msg = await db.message.create({
+    data: {
+      leadId: lead.id,
+      channel: "WHATSAPP",
+      direction: "OUT",
+      body: `${AUDIO_MARK} Áudio`,
+      author,
+      mediaKind: "audio",
+      mediaType: type,
+      media: { create: { mimeType: type, data: Buffer.from(data) } },
+    },
+  });
+  if (simulated) {
+    await db.message.update({ where: { id: msg.id }, data: { status: "SIMULATED" } });
+    await db.lead.update({ where: { id: lead.id }, data: { lastContactAt: new Date() } });
+    return { ok: true, id: `simulado-${msg.id}`, messageId: msg.id, usedTemplate: false, simulated: true };
+  }
+  let res: SendResult;
+  try {
+    res = await sendAudio(lead.phone, await uploadWhatsAppMedia(data, type, `audio.${AUDIO_EXT[type]}`));
+  } catch (e) {
+    res = { ok: false, error: (e as Error).message, accountLevel: false };
+  }
+  if (res.ok) {
+    await db.message.update({ where: { id: msg.id }, data: { status: "SENT", externalId: res.id } });
+    await db.lead.update({ where: { id: lead.id }, data: { lastContactAt: new Date() } });
+    return { ok: true, id: res.id, messageId: msg.id, usedTemplate: false, simulated: false };
+  }
+  await db.message.update({ where: { id: msg.id }, data: { status: "FAILED", error: res.error } });
+  await logEvent(lead.id, "whatsapp.failed", author, `Áudio não enviado: ${res.error}`, { code: res.code ?? null });
+  return { ok: false, error: res.error, code: res.code, messageId: msg.id, usedTemplate: false, simulated: false };
+}
+
+/** Writes out what the team said in an audio, so the conversation (and the AI) can read it later. */
+export async function transcribeSentAudio(messageId: string) {
+  const media = await db.messageMedia.findUnique({ where: { messageId } });
+  if (!media) return;
+  const text = await transcribe(media.data, media.mimeType).catch(() => "");
+  if (text) await db.message.update({ where: { id: messageId }, data: { body: `${AUDIO_MARK} ${text}` } });
 }

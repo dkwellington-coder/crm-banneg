@@ -523,6 +523,7 @@ export async function testIntegrationAction(_: TestState, form: FormData): Promi
   if (kind.startsWith("webhook")) await requireOwner();
   const run = {
     ai: () => integrations.checkAi(),
+    transcription: () => integrations.checkTranscription(),
     whatsapp: () => integrations.checkWhatsApp(),
     whatsapp_send: () => integrations.sendWhatsAppTest(String(form.get("phone") ?? "")),
     templates: () => integrations.importWhatsAppTemplates(),

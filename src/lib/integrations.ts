@@ -9,6 +9,7 @@ import { funnelForForm, leadForms, retryMetaLeadsNow } from "./meta-leads";
 import { adAccounts, syncAdSpend } from "./meta-ads";
 import { forwardTarget } from "./whatsapp-forward";
 import { templateFor } from "./messaging";
+import { transcribe } from "./audio";
 
 export type CheckResult = { ok: boolean; message: string; details?: string[] };
 
@@ -291,6 +292,19 @@ export async function checkCalendar(userId: string): Promise<CheckResult> {
     const slots = await freeSlotsFor(user.id, settings.businessHours, settings.meetingMinutes);
     details.push(`Próximos horários que a IA ofereceria: ${slots.slice(0, 3).map((s) => formatSlot(s.startsAt)).join("; ") || "nenhum"}`);
     return { ok: !!token, message: token ? `Google Agenda de ${user.name} conectado.` : "Google Agenda não configurado.", details };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+/** Transcribes a 6-second sample of Wellington's video: proves the AI Gateway access the lead audios use. */
+export async function checkTranscription(): Promise<CheckResult> {
+  const base = process.env.PUBLIC_BASE_URL ?? "https://crm-banneg-banneg.vercel.app";
+  try {
+    const file = await fetch(`${base}/materiais/teste-audio.ogg`);
+    if (!file.ok) throw new Error(`Não achei o áudio de teste: HTTP ${file.status}`);
+    const text = await transcribe(new Uint8Array(await file.arrayBuffer()), "audio/ogg");
+    return { ok: !!text, message: text ? "Transcrição de áudio funcionando." : "A transcrição voltou vazia.", details: text ? [`Teste: “${text}”`] : [] };
   } catch (e) {
     return fail(e);
   }

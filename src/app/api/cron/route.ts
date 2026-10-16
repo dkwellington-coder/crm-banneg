@@ -1,7 +1,7 @@
 import { runDueJobs } from "@/lib/jobs";
 import { db } from "@/lib/db";
 import { getHealth, setHealth, submitTemplates, syncTemplateStatus } from "@/lib/whatsapp";
-import { checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
+import { checkTranscription, checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
 import { runDailyBatches } from "@/lib/batches";
 import { pullMetaLeads } from "@/lib/meta-leads";
 import { syncAdSpend } from "@/lib/meta-ads";
@@ -41,6 +41,14 @@ export async function GET(request: Request) {
     if (sending) meta.sending = sending;
     // Where copies of the WhatsApp messages go (the old CRM); asked from Meta at most once an hour
     meta.copyTo = await forwardTarget().catch((e: Error) => ({ error: e.message }));
+    // Lead audios are transcribed for the AI: proven once a day (and an hour after a failure)
+    const last = (await db.setting.findUnique({ where: { key: "audio_check" } }))?.value as { ok?: boolean; at?: string } | undefined;
+    const age = last?.at ? Date.now() - new Date(last.at).getTime() : Infinity;
+    if (age > (last?.ok ? 86_400_000 : 3_600_000)) {
+      const value = { ...(await checkTranscription()), at: new Date().toISOString() };
+      await db.setting.upsert({ where: { key: "audio_check" }, create: { key: "audio_check", value }, update: { value } });
+      meta.audio = value;
+    }
   }
   if (minute % 30 === 0) {
     // Kept for the Integrações screen and for support: which number is connected and its sending tier
