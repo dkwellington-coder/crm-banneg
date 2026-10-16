@@ -1,8 +1,10 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
+import { after } from "next/server";
 import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { markSeen } from "@/lib/alerts";
 import { isWindowOpen } from "@/lib/whatsapp";
 import { getSettings, messageVars, whatsappIsReal } from "@/lib/settings";
 import { manualPurpose, templateFor } from "@/lib/messaging";
@@ -19,6 +21,8 @@ import {
 import { StageSelect } from "./StageSelect";
 import { Composer } from "./Composer";
 import { AudioRecorder } from "./AudioRecorder";
+import { ScheduleMeeting } from "./ScheduleMeeting";
+import { googleConfigured, googleLinks } from "@/lib/google";
 
 export default function LeadPage({ params }: PageProps<"/leads/[id]">) {
   return (
@@ -52,13 +56,19 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
     },
   });
   if (!lead) notFound();
-  const [stages, agents, users, macros, settings] = await Promise.all([
+  // Someone opened it: it stops lighting the "new lead" alert
+  if (!lead.seenAt) after(() => markSeen(lead.id));
+  const [stages, agents, users, macros, settings, google] = await Promise.all([
     db.stage.findMany({ orderBy: [{ pipeline: { position: "asc" } }, { position: "asc" }], include: { pipeline: { select: { name: true } } } }),
     db.sdrAgent.findMany({ where: { active: true } }),
     db.user.findMany({ orderBy: { name: "asc" } }),
     db.macro.findMany({ orderBy: { title: "asc" } }),
     getSettings(),
+    googleConfigured() ? googleLinks() : [],
   ]);
+  const managers = users.filter((u) => u.role === "OWNER" || u.role === "MANAGER");
+  const meetingWith = managers.find((m) => m.id === lead.ownerId) ?? managers.find((m) => m.id === user.id) ?? managers[0];
+  const agendaOf = (userId: string) => google.find((g) => g.user.id === userId)?.link.email ?? google[0]?.link.email ?? null;
   // Macros arrive ready to send: name, links to videos and PDFs already filled in
   const vars = messageVars(settings, lead, lead.sdr?.name ?? "");
   const windowOpen = isWindowOpen(lead.lastInboundAt);
@@ -145,28 +155,36 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
           )}
         </Card>
 
-        {(lead.tasks.length > 0 || lead.meetings.length > 0) && (
-          <Card className="space-y-2">
-            <div className="text-sm font-bold">Próximos passos</div>
-            {lead.meetings.map((m) => (
-              <div key={m.id} className="text-sm">
-                Reunião {fmt(m.startsAt)} com {m.user?.name ?? "gerente"}
-                {m.meetLink && (
-                  <a href={m.meetLink} className="ml-1 text-brand underline" target="_blank">
-                    Meet
-                  </a>
-                )}
-              </div>
-            ))}
-            {lead.tasks.map((t) => (
-              <form key={t.id} action={completeTaskAction.bind(null, t.id)} className="flex items-center gap-2 text-sm">
-                <button className="h-4 w-4 rounded border border-slate-400" title="Concluir" />
-                <span>{t.title}</span>
-                <span className="ml-auto text-xs text-slate-400">{fmt(t.dueAt)}</span>
-              </form>
-            ))}
-          </Card>
-        )}
+        <Card className="space-y-2">
+          <div className="text-sm font-bold">Próximos passos</div>
+          {lead.meetings.map((m) => (
+            <div key={m.id} className="text-sm">
+              Reunião {fmt(m.startsAt)} com {m.user?.name ?? "gerente"}
+              {m.meetLink && (
+                <a href={m.meetLink} className="ml-1 text-brand underline" target="_blank">
+                  Meet
+                </a>
+              )}
+            </div>
+          ))}
+          {lead.tasks.map((t) => (
+            <form key={t.id} action={completeTaskAction.bind(null, t.id)} className="flex items-center gap-2 text-sm">
+              <button className="h-4 w-4 rounded border border-slate-400" title="Concluir" />
+              <span>{t.title}</span>
+              <span className="ml-auto text-xs text-slate-400">{fmt(t.dueAt)}</span>
+            </form>
+          ))}
+          {meetingWith && (
+            <ScheduleMeeting
+              leadId={lead.id}
+              managers={managers.map((m) => ({ id: m.id, name: m.name }))}
+              defaultUserId={meetingWith.id}
+              minutes={settings.meetingMinutes}
+              hasPhone={!!lead.phone}
+              google={agendaOf(meetingWith.id)}
+            />
+          )}
+        </Card>
 
         <Card>
           <form action={updateLeadAction.bind(null, lead.id)} className="space-y-2">

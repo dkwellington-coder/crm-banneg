@@ -2,7 +2,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { db } from "./db";
 import { SDR_MODEL } from "./sdr";
 import { sendEmail } from "./email";
-import { formatSlot, freeSlotsFor, googleAccessToken, googleBusy } from "./calendar";
+import { formatSlot, freeSlotsFor, googleBusy } from "./calendar";
+import { googleAgendaFor, googleConfigured } from "./google";
 import { getSettings } from "./settings";
 import { normalizePhone, sendTemplate, sendText, submitTemplates, syncTemplateStatus } from "./whatsapp";
 import { funnelForForm, leadForms, retryMetaLeadsNow } from "./meta-leads";
@@ -280,18 +281,21 @@ export async function checkCalendar(userId: string): Promise<CheckResult> {
   if (!user) return { ok: false, message: "Usuário não encontrado." };
   const settings = await getSettings();
   try {
-    const token = await googleAccessToken();
-    const details: string[] = [];
-    if (token) {
-      const cal = user.calendarId ?? user.email;
-      const busy = await googleBusy(cal, new Date(), new Date(Date.now() + 7 * 86_400_000));
-      details.push(`Agenda ${cal}: ${busy.length} compromissos nos próximos 7 dias.`);
-    } else {
-      details.push("Google Agenda não configurado: a IA usa só as reuniões do próprio CRM.");
+    if (!googleConfigured()) {
+      return { ok: false, message: "Google Agenda ainda não liberado: faltam o GOOGLE_CLIENT_ID e o GOOGLE_CLIENT_SECRET na Vercel (passo a passo nesta tela)." };
     }
+    const agenda = await googleAgendaFor(user);
+    if (!agenda) return { ok: false, message: "Ninguém conectou o Google ainda. Clique em \"Conectar minha Agenda Google\"." };
+    const details: string[] = [];
+    const busy = await googleBusy(user, new Date(), new Date(Date.now() + 7 * 86_400_000));
+    details.push(
+      agenda.invite
+        ? `As reuniões de ${user.name} entram na agenda de ${agenda.account}, com ${user.name} convidado. ${busy.length} compromissos de ${user.name} nos próximos 7 dias.`
+        : `Agenda ${agenda.account}: ${busy.length} compromissos nos próximos 7 dias.`,
+    );
     const slots = await freeSlotsFor(user.id, settings.businessHours, settings.meetingMinutes);
     details.push(`Próximos horários que a IA ofereceria: ${slots.slice(0, 3).map((s) => formatSlot(s.startsAt)).join("; ") || "nenhum"}`);
-    return { ok: !!token, message: token ? `Google Agenda de ${user.name} conectado.` : "Google Agenda não configurado.", details };
+    return { ok: true, message: `Google Agenda conectado (${agenda.account}).`, details };
   } catch (e) {
     return fail(e);
   }

@@ -4,20 +4,21 @@ import { BadgeDollarSign, Bot, CalendarDays, ClipboardList, Copy, FlaskConical, 
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
-import { Card, Loading, PageHeader, btnCls, inputCls, relTime } from "@/components/ui";
-import { saveTestModeAction } from "../../actions";
+import { Card, Loading, PageHeader, btnCls, btnGhostCls, inputCls, relTime } from "@/components/ui";
+import { disconnectGoogleAction, saveTestModeAction } from "../../actions";
+import { googleLinks } from "@/lib/google";
 import { TestButton } from "./TestButton";
 import { FormFunnelSelect } from "./FormFunnelSelect";
 import { funnelForForm } from "@/lib/meta-leads";
 import type { MetaAdsState } from "@/lib/meta-ads";
 import { daysAgo } from "@/lib/time";
 
-export default function IntegracoesPage() {
+export default function IntegracoesPage({ searchParams }: PageProps<"/integracoes">) {
   return (
     <>
       <PageHeader title="Integrações" subtitle="O que está conectado, o que falta e um botão para testar cada parte antes de ligar para os leads." />
       <Suspense fallback={<Loading />}>
-        <Integrations />
+        <Integrations searchParams={searchParams} />
       </Suspense>
     </>
   );
@@ -57,6 +58,25 @@ function Block({ icon: Icon, color, title, missing, children }: { icon: LucideIc
 
 const Step = ({ children }: { children: ReactNode }) => <li className="text-sm text-slate-600">{children}</li>;
 
+const GOOGLE_RESULT: Record<string, [boolean, string]> = {
+  ok: [true, "Agenda Google conectada"],
+  recusado: [false, "O Google não foi autorizado. Para conectar, clique de novo e aceite as permissões."],
+  erro: [false, "Não deu para conectar o Google"],
+  "sem-chaves": [false, "Faltam as chaves do Google na Vercel (passo a passo abaixo)."],
+};
+
+function GoogleResult({ result, detail }: { result?: string | string[]; detail?: string | string[] }) {
+  const r = typeof result === "string" ? GOOGLE_RESULT[result] : undefined;
+  if (!r) return null;
+  const [ok, text] = r;
+  return (
+    <p className={`rounded-lg px-3 py-2 text-sm font-medium ${ok ? "bg-emerald-50 text-emerald-800" : "bg-red-50 text-red-800"}`}>
+      {text}
+      {typeof detail === "string" && detail ? `: ${detail}` : "."}
+    </p>
+  );
+}
+
 /** Lead audios become text for the AI through Vercel's AI Gateway; checked once a day by the cron. */
 async function AudioCheck() {
   const check = (await db.setting.findUnique({ where: { key: "audio_check" } }))?.value as { ok?: boolean; message?: string; at?: string } | undefined;
@@ -75,8 +95,9 @@ async function AudioCheck() {
   );
 }
 
-async function Integrations() {
+async function Integrations({ searchParams }: { searchParams: PageProps<"/integracoes">["searchParams"] }) {
   const user = await requireUser();
+  const sp = await searchParams;
   const h = await headers();
   const origin = `${h.get("x-forwarded-proto") ?? "https"}://${h.get("host")}`;
   const [settings, lastInbound, users, templates, drafts, pending, formsRow, pipelines, adsRow, spend30] = await Promise.all([
@@ -91,6 +112,8 @@ async function Integrations() {
     db.setting.findUnique({ where: { key: "meta_ads" } }),
     db.adSpend.aggregate({ where: { date: { gte: daysAgo(30) } }, _sum: { spend: true } }),
   ]);
+  const google = await googleLinks();
+  const myGoogle = google.find((g) => g.user.id === user.id)?.link ?? null;
   const ads = adsRow?.value as MetaAdsState | undefined;
   const forms = formsRow?.value as
     | {
@@ -264,21 +287,81 @@ async function Integrations() {
         </TestButton>
       </Block>
 
-      <Block icon={CalendarDays} color="#d97706" title="Google Agenda (reuniões com Meet)" missing={has("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN")}>
-        <p className="text-sm text-slate-600">
-          Com a agenda conectada, a IA só oferece horários livres de verdade e a reunião já entra no Google Agenda do gerente com link do Meet.
-          Sem ela, a reunião fica só no CRM.
-        </p>
-        <TestButton kind="calendar" label="Testar agenda">
-          <select name="userId" defaultValue={user.id} className={`${inputCls} w-56!`}>
-            {users.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name}
-              </option>
-            ))}
-          </select>
-        </TestButton>
-      </Block>
+      <div id="google" className="xl:col-span-2">
+        <Block icon={CalendarDays} color="#d97706" title="Google Agenda (reuniões com Meet)" missing={has("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")}>
+          <GoogleResult result={sp.google} detail={sp.detalhe} />
+          <p className="text-sm text-slate-600">
+            Com a agenda conectada, a IA só oferece horários livres de verdade, e toda reunião (marcada pela IA ou por você na página do lead) entra no
+            Google Agenda com link do Meet. O lead recebe o link no WhatsApp e, se tiver e-mail, o convite do Google.
+          </p>
+          {has("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET").length > 0 ? (
+            <ol className="list-decimal space-y-1.5 pl-5">
+              <Step>
+                Entre em <span className="font-medium">console.cloud.google.com</span> com a conta do Banneg e crie um projeto (por exemplo &quot;CRM Banneg&quot;).
+              </Step>
+              <Step>Em APIs e serviços &gt; Biblioteca, ative a &quot;Google Calendar API&quot;.</Step>
+              <Step>
+                Em Google Auth Platform (tela de permissão OAuth), preencha o nome &quot;CRM Banneg&quot; e escolha o público <span className="font-medium">Interno</span>
+                {" "}(só contas @banneg.com.br, sem revisão do Google). Se só aparecer Externo, escolha Externo e depois clique em &quot;Publicar app&quot;: em teste o
+                Google desconecta a agenda a cada 7 dias.
+              </Step>
+              <Step>
+                Em Clientes, crie um cliente OAuth do tipo &quot;Aplicativo da Web&quot;. Em &quot;URIs de redirecionamento autorizados&quot;, cole:
+                <span className="mt-1 flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 font-mono text-xs">
+                  <Copy size={14} className="text-slate-400" /> {origin}/api/google/callback
+                </span>
+              </Step>
+              <Step>
+                Copie o ID do cliente e a chave secreta para a Vercel (projeto crm-banneg &gt; Settings &gt; Environment Variables) como GOOGLE_CLIENT_ID e
+                GOOGLE_CLIENT_SECRET. Não cole as chaves no chat. Depois é só publicar de novo e voltar aqui para conectar.
+              </Step>
+            </ol>
+          ) : (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {myGoogle ? (
+                  <>
+                    <span className="text-sm text-emerald-700">
+                      Sua agenda está conectada: <span className="font-medium">{myGoogle.email}</span>.
+                    </span>
+                    <form action={disconnectGoogleAction}>
+                      <button className={btnGhostCls}>Desconectar</button>
+                    </form>
+                  </>
+                ) : (
+                  <a href="/api/google/connect" className={btnCls}>
+                    <CalendarDays size={16} /> Conectar minha Agenda Google
+                  </a>
+                )}
+              </div>
+              <ul className="space-y-1 text-sm text-slate-600">
+                {users.map((u) => {
+                  const g = google.find((x) => x.user.id === u.id)?.link;
+                  return (
+                    <li key={u.id}>
+                      <span className="font-medium text-slate-800">{u.name}</span>:{" "}
+                      {g
+                        ? `reuniões na agenda ${g.email} (conectada ${relTime(new Date(g.connectedAt))}).`
+                        : google[0]
+                          ? `ainda não conectou; as reuniões entram na agenda ${google[0].link.email} com ${u.name} convidado.`
+                          : "ainda não conectou."}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+          <TestButton kind="calendar" label="Testar agenda">
+            <select name="userId" defaultValue={user.id} className={`${inputCls} w-56!`}>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name}
+                </option>
+              ))}
+            </select>
+          </TestButton>
+        </Block>
+      </div>
     </div>
   );
 }

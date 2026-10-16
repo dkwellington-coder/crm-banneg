@@ -146,7 +146,13 @@ const handlers: Record<string, Handler> = {
     const meeting = await db.meeting.findUnique({ where: { id: meetingId } });
     if (!meeting || meeting.status !== "scheduled") return "Ignorado: reunião cancelada.";
     const text = `Lembrete: nossa reunião é ${label}, ${formatSlot(meeting.startsAt)}.${meeting.meetLink ? ` Link: ${meeting.meetLink}` : ""} Até lá!`;
-    const res = await sendWhatsApp(lead, text, "Automação", { automatic: true, purpose: "reminder" });
+    // An hour before, with the window closed, the approved template that carries the time and the Meet link
+    const withLink = label === "daqui a 1 hora" && meeting.meetLink;
+    const res = await sendWhatsApp(lead, text, "Automação", {
+      automatic: true,
+      purpose: "reminder",
+      ...(withLink && { templateName: MEETING_TEMPLATES.reminder, params: [firstName(lead), timeOf(meeting.startsAt), meeting.meetLink!] }),
+    });
     if (res.skipped) return res.skipped;
     if (!res.ok) throw new Error(res.error);
     return `Lembrete ${sentHow(res)}.`;
@@ -256,7 +262,7 @@ export async function bookMeeting(lead: Lead, userId: string, slot: Slot, actor:
   let calendar: { id: string; meetLink: string | null } | null = null;
   try {
     calendar = await createCalendarEvent({
-      calendarId: user.calendarId ?? user.email,
+      user,
       summary: `Reunião Banneg · ${lead.name ?? lead.phone}`,
       description: `Agendada por ${actor} pelo CRM.\n\n${lead.aiSummary ?? ""}`,
       slot,
@@ -291,6 +297,47 @@ export async function bookMeeting(lead: Lead, userId: string, slot: Slot, actor:
     }
   }
   return meeting;
+}
+
+// Approved by Meta (they came over from the old CRM): they carry the date, the time and the Meet link
+export const MEETING_TEMPLATES = { confirmed: "banneg_reuniao_confirmada_v1", reminder: "banneg_lembrete_reuniao_v1" } as const;
+
+const firstName = (lead: Pick<Lead, "name">) => (lead.name ?? "").split(" ")[0] || "tudo bem";
+const timeOf = (d: Date) => d.toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
+const dayOf = (d: Date) => d.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "long", day: "2-digit", month: "2-digit" });
+
+/**
+ * A meeting booked by someone on the team, from the lead's page: on the Google agenda with a Meet link,
+ * the lead moves to "Reunião marcada" (that stage's automations run, as when the AI books) and gets the link.
+ */
+export async function scheduleMeeting(lead: Lead, opts: { userId: string; slot: Slot; actor: string; notify: boolean }) {
+  const meeting = await bookMeeting(lead, opts.userId, opts.slot, opts.actor);
+  const target = await aiTargetStage(STAGE_KEYS.MEETING_BOOKED, lead.pipelineId);
+  if (target) await moveLead(lead.id, target.id, opts.actor, { ownerId: lead.ownerId ?? opts.userId });
+  else await db.lead.update({ where: { id: lead.id }, data: { status: "MEETING_BOOKED", ownerId: lead.ownerId ?? opts.userId } });
+  const sent = opts.notify ? await sendMeetingLink(await db.lead.findUniqueOrThrow({ where: { id: lead.id } }), meeting, opts.actor) : null;
+  return { meeting, sent };
+}
+
+/** Sends the date and the Meet link: free text inside the 24-hour window, the approved template outside it. */
+export async function sendMeetingLink(lead: Lead, meeting: { startsAt: Date; meetLink: string | null }, actor: string) {
+  if (!lead.phone) return lead.email && meeting.meetLink ? "Lead sem WhatsApp: o convite foi pelo e-mail do Google." : "Lead sem WhatsApp: avise o lead por outro meio.";
+  const when = `${dayOf(meeting.startsAt)}, às ${timeOf(meeting.startsAt)}`;
+  const text = `Olá, ${firstName(lead)}! Sua reunião com o Banneg está confirmada para ${when} (horário de Brasília).${
+    meeting.meetLink ? `\n\nLink do Google Meet: ${meeting.meetLink}` : ""
+  }\n\nSe precisar remarcar, é só responder esta mensagem.`;
+  // Without a link there is no approved template to carry the meeting: it waits for the lead to write
+  const res = await sendWhatsApp(lead, text, actor, {
+    automatic: !meeting.meetLink,
+    ...(meeting.meetLink && { templateName: MEETING_TEMPLATES.confirmed, params: [firstName(lead), dayOf(meeting.startsAt), timeOf(meeting.startsAt), meeting.meetLink] }),
+  });
+  if (res.skipped) {
+    await logEvent(lead.id, "whatsapp.skipped", actor, res.skipped);
+    return res.skipped;
+  }
+  const what = meeting.meetLink ? "Link da reunião" : "Aviso da reunião";
+  if (!res.ok) return `${what} não enviado: ${res.error}`;
+  return `${what} ${sentHow(res)}.`;
 }
 
 /** Runs due jobs. Called every minute by the scheduler (cron hitting /api/cron). */

@@ -40,6 +40,7 @@ export async function createLeadAction(form: FormData) {
       city: String(form.get("city") ?? "") || null,
       source: "manual",
       pipelineId: String(form.get("pipelineId") ?? "") || null,
+      seen: true,
     },
     user.name,
   );
@@ -635,5 +636,44 @@ export async function simulateSdrAction(input: { agentId: string; messages: SimM
     };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
+  }
+}
+
+export async function disconnectGoogleAction() {
+  const user = await requireUser();
+  const { disconnectGoogle } = await import("@/lib/google");
+  await disconnectGoogle(user.id);
+  revalidatePath("/integracoes");
+}
+
+/** "Agendar reunião" on the lead's page: Google agenda with Meet, lead in "Reunião marcada", link to the lead. */
+export async function scheduleMeetingAction(leadId: string, _: unknown, form: FormData) {
+  const user = await requireUser();
+  const { scheduleMeeting } = await import("@/lib/jobs");
+  const date = String(form.get("date") ?? "");
+  const time = String(form.get("time") ?? "");
+  const minutes = Number(form.get("minutes") ?? 30) || 30;
+  const userId = String(form.get("userId") ?? "") || user.id;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) return { error: "Escolha o dia e a hora." };
+  // The team types São Paulo time
+  const startsAt = new Date(`${date}T${time}:00-03:00`);
+  if (Number.isNaN(startsAt.getTime())) return { error: "Dia ou hora inválidos." };
+  if (startsAt < new Date()) return { error: "Esse horário já passou." };
+  const endsAt = new Date(startsAt.getTime() + minutes * 60_000);
+  const clash = await db.meeting.findFirst({
+    where: { userId, status: "scheduled", startsAt: { lt: endsAt }, endsAt: { gt: startsAt } },
+    include: { lead: { select: { name: true } } },
+  });
+  if (clash) return { error: `Esse horário já tem reunião marcada no CRM${clash.lead.name ? ` com ${clash.lead.name}` : ""}.` };
+  const lead = await db.lead.findUnique({ where: { id: leadId } });
+  if (!lead) return { error: "Lead não encontrado." };
+  try {
+    const { meeting, sent } = await scheduleMeeting(lead, { userId, slot: { startsAt, endsAt }, actor: user.name, notify: form.get("notify") === "on" });
+    revalidatePath(`/leads/${leadId}`);
+    revalidatePath("/agenda");
+    const google = meeting.meetLink ? "Entrou no Google Agenda com link do Meet." : "Ficou só no CRM (sem Google Agenda conectado ou o Google falhou; veja o histórico).";
+    return { message: `Reunião marcada. ${google}${sent ? ` ${sent}` : ""}` };
+  } catch (e) {
+    return { error: (e as Error).message };
   }
 }

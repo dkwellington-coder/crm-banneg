@@ -63,6 +63,8 @@ export type NewLeadInput = {
   // Imports keep the date the lead first came in, so "newest first" means something
   createdAt?: Date | null;
   stageId?: string | null;
+  // Created by someone on the team: they know it exists, so it does not light the "new lead" alert
+  seen?: boolean;
 };
 
 /** The lead with this number, or else the oldest one with it written with or without the 9. */
@@ -104,6 +106,7 @@ export async function createLead(input: NewLeadInput, actor: string) {
       sdrId: sdr?.id,
       ...(input.qualification && { qualification: input.qualification }),
       ...(input.createdAt && { createdAt: input.createdAt, stageEnteredAt: input.createdAt }),
+      ...(input.seen && { seenAt: new Date() }),
     },
   });
   await logEvent(lead.id, "lead.created", actor, `Lead criado (origem: ${input.source}).`);

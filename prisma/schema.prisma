@@ -194,6 +194,8 @@ model Lead {
   lostReason     String?
   lastInboundAt  DateTime?
   lastContactAt  DateTime?
+  // When someone on the team first opened the lead; null = new lead nobody has looked at yet
+  seenAt         DateTime?
   stageEnteredAt DateTime    @default(now())
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt

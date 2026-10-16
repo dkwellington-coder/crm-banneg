@@ -3,6 +3,7 @@ import Link from "next/link";
 import type { Prisma } from "@prisma/client";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { teamAlerts } from "@/lib/alerts";
 import { Search, UserRound, Workflow } from "lucide-react";
 import { Loading, Tabs, btnGhostCls, inputCls, tabCls } from "@/components/ui";
 import { NewPipelineButton } from "./NewPipelineButton";
@@ -38,7 +39,13 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
     }),
     ...(mine && { ownerId: user.id }),
   };
-  const pipelines = await db.pipeline.findMany({ orderBy: [{ position: "asc" }, { createdAt: "asc" }] });
+  const [pipelines, alerts] = await Promise.all([
+    db.pipeline.findMany({ orderBy: [{ position: "asc" }, { createdAt: "asc" }] }),
+    teamAlerts(),
+  ]);
+  // Red marks: which funnel has someone new or waiting, and which card
+  const alertBy = new Map(alerts.items.map((a) => [a.leadId, a.kind]));
+  const alertsIn = (pipelineId: string) => alerts.items.filter((a) => a.pipelineId === pipelineId).length;
   const pipeline = pipelines.find((p) => p.id === sp.f) ?? pipelines.find((p) => p.isDefault) ?? pipelines[0];
   if (!pipeline) return <p className="p-6 text-sm text-slate-500">Nenhum funil ainda. Rode o seed (npm run db:seed).</p>;
   const stages = await db.stage.findMany({ where: { pipelineId: pipeline.id }, orderBy: { position: "asc" } });
@@ -89,6 +96,7 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
       failed: l.messages[0]?.status === "FAILED",
       lastActivity: (l.lastInboundAt ?? l.lastContactAt ?? l.createdAt).toISOString(),
       value: l.value,
+      alert: alertBy.get(l.id) ?? null,
     })),
   }));
   const total = counts.reduce((n, c) => n + c._count, 0);
@@ -114,6 +122,14 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
           {pipelines.map((p) => (
             <Link key={p.id} href={link({ f: p.id })} className={tabCls(p.id === pipeline.id)}>
               {p.name}
+              {alertsIn(p.id) > 0 && (
+                <span
+                  title="Leads novos ou esperando resposta neste funil"
+                  className="ml-1 rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white"
+                >
+                  {alertsIn(p.id)}
+                </span>
+              )}
             </Link>
           ))}
           <NewPipelineButton />

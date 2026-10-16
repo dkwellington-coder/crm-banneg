@@ -100,6 +100,8 @@ export async function importLeads(text: string, opts: { pipelineId: string; star
       whatsappOptOut: row.optOut,
       emailOptOut: row.optOut,
       lastContactAt: row.lastContactAt,
+      // Whoever imported the file knows these leads: they wait in the queue without lighting the "new lead" alert
+      seenAt: new Date(),
       sdrId: sdrs.length ? sdrs[index % sdrs.length].id : null,
       ...(row.createdAt && { createdAt: row.createdAt }),
     });

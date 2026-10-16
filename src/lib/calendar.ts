@@ -1,4 +1,5 @@
 import { db } from "./db";
+import { googleAgendaFor } from "./google";
 import type { BusinessHours } from "./settings";
 
 // Brazil has had no daylight saving time since 2019, so São Paulo is a fixed UTC-3.
@@ -65,7 +66,7 @@ export async function pickOwner() {
 
 export async function freeSlotsFor(userId: string, hours: BusinessHours, minutes: number, now = new Date()) {
   const [user, meetings] = await Promise.all([
-    db.user.findUnique({ where: { id: userId }, select: { email: true, calendarId: true } }),
+    db.user.findUnique({ where: { id: userId }, select: { id: true, email: true, calendarId: true } }),
     db.meeting.findMany({
       where: { userId, status: "scheduled", endsAt: { gte: now } },
       select: { startsAt: true, endsAt: true },
@@ -75,7 +76,7 @@ export async function freeSlotsFor(userId: string, hours: BusinessHours, minutes
   let google: { startsAt: Date; endsAt: Date }[] = [];
   if (user) {
     try {
-      google = await googleBusy(user.calendarId ?? user.email, now, new Date(now.getTime() + 8 * 86_400_000));
+      google = await googleBusy(user, now, new Date(now.getTime() + 8 * 86_400_000));
     } catch {
       // Without Google, the CRM's own meetings are enough to avoid double booking
     }
@@ -83,13 +84,17 @@ export async function freeSlotsFor(userId: string, hours: BusinessHours, minutes
   return computeSlots({ now, hours, minutes, busy: [...meetings, ...google] });
 }
 
-/** Busy periods on a Google calendar; empty when Google is not configured. */
-export async function googleBusy(calendarId: string, from: Date, to: Date) {
-  const token = await googleAccessToken();
-  if (!token) return [];
+type AgendaUser = { id: string; email: string; calendarId: string | null };
+
+/** Busy periods on the manager's Google agenda; empty when nobody connected Google. */
+export async function googleBusy(user: AgendaUser, from: Date, to: Date) {
+  const agenda = await googleAgendaFor(user);
+  if (!agenda) return [];
+  // Booked through someone else's Google: ask for the manager's own calendar (visible inside the same company)
+  const calendarId = agenda.invite ?? agenda.calendarId;
   const res = await fetch("https://www.googleapis.com/calendar/v3/freeBusy", {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${agenda.accessToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({ timeMin: from.toISOString(), timeMax: to.toISOString(), items: [{ id: calendarId }] }),
   });
   if (!res.ok) throw new Error(`Google Agenda (disponibilidade): HTTP ${res.status}`);
@@ -99,49 +104,37 @@ export async function googleBusy(calendarId: string, from: Date, to: Date) {
   return (cal?.busy ?? []).map((b) => ({ startsAt: new Date(b.start), endsAt: new Date(b.end) }));
 }
 
-export async function googleAccessToken() {
-  const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN } = process.env;
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REFRESH_TOKEN) return null;
-  const res = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: GOOGLE_CLIENT_ID,
-      client_secret: GOOGLE_CLIENT_SECRET,
-      refresh_token: GOOGLE_REFRESH_TOKEN,
-      grant_type: "refresh_token",
-    }),
-  });
-  if (!res.ok) throw new Error(`Google OAuth falhou: HTTP ${res.status}`);
-  return ((await res.json()) as { access_token: string }).access_token;
-}
-
-/** Creates the event (with a Meet link) on the manager's Google Calendar when Google is configured. */
+/**
+ * Creates the event with a Meet link on the manager's Google agenda (or on the connected one, with the
+ * manager invited). Google e-mails the invitation to the lead when the lead has an e-mail.
+ */
 export async function createCalendarEvent(input: {
-  calendarId: string;
+  user: AgendaUser;
   summary: string;
   description: string;
   slot: Slot;
   attendeeEmail?: string | null;
 }) {
-  const token = await googleAccessToken();
-  if (!token) return null;
+  const agenda = await googleAgendaFor(input.user);
+  if (!agenda) return null;
+  const attendees = [input.attendeeEmail, agenda.invite].filter((e): e is string => !!e).map((email) => ({ email }));
   const res = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(input.calendarId)}/events?conferenceDataVersion=1&sendUpdates=all`,
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(agenda.calendarId)}/events?conferenceDataVersion=1&sendUpdates=all`,
     {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${agenda.accessToken}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         summary: input.summary,
         description: input.description,
-        start: { dateTime: input.slot.startsAt.toISOString() },
-        end: { dateTime: input.slot.endsAt.toISOString() },
-        attendees: input.attendeeEmail ? [{ email: input.attendeeEmail }] : [],
-        conferenceData: { createRequest: { requestId: crypto.randomUUID() } },
+        start: { dateTime: input.slot.startsAt.toISOString(), timeZone: "America/Sao_Paulo" },
+        end: { dateTime: input.slot.endsAt.toISOString(), timeZone: "America/Sao_Paulo" },
+        attendees,
+        conferenceData: { createRequest: { requestId: crypto.randomUUID(), conferenceSolutionKey: { type: "hangoutsMeet" } } },
+        reminders: { useDefault: true },
       }),
     },
   );
   if (!res.ok) throw new Error(`Google Agenda recusou o evento: HTTP ${res.status} ${await res.text()}`);
-  const ev = (await res.json()) as { id: string; hangoutLink?: string };
-  return { id: ev.id, meetLink: ev.hangoutLink ?? null };
+  const ev = (await res.json()) as { id: string; hangoutLink?: string; htmlLink?: string };
+  return { id: ev.id, meetLink: ev.hangoutLink ?? null, account: agenda.account };
 }

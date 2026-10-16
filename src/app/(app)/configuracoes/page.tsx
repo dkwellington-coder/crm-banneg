@@ -42,7 +42,7 @@ const ENV_CHECKS: [string, string[]][] = [
   ["WhatsApp oficial (Meta)", ["WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_VERIFY_TOKEN", "WHATSAPP_APP_SECRET"]],
   ["IA (Claude)", ["ANTHROPIC_API_KEY"]],
   ["E-mail (SMTP)", ["SMTP_HOST", "SMTP_USER", "SMTP_PASS"]],
-  ["Google Agenda", ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"]],
+  ["Google Agenda", ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]],
   ["Formulários do site", ["LEADS_API_TOKEN"]],
   ["Agendador", ["CRON_SECRET"]],
 ];

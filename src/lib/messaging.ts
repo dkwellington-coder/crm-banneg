@@ -14,6 +14,8 @@ export type SendOptions = {
   automatic?: boolean;
   // Tap-to-answer buttons sent with the text inside the window
   buttons?: string[];
+  // The template's {{1}}, {{2}}, {{3}}... when it asks for more than the name (a meeting's date, time and link)
+  params?: string[];
 };
 
 export type SendOutcome =
@@ -87,8 +89,9 @@ export async function sendWhatsApp(lead: Lead, body: string, author: string, opt
   const sdrName = template?.body.includes("{{2}}")
     ? ((lead.sdrId && (await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }))?.name) || author)
     : "";
-  const params = template?.body.includes("{{2}}") ? [firstName, sdrName] : template?.body.includes("{{1}}") ? [firstName] : [];
-  const text = template ? template.body.replace("{{1}}", firstName).replace("{{2}}", sdrName) : body;
+  const params =
+    template && o.params ? o.params : template?.body.includes("{{2}}") ? [firstName, sdrName] : template?.body.includes("{{1}}") ? [firstName] : [];
+  const text = template ? template.body.replace(/\{\{(\d+)\}\}/g, (_, n: string) => params[Number(n) - 1] ?? "") : body;
   const msg = await db.message.create({
     data: { leadId: lead.id, channel: "WHATSAPP", direction: "OUT", body: text, author, template: template?.name },
   });

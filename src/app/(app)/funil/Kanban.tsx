@@ -19,6 +19,8 @@ export type KanbanCard = {
   failed: boolean;
   lastActivity: string;
   value: number | null;
+  // Needs a person: nobody opened it yet, or it is waiting for an answer
+  alert: "new" | "waiting" | null;
 };
 
 export type KanbanColumn = {
@@ -106,8 +108,19 @@ export function Kanban({ columns }: { columns: KanbanColumn[] }) {
                 href={`/leads/${l.id}`}
                 draggable
                 onDragStart={(e) => e.dataTransfer.setData("text/lead", l.id)}
-                className="group block rounded-xl border border-slate-200/80 bg-white p-3 shadow-[0_1px_2px_rgba(15,23,42,0.05)] transition hover:-translate-y-px hover:border-brand/40 hover:shadow-md"
+                className={`group block rounded-xl border bg-white p-3 shadow-[0_1px_2px_rgba(15,23,42,0.05)] transition hover:-translate-y-px hover:shadow-md ${
+                  l.alert ? "border-red-400 ring-2 ring-red-500/60" : "border-slate-200/80 hover:border-brand/40"
+                }`}
               >
+                {l.alert && (
+                  <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-red-600">
+                    <span className="relative flex h-2 w-2">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500 opacity-75" />
+                      <span className="relative inline-flex h-2 w-2 rounded-full bg-red-600" />
+                    </span>
+                    {l.alert === "new" ? "Lead novo" : "Esperando resposta"}
+                  </div>
+                )}
                 <div className="flex items-start gap-2.5">
                   <Avatar name={l.name} size={30} />
                   <div className="min-w-0 flex-1">
