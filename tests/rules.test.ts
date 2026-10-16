@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { actionLabel, delayLabel, fillVariables, splitDelay, triggerLabel } from "@/lib/rules";
 import { isTestContact, whatsappIsReal } from "@/lib/settings";
-import { currentPeriod, pace, periodRange, shiftPeriod } from "@/lib/goals";
+import { currentPeriod, pace, periodRange, shiftPeriod, todayRange, workingDays } from "@/lib/goals";
 
 describe("automation rules", () => {
   it("shows delays the way people type them", () => {
@@ -35,15 +35,24 @@ describe("goals", () => {
     expect(shiftPeriod("2026-01", -1)).toBe("2025-12");
   });
 
-  it("projects the month at the current pace", () => {
-    // Half of October gone, 10 of 30 done
+  it("projects the month at the current pace, counting only working days", () => {
+    // Friday 16 October at noon: 11.5 of October's 22 working days gone, 10 of 30 done
     const mid = new Date(periodRange("2026-10").start.getTime() + 15.5 * 86_400_000);
+    expect(workingDays("2026-10")).toBe(22);
     const p = pace(10, 30, "2026-10", mid);
-    expect(p.projected).toBe(20);
+    expect(p.projected).toBe(Math.round(10 / (11.5 / 22)));
     expect(p.onTrack).toBe(false);
-    expect(p.daysLeft).toBe(16);
-    expect(p.perDay).toBeCloseTo(20 / 16);
+    // Today plus the 10 weekdays left
+    expect(p.daysLeft).toBe(11);
+    expect(p.perDay).toBeCloseTo(20 / 11);
     expect(pace(30, 30, "2026-10", mid)).toMatchObject({ percent: 100, onTrack: true });
+  });
+
+  it("spreads a month's goal over its working days", () => {
+    expect(pace(0, 44, "2026-10", new Date("2026-10-16T15:00:00Z")).dailyTarget).toBe(2);
+    expect(workingDays("2026-11")).toBe(21);
+    // Saturday 17 October in São Paulo starts at 03:00 UTC
+    expect(todayRange(new Date("2026-10-17T02:59:00Z")).start.toISOString()).toBe("2026-10-16T03:00:00.000Z");
   });
 });
 

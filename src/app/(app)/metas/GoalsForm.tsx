@@ -5,11 +5,13 @@ import { periodLabel } from "@/lib/goals";
 
 export function GoalsForm({
   period,
+  workingDays,
   users,
   metrics,
   values,
 }: {
   period: string;
+  workingDays: number;
   users: { id: string; name: string }[];
   metrics: { key: string; label: string; money: boolean }[];
   values: Record<string, number | string>;
@@ -21,7 +23,10 @@ export function GoalsForm({
       <Card className="p-0">
         <div className="border-b border-slate-100 px-4 py-3">
           <div className="text-sm font-semibold">Metas de {periodLabel(period)}</div>
-          <div className="text-xs text-slate-500">Deixe em branco o que não tem meta. Receita em reais.</div>
+          <div className="text-xs text-slate-500">
+            Metas do mês inteiro. Este mês tem {workingDays} dias úteis (seg a sex): 2 por dia são {2 * workingDays}. Deixe em branco o que
+            não tem meta. Receita em reais.
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">

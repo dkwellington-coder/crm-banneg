@@ -4,7 +4,7 @@ import { CalendarCheck, ChevronLeft, ChevronRight, CircleDollarSign, Handshake, 
 import { connection } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { METRICS, actuals, currentPeriod, money, pace, periodLabel, shiftPeriod, type MetricKey } from "@/lib/goals";
+import { METRICS, actuals, actualsBetween, currentPeriod, money, pace, periodLabel, shiftPeriod, todayRange, workingDays, type MetricKey } from "@/lib/goals";
 import { Avatar, Card, Loading, PageHeader, btnGhostCls } from "@/components/ui";
 import { GoalsForm } from "./GoalsForm";
 
@@ -33,11 +33,15 @@ async function Goals({ searchParams }: { searchParams: PageProps<"/metas">["sear
   const sp = await searchParams;
   const now = new Date();
   const period = typeof sp.p === "string" && /^\d{4}-\d{2}$/.test(sp.p) ? sp.p : currentPeriod(now);
-  const [goals, users, get] = await Promise.all([
+  const today = todayRange(now);
+  const [goals, users, get, getToday] = await Promise.all([
     db.goal.findMany({ where: { period } }),
     db.user.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true, role: true } }),
     actuals(period),
+    actualsBetween(today.start, today.end),
   ]);
+  // Saturday and Sunday have no daily goal
+  const workingToday = ![0, 6].includes(new Date(now.getTime() - 3 * 3600_000).getUTCDay());
   const target = (metric: string, userId: string | null) => goals.find((g) => g.metric === metric && g.userId === userId)?.target ?? 0;
   const fmtValue = (metric: MetricKey, v: number) => (METRICS.find((m) => m.key === metric)!.money ? money(v) : v.toLocaleString("pt-BR"));
   const editing = sp.editar === "1" && user.role !== "SELLER";
@@ -70,6 +74,7 @@ async function Goals({ searchParams }: { searchParams: PageProps<"/metas">["sear
       {editing ? (
         <GoalsForm
           period={period}
+          workingDays={workingDays(period)}
           users={users.map((u) => ({ id: u.id, name: u.name }))}
           metrics={METRICS.map((m) => ({ key: m.key, label: m.label, money: m.money }))}
           values={Object.fromEntries(
@@ -109,10 +114,19 @@ async function Goals({ searchParams }: { searchParams: PageProps<"/metas">["sear
                         </span>
                         {isCurrent && actual < t && (
                           <span className="text-slate-500">
-                            faltam {m.money ? money(Math.ceil(p.perDay)) : (Math.ceil(p.perDay * 10) / 10).toLocaleString("pt-BR")}/dia
+                            faltam {m.money ? money(Math.ceil(p.perDay)) : (Math.ceil(p.perDay * 10) / 10).toLocaleString("pt-BR")} por dia útil
                           </span>
                         )}
                       </div>
+                      {isCurrent && workingToday && (
+                        <div className="mt-2 flex items-center justify-between rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs">
+                          <span className="font-medium text-slate-600">Hoje</span>
+                          <span className={getToday(m.key, null) >= p.dailyTarget ? "font-semibold text-emerald-600" : "font-semibold text-slate-700"}>
+                            {fmtValue(m.key, getToday(m.key, null))} de{" "}
+                            {m.money ? money(Math.ceil(p.dailyTarget)) : (Math.round(p.dailyTarget * 10) / 10).toLocaleString("pt-BR")}
+                          </span>
+                        </div>
+                      )}
                       {isCurrent && <div className="mt-1 text-[11px] text-slate-400">Projeção do mês: {fmtValue(m.key, p.projected)}</div>}
                     </>
                   ) : (
