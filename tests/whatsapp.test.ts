@@ -44,7 +44,7 @@ describe("whatsapp helpers", () => {
   });
 });
 
-import { mapRow, parseCsv } from "@/lib/csv";
+import { cleanName, mapRow, parseCsv, parseLocalDate } from "@/lib/csv";
 
 describe("csv import", () => {
   it("parses a Kommo-style semicolon export with quotes", () => {
@@ -57,6 +57,28 @@ describe("csv import", () => {
       city: "Curitiba",
       externalId: "123",
     });
+  });
+
+  it("reads the old CRM's export: dates in São Paulo time, opt-out, lost and won", () => {
+    const [row] = parseCsv(
+      "id;nome;telefone;email;criado_em;ultimo_contato_em;etapa;status;nao_contatar;funil\nx1;MARIA;5511988887777;;2026-10-02 17:11;02/10/2026 18:00;Sem interesse / não contatar;lost;não;produtos\n",
+    );
+    expect(mapRow(row)).toMatchObject({
+      name: "Maria",
+      optOut: true,
+      lost: true,
+      won: false,
+      funnel: "produtos",
+      oldStage: "Sem interesse / não contatar",
+      createdAt: new Date("2026-10-02T20:11:00Z"),
+      lastContactAt: new Date("2026-10-02T21:00:00Z"),
+    });
+    expect(cleanName("vagno@gmail.com")).toBeNull();
+    expect(cleanName("❣️")).toBeNull();
+    expect(cleanName("Sem nome (Kommo #1)")).toBeNull();
+    expect(cleanName("José de Souza")).toBe("José de Souza");
+    expect(parseLocalDate("16.10.2026")).toEqual(new Date("2026-10-16T15:00:00Z"));
+    expect(parseLocalDate("ontem")).toBeNull();
   });
 });
 

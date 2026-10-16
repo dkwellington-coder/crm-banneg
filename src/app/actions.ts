@@ -5,11 +5,11 @@ import { redirect } from "next/navigation";
 import { requireUser, login, logout, hashPassword } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
-import { createLead, moveLead, startAutomations } from "@/lib/leads";
+import { createLead, defaultPipeline, moveLead } from "@/lib/leads";
 import { sendWhatsApp } from "@/lib/messaging";
 import { enqueue } from "@/lib/queue";
 import { getSettings, saveSettings } from "@/lib/settings";
-import { parseCsv, mapRow } from "@/lib/csv";
+import { importLeads, importSummary } from "@/lib/import";
 import { ACTIONS, UNITS, type RuleConfig } from "@/lib/rules";
 import { METRICS } from "@/lib/goals";
 
@@ -132,30 +132,17 @@ export async function importCsvAction(_: unknown, form: FormData) {
   const user = await requireUser();
   const file = form.get("file");
   if (!(file instanceof File) || file.size === 0) return { message: "Escolha um arquivo CSV." };
-  const startAi = form.get("startAi") === "on";
-  const rows = parseCsv(await file.text());
-  let created = 0;
-  let duplicates = 0;
-  let skipped = 0;
-  for (const row of rows) {
-    const input = mapRow(row);
-    if (!input.phone && !input.email) {
-      skipped++;
-      continue;
-    }
-    const res = await createLead(
-      { ...input, source: input.source ?? "importação", pipelineId: String(form.get("pipelineId") ?? "") || null, reactivation: true },
-      user.name,
-    );
-    if (!res.created) {
-      duplicates++;
-      continue;
-    }
-    created++;
-    if (startAi) await startAutomations(res.lead);
+  try {
+    const count = await importLeads(await file.text(), {
+      pipelineId: String(form.get("pipelineId") ?? "") || (await defaultPipeline()).id,
+      startAi: form.get("startAi") === "on",
+      actor: user.name,
+    });
+    revalidatePath("/funil");
+    return { message: importSummary(count) };
+  } catch (e) {
+    return { message: `Não deu para importar: ${(e as Error).message}` };
   }
-  revalidatePath("/funil");
-  return { message: `${created} leads importados, ${duplicates} já existiam, ${skipped} sem telefone nem e-mail.` };
 }
 
 export async function saveSettingsAction(form: FormData) {

@@ -149,6 +149,58 @@ describe.skipIf(!dbUrl)("funnels", () => {
     expect(await batches.runDailyBatches(new Date(NOON.getTime() + 2.5 * 3600_000))).toEqual({ released: 5 });
   });
 
+  it("imports the old CRM's export: queues per funnel, opt-outs kept apart, nothing duplicated or sent", async () => {
+    const { p, fila } = await oldLeadsFunnel();
+    const desc = await db.stage.create({ data: { pipelineId: p.id, key: "descartado", name: "Descartado", position: 5, kind: "LOST" } });
+    const prod = await db.pipeline.create({ data: { name: "Aquecimento de Produtos", slug: "produtos", position: 2 } });
+    const prodFila = await db.stage.create({ data: { pipelineId: prod.id, key: "fila", name: "Na fila", position: 0 } });
+    const prodNovo = await db.stage.create({ data: { pipelineId: prod.id, key: "novo", name: "Novo pedido", position: 2 } });
+    await db.automationRule.create({ data: { stageId: prodNovo.id, action: "whatsapp", config: { text: "Recebi seu pedido" } } });
+    const prodPerdido = await db.stage.create({ data: { pipelineId: prod.id, key: "perdido", name: "Perdido", position: 11, kind: "LOST" } });
+    // Already in the CRM through WhatsApp, without the 9
+    await leads.createLead({ name: "Lucas", phone: "556193258573", source: "whatsapp", reactivation: true }, "teste");
+
+    const csv = [
+      "﻿id;nome;telefone;email;cidade;estado;origem;campanha;criado_em;ultimo_contato_em;etapa;status;nao_contatar;funil",
+      "a1;Lucas David;5561993258573;;;;Meta Ads;;2026-10-15 18:53;;Reunião agendada;open;não;antigos",
+      "a2;JOÃO DA SILVA;11988887777;Joao@X.com;Curitiba;PR;Base antiga;Reativação BANNEG;2026-10-02 17:11;;Pronto para contato;open;não;antigos",
+      "a3;Ana;5511977776666;;;;Base antiga · consórcio;Aquecimento Consórcios;2026-10-05 10:00;2026-10-12 09:00;Alice aquecendo;open;não;produtos",
+      "a4;Zé;11966665555;;;;Base antiga;;2026-10-02 17:11;2026-10-09 10:00;Sem interesse / não contatar;lost;sim;antigos",
+      "a5;Bia;11955554444;;;;Base antiga · consórcio;;2026-10-05 10:00;;Sem resposta;lost;não;produtos",
+      "a6;Zé de novo;551166665555;;;;Base antiga;;2026-10-02 17:11;;Pronto para contato;open;não;antigos",
+      "a7;Franqueado;11944443333;;;;Base antiga;;2026-10-02 17:11;;Fechado;won;não;antigos",
+      "a8;Sem nome (Kommo #12);;so@email.com;;;Base antiga;;2026-10-02 17:11;;Base para revisar;open;não;",
+      "a9;Ninguém;;;;;Base antiga;;;;;open;não;",
+    ].join("\r\n");
+    const { importLeads, importSummary } = await import("@/lib/import");
+    const count = await importLeads(csv, { pipelineId: p.id, startAi: false, actor: "Teste" });
+    expect(count).toEqual({ created: 5, queued: 3, optOut: 1, lost: 1, existing: 1, repeated: 1, won: 1, empty: 1 });
+    expect(importSummary(count)).toContain("5 leads importados");
+
+    const joao = await db.lead.findUniqueOrThrow({ where: { phone: "5511988887777" } });
+    expect(joao).toMatchObject({ name: "João Da Silva", email: "joao@x.com", stageId: fila.id, status: "NEW", externalId: "a2", whatsappOptOut: false });
+    expect(joao.createdAt.toISOString()).toBe("2026-10-02T20:11:00.000Z");
+    const ana = await db.lead.findUniqueOrThrow({ where: { phone: "5511977776666" } });
+    expect(ana).toMatchObject({ pipelineId: prod.id, stageId: prodFila.id });
+    expect(ana.lastContactAt?.toISOString()).toBe("2026-10-12T12:00:00.000Z");
+    expect(await db.lead.findUniqueOrThrow({ where: { phone: "5511966665555" } })).toMatchObject({
+      stageId: desc.id,
+      status: "DISQUALIFIED",
+      whatsappOptOut: true,
+      emailOptOut: true,
+    });
+    expect(await db.lead.findUniqueOrThrow({ where: { phone: "5511955554444" } })).toMatchObject({ stageId: prodPerdido.id, status: "LOST" });
+    expect(await db.lead.findFirstOrThrow({ where: { email: "so@email.com" } })).toMatchObject({ name: null, stageId: fila.id });
+    expect(await db.lead.count({ where: { phone: "5511944443333" } })).toBe(0);
+
+    const events = await db.leadEvent.findMany({ where: { leadId: ana.id } });
+    expect(events[0].summary).toContain('antes estava em etapa "Alice aquecendo"');
+    // Importing sends nothing; the queues release them on business days
+    expect(await db.job.count()).toBe(0);
+    // Importing the same file again creates nothing
+    expect((await importLeads(csv, { pipelineId: p.id, startAi: false, actor: "Teste" })).created).toBe(0);
+  });
+
   it("an old lead that qualifies goes on to the franchise funnel", async () => {
     const { reativ } = await oldLeadsFunnel();
     const { lead } = await leads.createLead({ name: "Bia", phone: "11955554444", source: "Kommo", stageId: reativ.id, reactivation: true }, "importação");
