@@ -95,6 +95,20 @@ async function AudioCheck() {
   );
 }
 
+/** Result of the scheduler's daily test of the owner's Google agenda. */
+async function CalendarCheck() {
+  const check = (await db.setting.findUnique({ where: { key: "calendar_check" } }))?.value as
+    | { ok?: boolean; message?: string; details?: string[]; at?: string }
+    | undefined;
+  if (!check?.message) return null;
+  return (
+    <p className={`text-sm ${check.ok ? "text-emerald-700" : "text-red-700"}`}>
+      Teste automático: {check.message} {check.at && `(${relTime(new Date(check.at))})`}
+      {check.details?.[0] && <span className="block text-xs text-slate-500">{check.details[0]}</span>}
+    </p>
+  );
+}
+
 async function Integrations({ searchParams }: { searchParams: PageProps<"/integracoes">["searchParams"] }) {
   const user = await requireUser();
   const sp = await searchParams;
@@ -334,6 +348,12 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
                   </a>
                 )}
               </div>
+              {!myGoogle && (
+                <p className="text-xs text-slate-500">
+                  Se o Google responder &quot;redirect_uri_mismatch&quot;, abra o cliente OAuth no Google Cloud (APIs e serviços &gt; Credenciais) e adicione
+                  em &quot;URIs de redirecionamento autorizados&quot;: <span className="font-mono">{origin}/api/google/callback</span>
+                </p>
+              )}
               <ul className="space-y-1 text-sm text-slate-600">
                 {users.map((u) => {
                   const g = google.find((x) => x.user.id === u.id)?.link;
@@ -351,6 +371,7 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
               </ul>
             </div>
           )}
+          <CalendarCheck />
           <TestButton kind="calendar" label="Testar agenda">
             <select name="userId" defaultValue={user.id} className={`${inputCls} w-56!`}>
               {users.map((u) => (

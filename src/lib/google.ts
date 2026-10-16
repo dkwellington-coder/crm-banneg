@@ -84,6 +84,8 @@ export async function connectGoogle(userId: string, code: string, redirectUri: s
   const payload = json.id_token ? JSON.parse(Buffer.from(json.id_token.split(".")[1], "base64url").toString("utf8")) : {};
   const link: GoogleLink = { email: String(payload.email ?? ""), connectedAt: new Date().toISOString(), token: sealToken(json.refresh_token) };
   await db.setting.upsert({ where: { key: settingKey(userId) }, create: { key: settingKey(userId), value: link }, update: { value: link } });
+  // The scheduler proves the new connection on its next round
+  await db.setting.deleteMany({ where: { key: "calendar_check" } });
   return link;
 }
 

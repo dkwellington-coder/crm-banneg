@@ -1,7 +1,8 @@
 import { runDueJobs } from "@/lib/jobs";
 import { db } from "@/lib/db";
 import { getHealth, setHealth, submitTemplates, syncTemplateStatus } from "@/lib/whatsapp";
-import { checkTranscription, checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
+import { checkCalendar, checkTranscription, checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
+import { googleConfigured } from "@/lib/google";
 import { runDailyBatches } from "@/lib/batches";
 import { pullMetaLeads } from "@/lib/meta-leads";
 import { syncAdSpend } from "@/lib/meta-ads";
@@ -48,6 +49,15 @@ export async function GET(request: Request) {
       const value = { ...(await checkTranscription()), at: new Date().toISOString() };
       await db.setting.upsert({ where: { key: "audio_check" }, create: { key: "audio_check", value }, update: { value } });
       meta.audio = value;
+    }
+    // The owner's Google agenda (meetings with Meet): proven once a day, an hour after a failure, and right after connecting
+    const cal = (await db.setting.findUnique({ where: { key: "calendar_check" } }))?.value as { ok?: boolean; at?: string } | undefined;
+    const calAge = cal?.at ? Date.now() - new Date(cal.at).getTime() : Infinity;
+    const owner = googleConfigured() ? await db.user.findFirst({ where: { role: "OWNER" }, orderBy: { createdAt: "asc" } }) : null;
+    if (owner && calAge > (cal?.ok ? 86_400_000 : 3_600_000)) {
+      const value = { ...(await checkCalendar(owner.id)), at: new Date().toISOString() };
+      await db.setting.upsert({ where: { key: "calendar_check" }, create: { key: "calendar_check", value }, update: { value } });
+      meta.calendar = value;
     }
   }
   if (minute % 30 === 0) {
