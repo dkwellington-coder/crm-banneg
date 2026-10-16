@@ -110,6 +110,31 @@ describe.skipIf(!dbUrl)("funnels", () => {
     expect(sent.filter((s) => s.type === "template")).toHaveLength(12);
   });
 
+  it("leads the old CRM already messaged, and e-mail-only leads, wait at the back of the queue", async () => {
+    const { fila, reativ } = await oldLeadsFunnel(4);
+    await importOld(fila.id, 4);
+    await db.lead.updateMany({ where: { name: { in: ["Antigo 3", "Antigo 2"] } }, data: { lastContactAt: new Date("2026-10-12T12:00:00Z") } });
+    await db.lead.update({ where: { phone: "5511900000003" }, data: { lastContactAt: new Date("2026-10-15T12:00:00Z") } });
+    await leads.createLead({ name: "Só e-mail", email: "so@email.com", source: "Kommo", stageId: fila.id, reactivation: true }, "importação");
+
+    expect(await batches.runDailyBatches(NOON)).toEqual({ released: 4 });
+    const out = await db.lead.findMany({ where: { stageId: reativ.id }, select: { name: true } });
+    expect(out.map((l) => l.name).sort()).toEqual(["Antigo 0", "Antigo 1", "Antigo 2", "Antigo 3"]);
+    // Next day: only the e-mail-only lead is left
+    expect(await batches.runDailyBatches(new Date("2026-10-15T15:00:00Z"))).toEqual({ released: 1 });
+  });
+
+  it("releases never-contacted leads first, then the ones contacted longest ago", async () => {
+    const { fila, reativ } = await oldLeadsFunnel(2);
+    await importOld(fila.id, 4);
+    await db.lead.update({ where: { phone: "5511900000003" }, data: { lastContactAt: new Date("2026-10-15T12:00:00Z") } });
+    await db.lead.update({ where: { phone: "5511900000002" }, data: { lastContactAt: new Date("2026-10-12T12:00:00Z") } });
+    await db.lead.update({ where: { phone: "5511900000001" }, data: { lastContactAt: new Date("2026-10-13T12:00:00Z") } });
+    expect(await batches.runDailyBatches(NOON)).toEqual({ released: 2 });
+    const out = await db.lead.findMany({ where: { stageId: reativ.id }, select: { name: true } });
+    expect(out.map((l) => l.name).sort()).toEqual(["Antigo 0", "Antigo 2"]);
+  });
+
   it("in test mode only test contacts leave the queue, and a Meta block holds everyone", async () => {
     const { fila, reativ } = await oldLeadsFunnel();
     await importOld(fila.id, 6);

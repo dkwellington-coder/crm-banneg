@@ -25,10 +25,22 @@ export function isSendingWindow(now = new Date()) {
   return !["Sat", "Sun"].includes(weekday) && hour >= OPEN_HOUR && hour < CLOSE_HOUR;
 }
 
+// Leads with WhatsApp leave first (e-mail only ones after), never contacted before the ones the
+// old CRM already messaged, then newest first
+const QUEUE_ORDER = [{ lastContactAt: { sort: "asc", nulls: "first" } }, { createdAt: "desc" }] as const;
+
+async function nextInQueue(stageId: string, take: number) {
+  const where = { stageId, whatsappOptOut: false };
+  const withPhone = await db.lead.findMany({ where: { ...where, phone: { not: null } }, orderBy: [...QUEUE_ORDER], take, select: { id: true } });
+  if (withPhone.length === take) return withPhone;
+  const emailOnly = await db.lead.findMany({ where: { ...where, phone: null }, orderBy: [...QUEUE_ORDER], take: take - withPhone.length, select: { id: true } });
+  return [...withPhone, ...emailOnly];
+}
+
 /**
  * Queue stages ("Na fila"): each business day, a "daily" rule moves up to perDay leads to the
- * stage that does the contact, newest first. In test mode only test contacts leave the queue, so
- * thousands of old leads are not used up by simulated messages.
+ * stage that does the contact (order in QUEUE_ORDER). In test mode only test contacts leave the
+ * queue, so thousands of old leads are not used up by simulated messages.
  */
 export async function runDailyBatches(now = new Date()) {
   const rules = await db.automationRule.findMany({ where: { trigger: "daily", active: true, action: "move" } });
@@ -49,12 +61,16 @@ export async function runDailyBatches(now = new Date()) {
     const perDay = Math.max(1, config.perDay ?? 100);
     if (done >= perDay) continue;
     const take = Math.min(PER_TICK, perDay - done);
-    const where = { stageId: rule.stageId, whatsappOptOut: false };
     const leads = settings.testMode
-      ? (await db.lead.findMany({ where: { ...where, OR: [{ phone: { not: null } }, { email: { not: null } }] }, select: { id: true, phone: true, email: true } }))
+      ? (
+          await db.lead.findMany({
+            where: { stageId: rule.stageId, whatsappOptOut: false, OR: [{ phone: { not: null } }, { email: { not: null } }] },
+            select: { id: true, phone: true, email: true },
+          })
+        )
           .filter((l) => (l.phone && isTestContact(settings, l.phone)) || (l.email && isTestContact(settings, l.email)))
           .slice(0, take)
-      : await db.lead.findMany({ where, orderBy: { createdAt: "desc" }, take, select: { id: true } });
+      : await nextInQueue(rule.stageId, take);
     for (const lead of leads) await moveLead(lead.id, config.toStageId, "Automação (lote do dia)");
     if (leads.length) {
       const value = { count: done + leads.length };
