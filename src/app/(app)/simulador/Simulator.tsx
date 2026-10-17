@@ -231,7 +231,7 @@ export function Simulator({
             </Link>{" "}
             e teste de novo aqui.
           </p>
-          {last && last.slots.length > 0 && <p className="text-xs text-slate-500">Horários que ela oferece: {last.slots.join("; ")}</p>}
+          {last && last.slots.length > 0 && <p className="text-xs text-slate-500">Primeiros horários livres na agenda: {last.slots.join("; ")}</p>}
         </Card>
       </div>
     </div>

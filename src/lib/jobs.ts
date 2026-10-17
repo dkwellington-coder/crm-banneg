@@ -105,7 +105,8 @@ const handlers: Record<string, Handler> = {
     let reply = plan.reply;
     if (plan.slot && owner) {
       const meeting = await bookMeeting(lead, owner.id, plan.slot, agent.name);
-      if (meeting.meetLink) reply = `${reply}\n\nLink da reunião: ${meeting.meetLink}`;
+      // The time comes from the booking itself, so the lead never gets one the AI misread
+      reply = `${reply}\n\nReunião: ${formatSlot(plan.slot.startsAt)} (horário de Brasília)${meeting.meetLink ? `\nLink da reunião: ${meeting.meetLink}` : ""}`;
     }
     if (reply) {
       const fresh = await db.lead.findUniqueOrThrow({ where: { id: lead.id } });

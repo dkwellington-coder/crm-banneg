@@ -43,6 +43,10 @@ export function computeSlots(opts: {
   return out;
 }
 
+export const formatDay = (d: Date) =>
+  d.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "long", day: "2-digit", month: "2-digit" });
+export const formatTime = (d: Date) => d.toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
+
 export function formatSlot(d: Date) {
   return d.toLocaleString("pt-BR", {
     timeZone: "America/Sao_Paulo",
@@ -81,7 +85,8 @@ export async function freeSlotsFor(userId: string, hours: BusinessHours, minutes
       // Without Google, the CRM's own meetings are enough to avoid double booking
     }
   }
-  return computeSlots({ now, hours, minutes, busy: [...meetings, ...google] });
+  // A whole week of free times, so the AI can book the day and time the lead asks for
+  return computeSlots({ now, hours, minutes, busy: [...meetings, ...google], days: 7, limit: 120 });
 }
 
 type AgendaUser = { id: string; email: string; calendarId: string | null };

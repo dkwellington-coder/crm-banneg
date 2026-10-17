@@ -121,6 +121,8 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(booked.meetings).toHaveLength(1);
     expect(booked.owner?.name).toBe("Gerente");
     expect(booked.aiPaused).toBe(true);
+    // The confirmation carries the booked time itself, whatever the AI wrote
+    expect(sent.map((m) => m.body)).toContainEqual(expect.stringMatching(/^Combinado, reunião marcada!\n\nReunião: .+ \(horário de Brasília\)/));
     expect(await db.job.count({ where: { leadId: lead.id, type: "meeting.reminder" } })).toBeGreaterThan(0);
     const timeline = await db.leadEvent.findMany({ where: { leadId: lead.id, type: "ai.decision" } });
     expect(timeline.map((e) => e.summary)).toEqual([expect.stringContaining("Ofereceu reunião"), expect.stringContaining("Marcou reunião")]);

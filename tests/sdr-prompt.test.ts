@@ -12,15 +12,20 @@ describe("SDR prompt", () => {
     expect(s).toContain("Capital disponível");
   });
 
-  it("numbers the free slots and wraps the conversation as data", () => {
+  it("lists the free slots by day, numbered, and wraps the conversation as data", () => {
     const u = buildUserTurn({
       ...base,
       lead: { name: "Ana", phone: "5511", email: null, city: null, state: null, source: "site", qualification: {}, summary: null },
       transcript: [{ direction: "IN", author: "Ana", body: "Oi, quero saber da franquia", at: new Date("2026-10-14T15:00:00Z") }],
-      slots: [{ startsAt: new Date("2026-10-15T13:00:00Z"), endsAt: new Date("2026-10-15T13:30:00Z") }],
+      slots: [
+        { startsAt: new Date("2026-10-15T13:00:00Z"), endsAt: new Date("2026-10-15T13:30:00Z") },
+        { startsAt: new Date("2026-10-15T18:00:00Z"), endsAt: new Date("2026-10-15T18:30:00Z") },
+        { startsAt: new Date("2026-10-16T12:00:00Z"), endsAt: new Date("2026-10-16T12:30:00Z") },
+      ],
       now: new Date("2026-10-14T15:01:00Z"),
     });
-    expect(u).toMatch(/^0: /m);
+    expect(u).toContain("quinta-feira, 15/10: 0) 10:00 · 1) 15:00");
+    expect(u).toContain("sexta-feira, 16/10: 2) 09:00");
     expect(u).toContain("<conversa>");
     expect(u).toContain("LEAD: Oi, quero saber da franquia");
     expect(u).not.toContain("5511");
