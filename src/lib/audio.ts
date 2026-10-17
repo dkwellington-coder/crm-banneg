@@ -203,6 +203,8 @@ async function transcribeWithGroq(audio: Uint8Array, mimeType: string) {
   form.append("file", new Blob([Buffer.from(audio)], { type: mimeType }), `audio.${GROQ_EXT[mimeType] ?? "ogg"}`);
   form.append("model", process.env.GROQ_TRANSCRIBE_MODEL || "whisper-large-v3-turbo");
   form.append("language", "pt");
+  // Spelling hint: without it Whisper writes the brand as "Baneg"
+  form.append("prompt", "Banneg, franquia Banneg, franqueado, consórcio, seguros.");
   form.append("response_format", "json");
   const res = await fetch(GROQ, {
     method: "POST",

@@ -137,6 +137,7 @@ describe.skipIf(!dbUrl)("audio in a conversation", () => {
       const form = call.body as FormData;
       expect(form.get("model")).toBe("whisper-large-v3-turbo");
       expect(form.get("language")).toBe("pt");
+      expect(form.get("prompt")).toContain("Banneg");
       expect((form.get("file") as File).name).toBe("audio.ogg");
       expect(calls.some((c) => c.url.includes("ai-gateway"))).toBe(false);
       expect(lead.id).toBeTruthy();
