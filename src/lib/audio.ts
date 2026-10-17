@@ -165,12 +165,17 @@ export const WHATSAPP_AUDIO = new Set(["audio/ogg", "audio/mp4", "audio/mpeg", "
 export const AUDIO_MARK = "🎤";
 
 const GATEWAY = "https://ai-gateway.vercel.sh/v4/ai/transcription-model";
+const GROQ = "https://api.groq.com/openai/v1/audio/transcriptions";
+// The file name tells Groq the format; WhatsApp voice notes are Ogg Opus
+const GROQ_EXT: Record<string, string> = { "audio/ogg": "ogg", "audio/mp4": "m4a", "audio/mpeg": "mp3", "audio/webm": "webm", "audio/wav": "wav" };
 
 /**
- * Speech to text through Vercel's AI Gateway: on Vercel it signs in with the project's own token,
+ * Speech to text. With GROQ_API_KEY it goes to Groq's Whisper, free up to 2,000 audios a day.
+ * Otherwise through Vercel's AI Gateway: on Vercel it signs in with the project's own token,
  * so no extra key is needed. AI_GATEWAY_API_KEY works too (outside Vercel or to use another account).
  */
 export async function transcribe(audio: Uint8Array, mimeType: string): Promise<string> {
+  if (process.env.GROQ_API_KEY) return transcribeWithGroq(audio, baseMime(mimeType));
   const token = process.env.AI_GATEWAY_API_KEY || (await getVercelOidcToken().catch(() => ""));
   if (!token) throw new Error("Transcrição indisponível: o servidor não tem acesso ao AI Gateway da Vercel.");
   const res = await fetch(GATEWAY, {
@@ -190,6 +195,23 @@ export async function transcribe(audio: Uint8Array, mimeType: string): Promise<s
     const message = typeof json.error === "string" ? json.error : json.error?.message;
     throw new Error(`Transcrição falhou: ${message ?? `HTTP ${res.status}`}`);
   }
+  return (json.text ?? "").trim();
+}
+
+async function transcribeWithGroq(audio: Uint8Array, mimeType: string) {
+  const form = new FormData();
+  form.append("file", new Blob([Buffer.from(audio)], { type: mimeType }), `audio.${GROQ_EXT[mimeType] ?? "ogg"}`);
+  form.append("model", process.env.GROQ_TRANSCRIBE_MODEL || "whisper-large-v3-turbo");
+  form.append("language", "pt");
+  form.append("response_format", "json");
+  const res = await fetch(GROQ, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+    body: form,
+    signal: AbortSignal.timeout(30_000),
+  });
+  const json = (await res.json().catch(() => ({}))) as { text?: string; error?: { message?: string } };
+  if (!res.ok) throw new Error(`Transcrição falhou (Groq): ${json.error?.message ?? `HTTP ${res.status}`}`);
   return (json.text ?? "").trim();
 }
 

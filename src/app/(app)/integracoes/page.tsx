@@ -77,7 +77,7 @@ function GoogleResult({ result, detail }: { result?: string | string[]; detail?:
   );
 }
 
-/** Lead audios become text for the AI through Vercel's AI Gateway; checked once a day by the cron. */
+/** Lead audios become text for the AI (Groq's free Whisper, or Vercel's AI Gateway); checked once a day by the cron. */
 async function AudioCheck() {
   const check = (await db.setting.findUnique({ where: { key: "audio_check" } }))?.value as { ok?: boolean; message?: string; at?: string } | undefined;
   return (
@@ -90,6 +90,12 @@ async function AudioCheck() {
           </span>
         )}
       </p>
+      {!process.env.GROQ_API_KEY && (
+        <p className="text-sm text-slate-600">
+          Sem custo: crie uma conta grátis em console.groq.com, gere uma chave em API Keys e coloque no Vercel como GROQ_API_KEY. Dá até 2.000
+          áudios por dia sem cartão.
+        </p>
+      )}
       <TestButton kind="transcription" label="Testar transcrição de áudio" />
     </div>
   );

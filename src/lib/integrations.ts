@@ -307,7 +307,7 @@ export async function checkCalendar(userId: string): Promise<CheckResult> {
   }
 }
 
-/** Transcribes a 6-second sample of Wellington's video: proves the AI Gateway access the lead audios use. */
+/** Transcribes a 6-second sample of Wellington's video: proves the speech-to-text access the lead audios use. */
 export async function checkTranscription(): Promise<CheckResult> {
   const base = process.env.PUBLIC_BASE_URL ?? "https://crm-banneg-banneg.vercel.app";
   try {

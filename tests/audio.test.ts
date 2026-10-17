@@ -98,7 +98,7 @@ describe.skipIf(!dbUrl)("audio in a conversation", () => {
       calls.push({ url, body: init?.body });
       if (url.endsWith("/media-1")) return Response.json({ url: "https://lookaside.fbsbx.com/audio-1", mime_type: "audio/ogg; codecs=opus" });
       if (url === "https://lookaside.fbsbx.com/audio-1") return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/ogg" } });
-      if (url.includes("ai-gateway.vercel.sh")) return transcript ? Response.json({ text: transcript }) : Response.json({ error: "boom" }, { status: 500 });
+      if (url.includes("ai-gateway.vercel.sh") || url.includes("api.groq.com")) return transcript ? Response.json({ text: transcript }) : Response.json({ error: "boom" }, { status: 500 });
       if (url.endsWith("/123/media")) return Response.json({ id: "up-1" });
       if (url.endsWith("/123/messages")) return Response.json({ messages: [{ id: `wamid.${calls.length}` }] });
       throw new Error(`unexpected ${url}`);
@@ -125,6 +125,24 @@ describe.skipIf(!dbUrl)("audio in a conversation", () => {
     expect([...msg.media!.data]).toEqual([1, 2, 3]);
     expect(calls.find((c) => c.url.includes("ai-gateway"))!.body).toContain('"mediaType":"audio/ogg"');
     expect(await db.job.count({ where: { leadId: lead.id, type: "sdr.reply", status: "PENDING" } })).toBe(1);
+  });
+
+  it("uses Groq's free Whisper when its key is set", async () => {
+    process.env.GROQ_API_KEY = "g";
+    try {
+      const { lead } = await leads.createLead({ name: "Rosa", phone: "11977774444", source: "site" }, "teste");
+      await leads.handleInbound({ phone: "11977774444", body: "[audio recebido]", externalId: "a3", at: new Date(), audio: { id: "media-1", mimeType: "audio/ogg" } });
+      expect((await db.message.findFirstOrThrow({ where: { externalId: "a3" } })).body).toBe("🎤 Oi, quanto custa a franquia Home Office?");
+      const call = calls.find((c) => c.url.includes("api.groq.com"))!;
+      const form = call.body as FormData;
+      expect(form.get("model")).toBe("whisper-large-v3-turbo");
+      expect(form.get("language")).toBe("pt");
+      expect((form.get("file") as File).name).toBe("audio.ogg");
+      expect(calls.some((c) => c.url.includes("ai-gateway"))).toBe(false);
+      expect(lead.id).toBeTruthy();
+    } finally {
+      delete process.env.GROQ_API_KEY;
+    }
   });
 
   it("hands an audio it cannot write out to the team instead of the AI", async () => {
