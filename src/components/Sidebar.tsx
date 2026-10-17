@@ -31,7 +31,9 @@ export function Sidebar() {
   useEffect(() => {
     const total = fresh + waiting;
     const apply = () => {
-      const base = document.title.replace(/^\(\d+\+?\)\s*/, "");
+      // Mid-navigation the title can be empty for a moment. "(3) " would read back as "(3)" (the browser
+      // trims it), never match, and set it again forever, freezing the tab: so never leave the name empty.
+      const base = document.title.replace(/^\(\d+\+?\)\s*/, "").trim() || "CRM Banneg";
       const want = total ? `(${total > 99 ? "99+" : total}) ${base}` : base;
       if (document.title !== want) document.title = want;
     };
