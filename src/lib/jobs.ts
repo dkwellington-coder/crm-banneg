@@ -4,7 +4,7 @@ import { logEvent } from "./events";
 import { backoffMs, cancelJobs, enqueue } from "./queue";
 import { sendWhatsApp } from "./messaging";
 import { getSettings, isTestContact, messageVars } from "./settings";
-import { createCalendarEvent, formatSlot, freeSlotsFor, pickOwner, type Slot } from "./calendar";
+import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
 import { planFromDecision, STAGE_KEYS } from "./plan";
 import { ensureTask, moveLead, pickSdr, stageByKey } from "./leads";
@@ -298,6 +298,27 @@ export async function bookMeeting(lead: Lead, userId: string, slot: Slot, actor:
     }
   }
   return meeting;
+}
+
+/** "Desmarcar" on the lead's page: off the Google agenda, reminders stopped, the time free again for the AI. */
+export async function cancelMeeting(meetingId: string, actor: string) {
+  const meeting = await db.meeting.findUnique({ where: { id: meetingId }, include: { user: true } });
+  if (!meeting || meeting.status !== "scheduled") return "Essa reunião já não estava marcada.";
+  let google = "";
+  if (meeting.calendarEventId && meeting.user) {
+    try {
+      if (await deleteCalendarEvent(meeting.user, meeting.calendarEventId)) google = " Saiu do Google Agenda.";
+    } catch (e) {
+      google = ` O Google Agenda falhou (${(e as Error).message}): apague o evento por lá.`;
+    }
+  }
+  await db.meeting.update({ where: { id: meeting.id }, data: { status: "canceled" } });
+  await db.job.updateMany({
+    where: { leadId: meeting.leadId, type: "meeting.reminder", status: "PENDING", dedupeKey: { startsWith: `reminder:${meeting.id}:` } },
+    data: { status: "CANCELLED", finishedAt: new Date(), dedupeKey: null, result: "Cancelado: reunião desmarcada." },
+  });
+  await logEvent(meeting.leadId, "meeting.canceled", actor, `Reunião de ${formatSlot(meeting.startsAt)} desmarcada.${google}`);
+  return `Reunião desmarcada.${google}`;
 }
 
 // Approved by Meta (they came over from the old CRM): they carry the date, the time and the Meet link

@@ -29,7 +29,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
   const [received, qualified, meetings, won, stages, stageCounts, firstResponse, bySdr, bySource, jobs, report] = await Promise.all([
     db.lead.count({ where: inPeriod }),
     db.lead.count({ where: { ...inPeriod, status: { in: [...ADVANCED] } } }),
-    db.meeting.count({ where: inPeriod }),
+    db.meeting.count({ where: { ...inPeriod, status: { not: "canceled" } } }),
     db.lead.count({ where: { status: "WON", updatedAt: { gte: since } } }),
     db.stage.findMany({ orderBy: { position: "asc" } }),
     db.lead.groupBy({ by: ["stageId"], _count: true }),

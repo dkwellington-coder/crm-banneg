@@ -62,7 +62,7 @@ export function formatSlot(d: Date) {
 export async function pickOwner() {
   const users = await db.user.findMany({
     where: { role: { in: ["MANAGER", "OWNER"] } },
-    include: { _count: { select: { meetings: { where: { startsAt: { gte: new Date() } } } } } },
+    include: { _count: { select: { meetings: { where: { status: "scheduled", startsAt: { gte: new Date() } } } } } },
   });
   users.sort((a, b) => a._count.meetings - b._count.meetings);
   return users[0] ?? null;
@@ -142,4 +142,17 @@ export async function createCalendarEvent(input: {
   if (!res.ok) throw new Error(`Google Agenda recusou o evento: HTTP ${res.status} ${await res.text()}`);
   const ev = (await res.json()) as { id: string; hangoutLink?: string; htmlLink?: string };
   return { id: ev.id, meetLink: ev.hangoutLink ?? null, account: agenda.account };
+}
+
+/** Removes the event from the Google agenda; Google e-mails the cancellation to the guests. */
+export async function deleteCalendarEvent(user: AgendaUser, eventId: string) {
+  const agenda = await googleAgendaFor(user);
+  if (!agenda) return false;
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(agenda.calendarId)}/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
+    { method: "DELETE", headers: { Authorization: `Bearer ${agenda.accessToken}` } },
+  );
+  // Already deleted on Google by hand: nothing left to do
+  if (!res.ok && res.status !== 404 && res.status !== 410) throw new Error(`Google Agenda não apagou o evento: HTTP ${res.status} ${await res.text()}`);
+  return true;
 }

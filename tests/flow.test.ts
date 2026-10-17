@@ -126,6 +126,12 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(await db.job.count({ where: { leadId: lead.id, type: "meeting.reminder" } })).toBeGreaterThan(0);
     const timeline = await db.leadEvent.findMany({ where: { leadId: lead.id, type: "ai.decision" } });
     expect(timeline.map((e) => e.summary)).toEqual([expect.stringContaining("Ofereceu reunião"), expect.stringContaining("Marcou reunião")]);
+
+    // 4. The team cancels it: reminders stop and it no longer counts as booked
+    expect(await jobs.cancelMeeting(booked.meetings[0].id, "Gerente")).toBe("Reunião desmarcada.");
+    expect(await db.meeting.findUniqueOrThrow({ where: { id: booked.meetings[0].id } })).toMatchObject({ status: "canceled" });
+    expect(await db.job.count({ where: { leadId: lead.id, type: "meeting.reminder", status: "PENDING" } })).toBe(0);
+    expect(await jobs.cancelMeeting(booked.meetings[0].id, "Gerente")).toBe("Essa reunião já não estava marcada.");
   });
 
   it("shows the Meta payment error as an account problem and retries the job", async () => {

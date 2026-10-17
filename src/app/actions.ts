@@ -646,6 +646,16 @@ export async function disconnectGoogleAction() {
   revalidatePath("/integracoes");
 }
 
+export async function cancelMeetingAction(meetingId: string) {
+  const user = await requireUser();
+  const { cancelMeeting } = await import("@/lib/jobs");
+  const meeting = await db.meeting.findUnique({ where: { id: meetingId }, select: { leadId: true } });
+  if (!meeting) return;
+  await cancelMeeting(meetingId, user.name);
+  revalidatePath(`/leads/${meeting.leadId}`);
+  revalidatePath("/agenda");
+}
+
 /** "Agendar reunião" on the lead's page: Google agenda with Meet, lead in "Reunião marcada", link to the lead. */
 export async function scheduleMeetingAction(leadId: string, _: unknown, form: FormData) {
   const user = await requireUser();

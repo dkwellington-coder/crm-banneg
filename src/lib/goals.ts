@@ -101,7 +101,7 @@ export async function actualsBetween(start: Date, end: Date) {
       ) f JOIN "Lead" l ON l.id = f."leadId"
       WHERE f.first >= ${start} AND f.first < ${end}
       GROUP BY l."ownerId"`,
-    db.meeting.groupBy({ by: ["userId"], where: { createdAt: { gte: start, lt: end } }, _count: true }),
+    db.meeting.groupBy({ by: ["userId"], where: { createdAt: { gte: start, lt: end }, status: { not: "canceled" } }, _count: true }),
     db.lead.groupBy({ by: ["ownerId"], where: { wonAt: { gte: start, lt: end } }, _count: true, _sum: { value: true } }),
   ]);
   const rows: Record<MetricKey, Row[]> = {

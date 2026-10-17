@@ -13,6 +13,7 @@ import { Avatar, Card, Loading, STATUS_LABEL, TempBadge, btnGhostCls, fmt, input
 import {
   addNoteAction,
   assignSdrAction,
+  cancelMeetingAction,
   completeTaskAction,
   markLostAction,
   toggleAiAction,
@@ -158,16 +159,31 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
 
         <Card className="space-y-2">
           <div className="text-sm font-bold">Próximos passos</div>
-          {lead.meetings.map((m) => (
-            <div key={m.id} className="text-sm">
-              Reunião {fmt(m.startsAt)} com {m.user?.name ?? "gerente"}
-              {m.meetLink && (
-                <a href={m.meetLink} className="ml-1 text-brand underline" target="_blank">
-                  Meet
-                </a>
-              )}
-            </div>
-          ))}
+          {lead.meetings.map((m) =>
+            m.status === "canceled" ? (
+              <div key={m.id} className="text-sm text-slate-400">
+                <s>Reunião {fmt(m.startsAt)}</s> · desmarcada
+              </div>
+            ) : (
+              <div key={m.id} className="text-sm">
+                Reunião {fmt(m.startsAt)} com {m.user?.name ?? "gerente"}
+                {m.meetLink && (
+                  <a href={m.meetLink} className="ml-1 text-brand underline" target="_blank">
+                    Meet
+                  </a>
+                )}
+                {m.status === "scheduled" && m.endsAt > new Date() && (
+                  // Two clicks, so a slip never cancels a meeting the lead was told about
+                  <details className="ml-1 inline-block">
+                    <summary className="cursor-pointer text-xs text-slate-500 underline">desmarcar</summary>
+                    <form action={cancelMeetingAction.bind(null, m.id)} className="mt-1">
+                      <button className="rounded border border-red-300 px-2 py-0.5 text-xs text-red-600">Confirmar: desmarcar e tirar do Google Agenda</button>
+                    </form>
+                  </details>
+                )}
+              </div>
+            ),
+          )}
           {lead.tasks.map((t) => (
             <form key={t.id} action={completeTaskAction.bind(null, t.id)} className="flex items-center gap-2 text-sm">
               <button className="h-4 w-4 rounded border border-slate-400" title="Concluir" />
