@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
+import { connection } from "next/server";
 import { redirect } from "next/navigation";
 import { db } from "./db";
 
@@ -39,9 +40,10 @@ export async function currentUser() {
   const store = await cookies();
   const id = store.get(SESSION_COOKIE)?.value;
   if (!id) return null;
-  const session = await db.session.findUnique({ where: { id }, include: { user: true } });
-  if (!session || session.expiresAt < new Date()) return null;
-  return session.user;
+  // Reading the clock is only allowed once the render is marked as per-request
+  await connection();
+  // One query (an include would take two): the user of this session, while it has not expired
+  return db.user.findFirst({ where: { sessions: { some: { id, expiresAt: { gt: new Date() } } } } });
 }
 
 export async function requireUser() {

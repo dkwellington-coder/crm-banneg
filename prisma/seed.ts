@@ -1,8 +1,7 @@
-import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { db } from "../src/lib/db";
 import { installDefaultPipeline } from "../src/lib/pipeline-defaults";
 
-const db = new PrismaClient();
 
 const PERSONA_BASE =
   "Você representa a área de expansão de franquias. Fale como uma pessoa real do time, nunca diga que é um robô a menos que perguntem diretamente; se perguntarem, diga que é a assistente virtual da equipe.";

@@ -1,9 +1,11 @@
 import { Suspense } from "react";
+import { connection } from "next/server";
 import Link from "next/link";
 import type { Prisma } from "@prisma/client";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { teamAlerts } from "@/lib/alerts";
+import { lastMessages } from "@/lib/inbox";
 import { Search, UserRound, Workflow } from "lucide-react";
 import { Loading, Tabs, btnGhostCls, inputCls, tabCls } from "@/components/ui";
 import { NewPipelineButton } from "./NewPipelineButton";
@@ -24,10 +26,20 @@ export default function FunilPage({ searchParams }: PageProps<"/funil">) {
 }
 
 async function Board({ searchParams }: { searchParams: PageProps<"/funil">["searchParams"] }) {
-  const user = await requireUser();
   const sp = await searchParams;
+  // The alerts below read the clock, which needs the render marked as per-request first
+  await connection();
   const q = typeof sp.q === "string" ? sp.q.trim() : "";
   const mine = sp.meus === "1";
+  // Everything that does not depend on the chosen funnel goes in one round
+  const [user, pipelines, allStages, alerts, users, sdrs] = await Promise.all([
+    requireUser(),
+    db.pipeline.findMany({ orderBy: [{ position: "asc" }, { createdAt: "asc" }] }),
+    db.stage.findMany({ orderBy: { position: "asc" } }),
+    teamAlerts(),
+    db.user.findMany({ select: { id: true, name: true } }),
+    db.sdrAgent.findMany({ select: { id: true, name: true } }),
+  ]);
   const where: Prisma.LeadWhereInput = {
     ...(q && {
       OR: [
@@ -39,33 +51,18 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
     }),
     ...(mine && { ownerId: user.id }),
   };
-  const [pipelines, alerts] = await Promise.all([
-    db.pipeline.findMany({ orderBy: [{ position: "asc" }, { createdAt: "asc" }] }),
-    teamAlerts(),
-  ]);
   // Red marks: which funnel has someone new or waiting, and which card
   const alertBy = new Map(alerts.items.map((a) => [a.leadId, a.kind]));
   const alertsIn = (pipelineId: string) => alerts.items.filter((a) => a.pipelineId === pipelineId).length;
   const pipeline = pipelines.find((p) => p.id === sp.f) ?? pipelines.find((p) => p.isDefault) ?? pipelines[0];
   if (!pipeline) return <p className="p-6 text-sm text-slate-500">Nenhum funil ainda. Rode o seed (npm run db:seed).</p>;
-  const stages = await db.stage.findMany({ where: { pipelineId: pipeline.id }, orderBy: { position: "asc" } });
+  const stages = allStages.filter((s) => s.pipelineId === pipeline.id);
   const [counts, columns] = await Promise.all([
     db.lead.groupBy({ by: ["stageId"], where: { ...where, pipelineId: pipeline.id }, _count: true, _sum: { value: true } }),
-    Promise.all(
-      stages.map((s) =>
-        db.lead.findMany({
-          where: { ...where, stageId: s.id },
-          orderBy: { updatedAt: "desc" },
-          take: PER_COLUMN,
-          include: {
-            sdr: { select: { name: true } },
-            owner: { select: { name: true } },
-            messages: { orderBy: { createdAt: "desc" }, take: 1, select: { body: true, direction: true, status: true } },
-          },
-        }),
-      ),
-    ),
+    Promise.all(stages.map((s) => db.lead.findMany({ where: { ...where, stageId: s.id }, orderBy: { updatedAt: "desc" }, take: PER_COLUMN }))),
   ]);
+  const last = await lastMessages(columns.flat().map((l) => l.id));
+  const nameOf = new Map([...users, ...sdrs].map((x) => [x.id, x.name]));
   const countBy = new Map(counts.map((c) => [c.stageId, c._count]));
   const valueBy = new Map(counts.map((c) => [c.stageId, c._sum.value ?? 0]));
   const link = (extra: Record<string, string | null>) => {
@@ -83,21 +80,24 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
     closed: s.kind !== "OPEN",
     total: countBy.get(s.id) ?? 0,
     value: valueBy.get(s.id) ?? 0,
-    leads: columns[i].map((l) => ({
-      id: l.id,
-      name: l.name ?? l.phone ?? l.email ?? "Sem nome",
-      city: [l.city, l.state].filter(Boolean).join("/") || null,
-      temperature: l.temperature,
-      score: l.score,
-      sdr: l.sdr?.name ?? null,
-      aiActive: !!l.sdr && !l.aiPaused,
-      owner: l.owner?.name ?? null,
-      lastMessage: l.messages[0] ? `${l.messages[0].direction === "IN" ? "" : "Você: "}${l.messages[0].body}` : null,
-      failed: l.messages[0]?.status === "FAILED",
-      lastActivity: (l.lastInboundAt ?? l.lastContactAt ?? l.createdAt).toISOString(),
-      value: l.value,
-      alert: alertBy.get(l.id) ?? null,
-    })),
+    leads: columns[i].map((l) => {
+      const m = last.get(l.id);
+      return {
+        id: l.id,
+        name: l.name ?? l.phone ?? l.email ?? "Sem nome",
+        city: [l.city, l.state].filter(Boolean).join("/") || null,
+        temperature: l.temperature,
+        score: l.score,
+        sdr: (l.sdrId && nameOf.get(l.sdrId)) || null,
+        aiActive: !!l.sdrId && !l.aiPaused,
+        owner: (l.ownerId && nameOf.get(l.ownerId)) || null,
+        lastMessage: m ? `${m.direction === "IN" ? "" : "Você: "}${m.body}` : null,
+        failed: m?.status === "FAILED",
+        lastActivity: (l.lastInboundAt ?? l.lastContactAt ?? l.createdAt).toISOString(),
+        value: l.value,
+        alert: alertBy.get(l.id) ?? null,
+      };
+    }),
   }));
   const total = counts.reduce((n, c) => n + c._count, 0);
   return (

@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { latestConversations } from "@/lib/inbox";
 import { Avatar, Loading, PageHeader, Tabs, tabCls, relTime } from "@/components/ui";
 
 export default function ConversasPage({ searchParams }: PageProps<"/conversas">) {
@@ -16,24 +17,18 @@ export default function ConversasPage({ searchParams }: PageProps<"/conversas">)
 }
 
 async function Inbox({ searchParams }: { searchParams: PageProps<"/conversas">["searchParams"] }) {
-  await requireUser();
-  const sp = await searchParams;
-  const filter = typeof sp.f === "string" ? sp.f : "humano";
   // Latest WhatsApp message per lead, newest first
-  const latest = await db.$queryRaw<{ leadId: string; createdAt: Date }[]>`
-    SELECT DISTINCT ON ("leadId") "leadId", "createdAt" FROM "Message"
-    WHERE channel = 'WHATSAPP' ORDER BY "leadId", "createdAt" DESC`;
-  latest.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-  const leads = await db.lead.findMany({
-    where: { id: { in: latest.slice(0, 500).map((l) => l.leadId) } },
-    include: {
-      sdr: { select: { name: true } },
-      stage: { select: { name: true } },
-      messages: { where: { channel: "WHATSAPP" }, orderBy: { createdAt: "desc" }, take: 1 },
-    },
+  const [, sp, latest] = await Promise.all([requireUser(), searchParams, latestConversations(500)]);
+  const filter = typeof sp.f === "string" ? sp.f : "humano";
+  const found = await db.lead.findMany({
+    where: { id: { in: latest.map((m) => m.leadId) } },
+    include: { sdr: { select: { name: true } }, stage: { select: { name: true } } },
   });
-  const order = new Map(latest.map((l, i) => [l.leadId, i]));
-  leads.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+  const byId = new Map(found.map((l) => [l.id, l]));
+  const leads = latest.flatMap((m) => {
+    const l = byId.get(m.leadId);
+    return l ? [{ ...l, messages: [m] }] : [];
+  });
   const needsHuman = (l: (typeof leads)[number]) => l.messages[0]?.direction === "IN" && (!l.sdr || l.aiPaused);
   const failed = (l: (typeof leads)[number]) => l.messages[0]?.status === "FAILED";
   const shown = leads.filter((l) => (filter === "humano" ? needsHuman(l) : filter === "falhas" ? failed(l) : filter === "ia" ? l.sdr && !l.aiPaused : true));

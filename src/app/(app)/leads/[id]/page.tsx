@@ -40,25 +40,23 @@ const QUAL_LABEL: Record<string, string> = {
 };
 
 async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"] }) {
-  const user = await requireUser();
   const { id } = await params;
-  const lead = await db.lead.findUnique({
-    where: { id },
-    include: {
-      stage: true,
-      sdr: true,
-      owner: true,
-      messages: { orderBy: { createdAt: "asc" }, take: 300 },
-      events: { orderBy: { createdAt: "asc" }, take: 300 },
-      tasks: { where: { doneAt: null }, orderBy: { dueAt: "asc" } },
-      meetings: { orderBy: { startsAt: "desc" }, include: { user: true } },
-      jobs: { where: { status: { in: ["PENDING", "FAILED"] } }, orderBy: { runAt: "asc" }, take: 10 },
-    },
-  });
-  if (!lead) notFound();
-  // Someone opened it: it stops lighting the "new lead" alert
-  if (!lead.seenAt) after(() => markSeen(lead.id));
-  const [stages, agents, users, macros, settings, google] = await Promise.all([
+  // The lead and everything around it load together, in one round
+  const [user, lead, stages, agents, users, macros, settings, google] = await Promise.all([
+    requireUser(),
+    db.lead.findUnique({
+      where: { id },
+      include: {
+        stage: true,
+        sdr: true,
+        owner: true,
+        messages: { orderBy: { createdAt: "asc" }, take: 300 },
+        events: { orderBy: { createdAt: "asc" }, take: 300 },
+        tasks: { where: { doneAt: null }, orderBy: { dueAt: "asc" } },
+        meetings: { orderBy: { startsAt: "desc" }, include: { user: true } },
+        jobs: { where: { status: { in: ["PENDING", "FAILED"] } }, orderBy: { runAt: "asc" }, take: 10 },
+      },
+    }),
     db.stage.findMany({ orderBy: [{ pipeline: { position: "asc" } }, { position: "asc" }], include: { pipeline: { select: { name: true } } } }),
     db.sdrAgent.findMany({ where: { active: true } }),
     db.user.findMany({ orderBy: { name: "asc" } }),
@@ -66,6 +64,9 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
     getSettings(),
     googleConfigured() ? googleLinks() : [],
   ]);
+  if (!lead) notFound();
+  // Someone opened it: it stops lighting the "new lead" alert
+  if (!lead.seenAt) after(() => markSeen(lead.id));
   const managers = users.filter((u) => u.role === "OWNER" || u.role === "MANAGER");
   const meetingWith = managers.find((m) => m.id === lead.ownerId) ?? managers.find((m) => m.id === user.id) ?? managers[0];
   const agendaOf = (userId: string) => google.find((g) => g.user.id === userId)?.link.email ?? google[0]?.link.email ?? null;
