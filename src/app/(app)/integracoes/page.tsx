@@ -293,8 +293,8 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
 
       <Block icon={Mail} color="#0284c7" title="E-mails automáticos" missing={has("SMTP_HOST", "SMTP_USER", "SMTP_PASS")}>
         <ol className="list-decimal space-y-1 pl-5">
-          <Step>Gmail/Google Workspace: SMTP_HOST=smtp.gmail.com, SMTP_PORT=465, SMTP_USER=seu e-mail.</Step>
-          <Step>SMTP_PASS é uma senha de app (Conta Google &gt; Segurança &gt; Senhas de app), não a senha normal.</Step>
+          <Step>E-mail da Locaweb (expansao@banneg.com.br): SMTP_HOST=email-ssl.com.br, SMTP_PORT=465, SMTP_USER=o e-mail completo.</Step>
+          <Step>SMTP_PASS (ou SMTP_PASSWORD) é a senha dessa caixa de e-mail. No Gmail seria uma senha de app, não a senha normal.</Step>
         </ol>
         <TestButton kind="email" label="Enviar e-mail de teste">
           <input name="to" type="email" defaultValue={user.email} className={`${inputCls} w-64!`} />

@@ -269,7 +269,13 @@ export async function sendEmailTest(to: string): Promise<CheckResult> {
   } catch (e) {
     const m = (e as Error).message;
     if (/535|Username and Password not accepted|Invalid login/i.test(m)) {
-      return { ok: false, message: "Login do e-mail recusado. No Gmail, use uma senha de app (Conta Google > Segurança > Senhas de app), não a senha normal." };
+      const host = process.env.SMTP_HOST ?? "";
+      return {
+        ok: false,
+        message: /gmail/i.test(host)
+          ? "Login do e-mail recusado pelo Gmail. Use uma senha de app (Conta Google > Segurança > Senhas de app), não a senha normal."
+          : `Login do e-mail recusado por ${host}. Confira no Vercel se SMTP_USER é o e-mail completo e SMTP_PASSWORD é a senha dessa caixa.`,
+      };
     }
     return { ok: false, message: m };
   }
