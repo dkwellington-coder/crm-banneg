@@ -25,6 +25,7 @@ import { StageSelect } from "./StageSelect";
 import { Composer } from "./Composer";
 import { AudioRecorder } from "./AudioRecorder";
 import { ScheduleMeeting } from "./ScheduleMeeting";
+import { SaveButton } from "./SaveButton";
 import { googleConfigured, googleLinks } from "@/lib/google";
 import { cofDeadline, dateTimeBr } from "@/lib/cof";
 
@@ -289,7 +290,8 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
                 className={`${inputCls} pl-9`}
               />
             </div>
-            <select name="ownerId" defaultValue={lead.ownerId ?? ""} className={inputCls}>
+            {/* Keyed by the saved owner: after saving, the form resets to its defaults, and a select only takes a new default when it mounts */}
+            <select key={lead.ownerId ?? ""} name="ownerId" defaultValue={lead.ownerId ?? ""} className={inputCls}>
               <option value="">Sem responsável</option>
               {users.map((u) => (
                 <option key={u.id} value={u.id}>
@@ -303,7 +305,7 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" name="whatsappOptOut" defaultChecked={lead.whatsappOptOut} /> Não enviar WhatsApp automático
             </label>
-            <button className={btnGhostCls}>Salvar dados</button>
+            <SaveButton label="Salvar dados" />
           </form>
         </Card>
 
