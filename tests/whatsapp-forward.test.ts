@@ -60,6 +60,18 @@ describe.skipIf(!dbUrl)("copy to the old CRM", () => {
     expect(await fwd.forwardCopy("{}", meta())).toEqual({ skipped: "no-target" });
   });
 
+  it("the owner's switch stops the copy, so only this CRM attends, and can turn it back on", async () => {
+    await fwd.forwardCopy("{}", meta());
+    expect(calls.some((c) => c.url === OLD)).toBe(true);
+    await fwd.setWhatsAppCopy(true, "Wellington");
+    calls.length = 0;
+    // Even with the old address still cached
+    expect(await fwd.forwardCopy("{}", meta())).toEqual({ skipped: "no-target" });
+    expect(calls).toHaveLength(0);
+    await fwd.setWhatsAppCopy(false, "Wellington");
+    expect(await fwd.forwardCopy("{}", meta())).toEqual({ status: 200 });
+  });
+
   it("a failing old CRM does not break anything", async () => {
     vi.stubGlobal("fetch", async (url: string) => {
       if (url.endsWith("/app")) return new Response(JSON.stringify({ id: "app1" }));

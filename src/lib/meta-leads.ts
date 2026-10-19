@@ -1,17 +1,25 @@
 import { db } from "./db";
 import { createLead, pipelineByRef } from "./leads";
+import { normalizePhone, phoneVariants } from "./whatsapp";
 
 /**
  * Facebook and Instagram lead forms. The CRM reads new leads straight from each form every few
- * minutes, so the old CRM keeps receiving them too until the team switches over: nothing to cut.
+ * minutes, and once a day checks the last 30 days of every form for a lead that never got here.
  */
 
 const GRAPH = `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION ?? "v21.0"}`;
 const RETRY_AFTER_ERROR_MS = 30 * 60 * 1000;
 // A minute of overlap so a lead saved in the same second as the last one read is not lost
 const OVERLAP_S = 60;
+// A form seen for the first time (a new campaign) is read from 3 days back, so its first leads count too
+const NEW_FORM_BACKFILL_S = 3 * 86_400;
+// The daily check: how far back, and how often
+export const AUDIT_DAYS = 30;
+const AUDIT_EVERY_MS = 12 * 3600_000;
+const LEAD_FIELDS = "id,created_time,field_data,campaign_name,platform";
 
 type Page = { id: string; name: string; access_token?: string };
+type Paged<T> = { data: T[]; paging?: { next?: string } };
 type Form = { id: string; name: string; status: string };
 type MetaLead = {
   id: string;
@@ -23,7 +31,7 @@ type MetaLead = {
 export type FormGroup = { page: Page; token: string; forms: Form[] };
 
 type MetaLeadsState = {
-  // Unix seconds of the newest lead read, per form; a form seen for the first time starts from now
+  // Unix seconds of the newest lead read, per form; a form seen for the first time starts 3 days back
   cursors?: Record<string, number>;
   // Leads already read, so the overlap never processes one twice
   seen?: string[];
@@ -45,7 +53,9 @@ function token() {
 const PERMISSION_CODES = new Set([10, 100, 190, 200, 210, 230]);
 
 async function get<T>(path: string, accessToken: string): Promise<T> {
-  const res = await fetch(`${GRAPH}/${path}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+  // A "next page" link from Meta comes whole
+  const url = path.startsWith("https://") ? path : `${GRAPH}/${path}`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   const json = (await res.json().catch(() => ({}))) as T & { error?: { message?: string; code?: number } };
   if (!res.ok) {
     const code = json.error?.code;
@@ -123,6 +133,116 @@ export async function retryMetaLeadsNow() {
   if (state.error) await saveState({ ...state, error: null });
 }
 
+/** The form's leads created after a moment (Unix seconds), every page of them. */
+async function formLeads(formId: string, after: number, pageToken: string, maxPages = 20) {
+  const filtering = encodeURIComponent(JSON.stringify([{ field: "time_created", operator: "GREATER_THAN", value: after }]));
+  let next: string | undefined = `${formId}/leads?fields=${LEAD_FIELDS}&filtering=${filtering}&limit=100`;
+  const out: MetaLead[] = [];
+  for (let page = 0; next && page < maxPages; page++) {
+    const res: Paged<MetaLead> = await get<Paged<MetaLead>>(next, pageToken);
+    out.push(...res.data);
+    next = res.data.length ? res.paging?.next : undefined;
+  }
+  return out;
+}
+
+/** Creates the form lead in its funnel; false when it has no contact or is already here (same phone). */
+async function bringLead(l: MetaLead, form: Form, funnel: string | null) {
+  const fields = mapFields(l.field_data);
+  if (!fields.phone && !fields.email) return false;
+  const pipeline = await pipelineByRef(funnel);
+  const r = await createLead(
+    {
+      name: fields.name,
+      phone: fields.phone,
+      email: fields.email,
+      city: fields.city,
+      state: fields.state,
+      source: l.platform === "ig" ? "Instagram" : "Facebook",
+      campaign: l.campaign_name || form.name,
+      externalId: `meta:${l.id}`,
+      pipelineId: pipeline?.id,
+      qualification: { ...fields.qualification, formulario: form.name },
+      createdAt: new Date(l.created_time),
+    },
+    "Formulário da Meta",
+  );
+  return r.created;
+}
+
+/** Is this form lead in the CRM: by its Meta id, its phone (with or without the 9) or its e-mail. */
+async function inCrm(l: MetaLead) {
+  if (await db.lead.findFirst({ where: { externalId: `meta:${l.id}` }, select: { id: true } })) return true;
+  const fields = mapFields(l.field_data);
+  const phone = fields.phone ? normalizePhone(fields.phone) : "";
+  if (phone && (await db.lead.findFirst({ where: { phone: { in: phoneVariants(phone) } }, select: { id: true } }))) return true;
+  const email = fields.email?.trim().toLowerCase();
+  return !!email && !!(await db.lead.findFirst({ where: { email }, select: { id: true } }));
+}
+
+export type MissingLead = { id: string; formId: string; form: string; pageId: string; at: string; name: string | null };
+export type MetaLeadsAudit = { at: string; days: number; total: number; noContact: number; missing: MissingLead[]; error?: string | null };
+const AUDIT_KEY = "meta_leads_audit";
+
+export async function lastMetaLeadsAudit() {
+  return (await db.setting.findUnique({ where: { key: AUDIT_KEY } }))?.value as MetaLeadsAudit | undefined;
+}
+
+/**
+ * Every lead the active forms got in the last 30 days, checked against the CRM: the ones that never
+ * got here (a form first read late, a lead the old CRM got alone) are listed on Integrações.
+ */
+export async function auditMetaLeads(now = new Date(), days = AUDIT_DAYS): Promise<MetaLeadsAudit> {
+  let audit: MetaLeadsAudit;
+  try {
+    const after = Math.floor(now.getTime() / 1000) - days * 86_400;
+    const missing: MissingLead[] = [];
+    let total = 0;
+    let noContact = 0;
+    for (const { page, token: pageToken, forms } of await leadForms()) {
+      for (const form of forms) {
+        for (const l of await formLeads(form.id, after, pageToken)) {
+          total++;
+          const fields = mapFields(l.field_data);
+          if (!fields.phone && !fields.email) noContact++;
+          else if (!(await inCrm(l))) missing.push({ id: l.id, formId: form.id, form: form.name, pageId: page.id, at: l.created_time, name: fields.name ?? null });
+        }
+      }
+    }
+    missing.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    audit = { at: now.toISOString(), days, total, noContact, missing: missing.slice(0, 300), error: null };
+  } catch (e) {
+    audit = { ...((await lastMetaLeadsAudit()) ?? { days, total: 0, noContact: 0, missing: [] }), at: now.toISOString(), error: (e as Error).message };
+  }
+  await db.setting.upsert({ where: { key: AUDIT_KEY }, create: { key: AUDIT_KEY, value: audit }, update: { value: audit } });
+  return audit;
+}
+
+/** The daily check, run by the cron: twice a day at most. */
+export async function auditMetaLeadsIfDue(now = new Date()) {
+  const last = await lastMetaLeadsAudit();
+  if (last?.at && now.getTime() - Date.parse(last.at) < AUDIT_EVERY_MS) return null;
+  return auditMetaLeads(now);
+}
+
+/** Brings the leads the check found missing into their funnels, as new leads, then checks again. */
+export async function bringMissingMetaLeads(now = new Date()) {
+  const audit = await lastMetaLeadsAudit();
+  if (!audit?.missing.length) return { created: 0, audit };
+  const state = await loadState();
+  const groups = await leadForms();
+  let created = 0;
+  for (const m of audit.missing) {
+    const group = groups.find((g) => g.page.id === m.pageId);
+    const form = group?.forms.find((f) => f.id === m.formId);
+    if (!group || !form) continue;
+    const l = await get<MetaLead>(`${m.id}?fields=${LEAD_FIELDS}`, group.token);
+    if (await inCrm(l)) continue;
+    if (await bringLead(l, form, state.forms?.[form.id] ?? funnelForForm(form.name))) created++;
+  }
+  return { created, audit: await auditMetaLeads(now) };
+}
+
 /** Reads the new leads of every active form and creates them in the right funnel. Called by the cron. */
 export async function pullMetaLeads(now = new Date()) {
   const state = await loadState();
@@ -138,41 +258,13 @@ export async function pullMetaLeads(now = new Date()) {
       for (const form of forms) {
         const funnel = state.forms?.[form.id] ?? funnelForForm(form.name);
         names[form.id] = { name: form.name, page: page.name, funnel };
-        const since = cursors[form.id];
-        if (since === undefined) {
-          // Older form leads come in with the exports of the old CRM, into the old-leads queue
-          cursors[form.id] = Math.floor(now.getTime() / 1000);
-          continue;
-        }
-        const filtering = encodeURIComponent(JSON.stringify([{ field: "time_created", operator: "GREATER_THAN", value: since - OVERLAP_S }]));
-        const { data } = await get<{ data: MetaLead[] }>(
-          `${form.id}/leads?fields=id,created_time,field_data,campaign_name,platform&filtering=${filtering}&limit=100`,
-          pageToken,
-        );
+        const since = (cursors[form.id] ??= Math.floor(now.getTime() / 1000) - NEW_FORM_BACKFILL_S);
+        const data = await formLeads(form.id, since - OVERLAP_S, pageToken);
         for (const l of data.sort((a, b) => Date.parse(a.created_time) - Date.parse(b.created_time))) {
           cursors[form.id] = Math.max(cursors[form.id], Math.floor(Date.parse(l.created_time) / 1000));
           if (seen.has(l.id)) continue;
           seen.add(l.id);
-          const fields = mapFields(l.field_data);
-          if (!fields.phone && !fields.email) continue;
-          const pipeline = await pipelineByRef(funnel);
-          const r = await createLead(
-            {
-              name: fields.name,
-              phone: fields.phone,
-              email: fields.email,
-              city: fields.city,
-              state: fields.state,
-              source: l.platform === "ig" ? "Instagram" : "Facebook",
-              campaign: l.campaign_name || form.name,
-              externalId: `meta:${l.id}`,
-              pipelineId: pipeline?.id,
-              qualification: { ...fields.qualification, formulario: form.name },
-              createdAt: new Date(l.created_time),
-            },
-            "Formulário da Meta",
-          );
-          if (r.created) created++;
+          if (await bringLead(l, form, funnel)) created++;
         }
       }
     }

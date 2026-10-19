@@ -551,13 +551,18 @@ export async function testIntegrationAction(_: TestState, form: FormData): Promi
     templates_sync: () => integrations.syncWhatsAppTemplates(),
     webhook_here: () => integrations.receiveWhatsAppHere(),
     webhook_back: () => integrations.giveWhatsAppBack(),
+    webhook_copy_off: () => integrations.switchWhatsAppCopy(true, user.name),
+    webhook_copy_on: () => integrations.switchWhatsAppCopy(false, user.name),
     email: () => integrations.sendEmailTest(String(form.get("to") || user.email)),
     calendar: () => integrations.checkCalendar(String(form.get("userId") || user.id)),
     meta_forms: () => integrations.checkMetaLeads(),
+    meta_audit: () => integrations.checkMissingMetaLeads(),
+    meta_bring: () => integrations.bringMissingFormLeads(),
     meta_ads: () => integrations.checkMetaAds(),
   }[kind];
   if (!run) return { kind, ok: false, message: "Teste desconhecido." };
   const res = await run();
+  if (kind.startsWith("webhook_copy") || kind.startsWith("meta_")) revalidatePath("/integracoes");
   if (kind.startsWith("templates")) {
     revalidatePath("/configuracoes");
     revalidatePath("/integracoes");

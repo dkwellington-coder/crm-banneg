@@ -9,7 +9,7 @@ import { disconnectGoogleAction, saveTestModeAction } from "../../actions";
 import { googleLinks } from "@/lib/google";
 import { TestButton } from "./TestButton";
 import { FormFunnelSelect } from "./FormFunnelSelect";
-import { funnelForForm } from "@/lib/meta-leads";
+import { funnelForForm, type MetaLeadsAudit } from "@/lib/meta-leads";
 import type { MetaAdsState } from "@/lib/meta-ads";
 import { daysAgo } from "@/lib/time";
 
@@ -120,7 +120,7 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
   const sp = await searchParams;
   const h = await headers();
   const origin = `${h.get("x-forwarded-proto") ?? "https"}://${h.get("host")}`;
-  const [settings, lastInbound, users, templates, drafts, pending, formsRow, pipelines, adsRow, spend30] = await Promise.all([
+  const [settings, lastInbound, users, templates, drafts, pending, formsRow, pipelines, adsRow, spend30, copyRow, forwardRow, auditRow] = await Promise.all([
     getSettings(),
     db.message.findFirst({ where: { direction: "IN", channel: "WHATSAPP" }, orderBy: { createdAt: "desc" } }),
     db.user.findMany({ where: { role: { in: ["OWNER", "MANAGER"] } }, orderBy: { name: "asc" } }),
@@ -131,7 +131,13 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
     db.pipeline.findMany({ select: { slug: true, name: true, isDefault: true }, orderBy: { position: "asc" } }),
     db.setting.findUnique({ where: { key: "meta_ads" } }),
     db.adSpend.aggregate({ where: { date: { gte: daysAgo(30) } }, _sum: { spend: true } }),
+    db.setting.findUnique({ where: { key: "whatsapp_copy" } }),
+    db.setting.findUnique({ where: { key: "whatsapp_forward" } }),
+    db.setting.findUnique({ where: { key: "meta_leads_audit" } }),
   ]);
+  const copy = copyRow?.value as { off?: boolean; by?: string; at?: string } | undefined;
+  const oldCrm = (forwardRow?.value as { url?: string | null } | undefined)?.url;
+  const audit = auditRow?.value as MetaLeadsAudit | undefined;
   const google = await googleLinks();
   const myGoogle = google.find((g) => g.user.id === user.id)?.link ?? null;
   const ads = adsRow?.value as MetaAdsState | undefined;
@@ -217,6 +223,23 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
         <TestButton kind="templates" label="Importar modelos já aprovados na Meta" />
         <TestButton kind="webhook_here" label="Receber as mensagens do WhatsApp neste CRM" />
         <TestButton kind="webhook_back" label="Devolver as mensagens ao CRM antigo" />
+        <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm">
+          {copy?.off ? (
+            <span className="text-emerald-700">
+              Atendimento só neste CRM: o CRM antigo não recebe mais as mensagens do WhatsApp
+              {copy.by && copy.at ? ` (${copy.by}, ${relTime(new Date(copy.at))})` : ""}.
+            </span>
+          ) : oldCrm ? (
+            <span className="text-amber-700">Uma cópia de cada mensagem ainda vai para o CRM antigo ({new URL(oldCrm).host}): os dois recebem as conversas.</span>
+          ) : (
+            <span className="text-slate-500">Nenhuma cópia vai para o CRM antigo.</span>
+          )}
+        </div>
+        {copy?.off ? (
+          <TestButton kind="webhook_copy_on" label="Voltar a mandar cópia para o CRM antigo" />
+        ) : (
+          <TestButton kind="webhook_copy_off" label="Atender só neste CRM (parar a cópia para o CRM antigo)" />
+        )}
         <TestButton kind="whatsapp_send" label="Enviar mensagem de teste">
           <input name="phone" required placeholder="Seu celular com DDD" className={`${inputCls} w-56!`} />
         </TestButton>
@@ -243,7 +266,7 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
       <Block icon={ClipboardList} color="#1877f2" title="Formulários do Facebook e Instagram" missing={process.env.META_LEADS_TOKEN || process.env.WHATSAPP_TOKEN ? [] : ["META_LEADS_TOKEN"]}>
         <p className="text-sm text-slate-600">
           O CRM lê os leads novos direto dos formulários a cada 2 minutos e coloca cada um no funil certo (franquia, produtos ou sindicatos, pelo nome do
-          formulário). O CRM antigo continua recebendo também, então nada é cortado.
+          formulário). Um formulário novo é lido desde 3 dias antes, e duas vezes por dia o CRM confere os últimos 30 dias de todos os formulários.
         </p>
         <ol className="list-decimal space-y-1 pl-5">
           <Step>Meta Business &gt; Usuários do sistema: no usuário do WhatsApp, atribua a Página do Banneg com controle total.</Step>
@@ -275,6 +298,33 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
           </ul>
         )}
         <TestButton kind="meta_forms" label="Conferir formulários" />
+        {audit && (
+          <div className="space-y-2 text-sm">
+            <div className={audit.error ? "text-amber-700" : audit.missing.length ? "text-red-700" : "text-emerald-700"}>
+              {audit.error
+                ? `Conferência ${relTime(new Date(audit.at))}: ${audit.error}`
+                : `Conferência ${relTime(new Date(audit.at))}: ${audit.total} leads nos formulários nos últimos ${audit.days} dias, ${
+                    audit.missing.length ? `${audit.missing.length} não estão no CRM` : "todos estão no CRM"
+                  }.`}
+            </div>
+            {audit.missing.length > 0 && (
+              <ul className="max-h-60 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+                {audit.missing.map((m) => (
+                  <li key={m.id} className="flex items-center justify-between gap-3 px-3 py-1.5">
+                    <span className="truncate text-slate-700">{m.name ?? "Sem nome"}</span>
+                    <span className="shrink-0 text-xs text-slate-500">
+                      {m.form} · {new Date(m.at).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        <TestButton kind="meta_audit" label="Conferir leads dos últimos 30 dias" />
+        {audit && audit.missing.length > 0 && (
+          <TestButton kind="meta_bring" label={`Trazer os ${audit.missing.length} que faltam (entram como lead novo e a IA manda a primeira mensagem)`} />
+        )}
       </Block>
 
       <Block icon={BadgeDollarSign} color="#0866ff" title="Investimento dos anúncios (Meta Ads)" missing={process.env.META_ADS_TOKEN || process.env.META_LEADS_TOKEN ? [] : ["META_LEADS_TOKEN"]}>

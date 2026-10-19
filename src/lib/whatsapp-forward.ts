@@ -33,10 +33,25 @@ async function appCallbackUrl() {
   return url && url !== WEBHOOK_URL ? url : null;
 }
 
+// The owner's switch on Integrações: once only this CRM attends, the old one gets no copy
+const COPY_KEY = "whatsapp_copy";
+
+/** Turns the copy to the old CRM off (only this CRM attends) or back on. */
+export async function setWhatsAppCopy(off: boolean, by: string) {
+  const value = { off, by, at: new Date().toISOString() };
+  await db.setting.upsert({ where: { key: COPY_KEY }, create: { key: COPY_KEY, value }, update: { value } });
+}
+
+export async function whatsAppCopyOff() {
+  const row = await db.setting.findUnique({ where: { key: COPY_KEY } });
+  return (row?.value as { off?: boolean } | undefined)?.off === true;
+}
+
 /** Where copies go: WHATSAPP_FORWARD_URL when set (empty turns copies off), else the Meta app's own address. */
 export async function forwardTarget(now = new Date()): Promise<string | null> {
   const fixed = process.env.WHATSAPP_FORWARD_URL;
   if (fixed !== undefined) return fixed.trim() || null;
+  if (await whatsAppCopyOff()) return null;
   if (cached && now.getTime() - Date.parse(cached.at) < TTL_MS) return cached.url;
   const row = await db.setting.findUnique({ where: { key: "whatsapp_forward" } });
   const saved = row?.value as ForwardState | undefined;

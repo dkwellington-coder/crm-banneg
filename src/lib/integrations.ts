@@ -6,9 +6,9 @@ import { formatSlot, freeSlotsFor, googleBusy } from "./calendar";
 import { googleAgendaFor, googleConfigured } from "./google";
 import { getSettings } from "./settings";
 import { normalizePhone, sendTemplate, sendText, submitTemplates, syncTemplateStatus } from "./whatsapp";
-import { funnelForForm, leadForms, retryMetaLeadsNow } from "./meta-leads";
+import { auditMetaLeads, bringMissingMetaLeads, funnelForForm, leadForms, retryMetaLeadsNow } from "./meta-leads";
 import { adAccounts, syncAdSpend } from "./meta-ads";
-import { forwardTarget } from "./whatsapp-forward";
+import { forwardTarget, setWhatsAppCopy } from "./whatsapp-forward";
 import { templateFor } from "./messaging";
 import { transcribe } from "./audio";
 
@@ -77,6 +77,23 @@ export async function whatsappWebhookTarget(): Promise<{ here: boolean; uri: str
  * Makes Meta deliver the number's messages to this CRM, overriding the app's address only for
  * this WhatsApp account. Undo with giveWhatsAppBack: the app's own address (old CRM) comes back.
  */
+/** Only this CRM attends: the old one stops getting a copy of each WhatsApp message (or gets it again). */
+export async function switchWhatsAppCopy(off: boolean, by: string): Promise<CheckResult> {
+  const before = await forwardTarget().catch(() => null);
+  await setWhatsAppCopy(off, by);
+  if (off)
+    return {
+      ok: true,
+      message: before
+        ? `Pronto: o atendimento fica só neste CRM. O CRM antigo (${new URL(before).host}) não recebe mais as mensagens do WhatsApp.`
+        : "Pronto: o atendimento fica só neste CRM. Nenhuma cópia vai para o CRM antigo.",
+    };
+  const now = await forwardTarget().catch(() => null);
+  return now
+    ? { ok: true, message: `A cópia voltou: o CRM antigo (${new URL(now).host}) recebe de novo cada mensagem do WhatsApp.` }
+    : { ok: false, message: "A cópia foi religada, mas a Meta não informou o endereço do CRM antigo." };
+}
+
 export async function receiveWhatsAppHere(): Promise<CheckResult> {
   const waba = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
   if (!waba || !process.env.WHATSAPP_TOKEN) return { ok: false, message: "Falta WHATSAPP_TOKEN ou WHATSAPP_BUSINESS_ACCOUNT_ID." };
@@ -227,6 +244,34 @@ export async function checkMetaLeads(): Promise<CheckResult> {
     );
     await retryMetaLeadsNow();
     return { ok: true, message: `${count} formulários ativos. Os leads novos entram sozinhos a cada 2 minutos.`, details };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+/** The last 30 days of every form against the CRM: how many leads came and which never got here. */
+export async function checkMissingMetaLeads(): Promise<CheckResult> {
+  const audit = await auditMetaLeads();
+  if (audit.error) return { ok: false, message: audit.error };
+  const n = audit.missing.length;
+  return {
+    ok: true,
+    message: n
+      ? `${audit.total} leads nos formulários nos últimos ${audit.days} dias: ${n} não estão no CRM.`
+      : `${audit.total} leads nos formulários nos últimos ${audit.days} dias: todos estão no CRM.`,
+    details: audit.noContact ? [`${audit.noContact} vieram sem telefone e sem e-mail (não dá para atender).`] : undefined,
+  };
+}
+
+/** Brings into their funnels the form leads the check found missing. */
+export async function bringMissingFormLeads(): Promise<CheckResult> {
+  try {
+    const { created, audit } = await bringMissingMetaLeads();
+    const left = audit?.missing.length ?? 0;
+    return {
+      ok: !audit?.error,
+      message: `${created} lead(s) trazido(s) para o CRM.${left ? ` Ainda faltam ${left}.` : ""}`,
+    };
   } catch (e) {
     return fail(e);
   }

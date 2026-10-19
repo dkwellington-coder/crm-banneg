@@ -62,7 +62,16 @@ describe.skipIf(!dbUrl)("reading the forms", () => {
           ],
         });
       const form = u.pathname.match(/\/(f\d)\/leads$/)?.[1];
-      if (form) return json({ data: leadsByForm[form] ?? [] });
+      if (form) {
+        // Meta's filter on time_created, like the real Graph API
+        const after = (JSON.parse(u.searchParams.get("filtering") ?? "[]") as { value: number }[])[0]?.value ?? 0;
+        const all = (leadsByForm[form] ?? []) as { created_time: string }[];
+        return json({ data: all.filter((l) => Date.parse(l.created_time) / 1000 > after) });
+      }
+      const one = Object.values(leadsByForm)
+        .flat()
+        .find((l) => u.pathname.endsWith(`/${(l as { id: string }).id}`));
+      if (one) return json(one);
       // WhatsApp sends from the automations
       return json({ messages: [{ id: `wamid.${Math.random()}` }] });
     });
@@ -91,11 +100,14 @@ describe.skipIf(!dbUrl)("reading the forms", () => {
     field_data: Object.entries(fields).map(([name, v]) => ({ name, values: [v] })),
   });
 
-  it("starts from now, then brings each new lead once into its funnel", async () => {
-    // First read only marks where to start: older leads come with the exports
-    leadsByForm.f1 = [lead("L0", "2026-10-01T10:00:00+0000", { full_name: "Velho", phone_number: "11900000001" })];
-    expect(await metaLeads.pullMetaLeads(at("2026-10-15T13:00:00Z"))).toEqual({ created: 0, forms: 2 });
-    expect(await db.lead.count()).toBe(0);
+  it("reads a new form from 3 days back, then brings each new lead once into its funnel", async () => {
+    // A new campaign's first leads count; older ones are left to the daily check
+    leadsByForm.f1 = [
+      lead("L0", "2026-10-01T10:00:00+0000", { full_name: "Velho", phone_number: "11900000001" }),
+      lead("L00", "2026-10-14T10:00:00+0000", { full_name: "Recente", phone_number: "11900000002" }),
+    ];
+    expect(await metaLeads.pullMetaLeads(at("2026-10-15T13:00:00Z"))).toEqual({ created: 1, forms: 2 });
+    expect((await db.lead.findMany()).map((l) => l.name)).toEqual(["Recente"]);
     const state = (await db.setting.findUniqueOrThrow({ where: { key: "meta_leads" } })).value as { names: Record<string, unknown> };
     expect(state.names).toEqual({
       f1: { name: "Franquia Banneg", page: "Banneg", funnel: "franquias" },
@@ -117,7 +129,31 @@ describe.skipIf(!dbUrl)("reading the forms", () => {
 
     // The same leads come back in the overlap: nothing is created twice
     expect(await metaLeads.pullMetaLeads(at("2026-10-15T13:04:00Z"))).toEqual({ created: 0, forms: 2 });
-    expect(await db.lead.count()).toBe(2);
+    expect(await db.lead.count()).toBe(3);
+  });
+
+  it("the daily check lists the form leads that never got here, and brings them on request", async () => {
+    await metaLeads.pullMetaLeads(at("2026-10-15T13:00:00Z"));
+    // Already here from the old CRM's export, under the number without the 9
+    await db.lead.create({ data: { name: "Importada", phone: "551188887777", pipelineId: franchise.id, stageId: (await db.stage.findFirstOrThrow({ where: { pipelineId: franchise.id } })).id } });
+    leadsByForm.f1 = [
+      lead("L5", "2026-10-02T10:00:00+0000", { full_name: "Perdida", phone_number: "11977776666" }),
+      lead("L6", "2026-10-03T10:00:00+0000", { full_name: "Importada", phone_number: "+55 11 98888-7777" }),
+      lead("L7", "2026-10-04T10:00:00+0000", { full_name: "Sem contato" }),
+      lead("L8", "2026-09-01T10:00:00+0000", { full_name: "Antiga demais", phone_number: "11966665555" }),
+    ];
+    const audit = await metaLeads.auditMetaLeads(at("2026-10-15T14:00:00Z"));
+    expect(audit).toMatchObject({ total: 3, noContact: 1, error: null });
+    expect(audit.missing).toEqual([expect.objectContaining({ id: "L5", form: "Franquia Banneg", name: "Perdida" })]);
+    // Not again within 12 hours
+    expect(await metaLeads.auditMetaLeadsIfDue(at("2026-10-15T20:00:00Z"))).toBeNull();
+
+    const { created, audit: after } = await metaLeads.bringMissingMetaLeads(at("2026-10-15T14:05:00Z"));
+    expect(created).toBe(1);
+    expect(after?.missing).toEqual([]);
+    const brought = await db.lead.findFirstOrThrow({ where: { name: "Perdida" }, include: { pipeline: true } });
+    expect(brought).toMatchObject({ externalId: "meta:L5", source: "Facebook", phone: "5511977776666" });
+    expect(brought.pipeline.slug).toBe("franquias");
   });
 
   it("without permission it says why and waits 30 minutes before trying again", async () => {

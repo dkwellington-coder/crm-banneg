@@ -4,7 +4,7 @@ import { getHealth, setHealth, submitTemplates, syncTemplateStatus } from "@/lib
 import { checkCalendar, checkTranscription, checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
 import { googleConfigured } from "@/lib/google";
 import { runDailyBatches } from "@/lib/batches";
-import { pullMetaLeads } from "@/lib/meta-leads";
+import { auditMetaLeadsIfDue, pullMetaLeads } from "@/lib/meta-leads";
 import { syncAdSpend } from "@/lib/meta-ads";
 import { forwardTarget } from "@/lib/whatsapp-forward";
 import { backfillCapi, runCapi } from "@/lib/meta-capi";
@@ -31,6 +31,12 @@ export async function GET(request: Request) {
   if (minute % 2 === 1 && (process.env.META_LEADS_TOKEN || process.env.WHATSAPP_TOKEN)) {
     // New Facebook and Instagram form leads, read straight from the forms
     meta.forms = await pullMetaLeads().catch((e: Error) => ({ error: e.message }));
+  }
+  if (minute % 30 === 15 && (process.env.META_LEADS_TOKEN || process.env.WHATSAPP_TOKEN)) {
+    // Twice a day: the last 30 days of every form against the CRM, so no campaign lead is lost on the way
+    meta.formsAudit = await auditMetaLeadsIfDue()
+      .then((a) => a && { total: a.total, missing: a.missing.length, error: a.error })
+      .catch((e: Error) => ({ error: e.message }));
   }
   if (minute % 30 === 20 && (process.env.META_ADS_TOKEN || process.env.META_LEADS_TOKEN)) {
     // What each campaign spent, to put a cost on leads and sales (the first read brings 90 days)
