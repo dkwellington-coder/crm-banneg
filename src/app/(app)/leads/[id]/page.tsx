@@ -15,6 +15,7 @@ import {
   assignSdrAction,
   cancelMeetingAction,
   completeTaskAction,
+  markAlertSeenAction,
   markLostAction,
   toggleAiAction,
   updateLeadAction,
@@ -70,6 +71,16 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
   if (!lead.seenAt) after(() => markSeen(lead.id));
   const managers = users.filter((u) => u.role === "OWNER" || u.role === "MANAGER");
   const meetingWith = managers.find((m) => m.id === lead.ownerId) ?? managers.find((m) => m.id === user.id) ?? managers[0];
+  // Same rule as the red alerts: the lead wrote and no AI answers, or a task fell due, since the last time it was handled
+  const cleared = lead.alertsClearedAt;
+  const lastWhatsApp = lead.messages.findLast((m) => m.channel === "WHATSAPP");
+  const dueTask = lead.tasks.find((t) => t.dueAt <= new Date() && (!cleared || t.dueAt > cleared));
+  const alerting =
+    lastWhatsApp?.direction === "IN" && (!lead.sdrId || lead.aiPaused) && (!cleared || lastWhatsApp.createdAt > cleared)
+      ? "Esperando resposta: o lead escreveu e ninguém respondeu ainda."
+      : dueTask
+        ? `Tarefa vencida: ${dueTask.title}`
+        : null;
   const agendaOf = (userId: string) => google.find((g) => g.user.id === userId)?.link.email ?? google[0]?.link.email ?? null;
   // Macros arrive ready to send: name, links to videos and PDFs already filled in
   const vars = messageVars(settings, lead, lead.sdr?.name ?? "");
@@ -107,6 +118,17 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
           </div>
         </div>
         <StageSelect leadId={lead.id} stageId={lead.stageId} stages={stages.map((s) => ({ id: s.id, name: s.name, pipeline: s.pipeline.name }))} />
+        {alerting && (
+          <form
+            action={markAlertSeenAction.bind(null, lead.id)}
+            className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            <span className="min-w-0 flex-1">{alerting}</span>
+            <button className="shrink-0 rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-red-700 ring-1 ring-red-300 hover:bg-red-100">
+              Marcar como visto
+            </button>
+          </form>
+        )}
 
         <Card className="space-y-2">
           <div className="flex items-center justify-between">

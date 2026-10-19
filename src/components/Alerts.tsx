@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Bell, BellOff, BellRing, UserPlus, MessageCircle, X } from "lucide-react";
 import type { Alert, TeamAlerts } from "@/lib/alerts";
+import { markAlertSeenAction } from "@/app/actions";
 
 const POLL_MS = 15_000;
 const SOUND_PREF = "crm_alerts_sound";
@@ -174,7 +175,18 @@ export function useTeamAlerts(onChange?: () => void) {
     if (on) ding();
   }, []);
 
-  return { data, toasts, dismiss, sound, permission, toggle };
+  /** "Marcar como vista" on the pop-up: the badge and the card mark go away too. */
+  const seen = useCallback(
+    async (a: Alert) => {
+      dismiss(a.key);
+      await markAlertSeenAction(a.leadId);
+      await poll();
+      changed.current?.();
+    },
+    [dismiss, poll],
+  );
+
+  return { data, toasts, dismiss, seen, sound, permission, toggle };
 }
 
 export function Badge({ count, title }: { count: number; title?: string }) {
@@ -213,7 +225,7 @@ export function AlertBell({ sound, permission, onClick }: { sound: boolean; perm
   );
 }
 
-export function AlertToasts({ toasts, dismiss }: { toasts: Alert[]; dismiss: (key: string) => void }) {
+export function AlertToasts({ toasts, dismiss, seen }: { toasts: Alert[]; dismiss: (key: string) => void; seen: (a: Alert) => void }) {
   if (!toasts.length) return null;
   return (
     <div className="fixed bottom-4 right-4 z-[60] flex w-[340px] max-w-[calc(100vw-2rem)] flex-col gap-2">
@@ -228,13 +240,22 @@ export function AlertToasts({ toasts, dismiss }: { toasts: Alert[]; dismiss: (ke
               <div className="text-[11px] font-semibold uppercase tracking-wide text-red-600">{TITLE[a.kind]}</div>
               <div className="truncate text-sm font-semibold text-slate-900">{a.name}</div>
               <div className="line-clamp-2 text-xs text-slate-600">{a.text}</div>
-              <Link
-                href={`/leads/${a.leadId}`}
-                onClick={() => dismiss(a.key)}
-                className="mt-1.5 inline-block rounded-lg bg-brand px-3 py-1 text-xs font-semibold text-white hover:bg-brand-dark"
-              >
-                Abrir
-              </Link>
+              <div className="mt-1.5 flex items-center gap-2">
+                <Link
+                  href={`/leads/${a.leadId}`}
+                  onClick={() => dismiss(a.key)}
+                  className="inline-block rounded-lg bg-brand px-3 py-1 text-xs font-semibold text-white hover:bg-brand-dark"
+                >
+                  Abrir
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => seen(a)}
+                  className="rounded-lg px-2 py-1 text-xs font-semibold text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50"
+                >
+                  Marcar como vista
+                </button>
+              </div>
             </div>
             <button type="button" onClick={() => dismiss(a.key)} className="self-start text-slate-400 hover:text-slate-600" title="Fechar">
               <X size={16} />

@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { createLead, defaultPipeline, moveLead } from "@/lib/leads";
 import { sendWhatsApp } from "@/lib/messaging";
+import { clearAlerts } from "@/lib/alerts";
 import { enqueue } from "@/lib/queue";
 import { getSettings, saveSettings } from "@/lib/settings";
 import { importLeads, importSummary } from "@/lib/import";
@@ -27,7 +28,18 @@ export async function logoutAction() {
 export async function moveLeadAction(leadId: string, stageId: string) {
   const user = await requireUser();
   await moveLead(leadId, stageId, user.name);
+  await clearAlerts(leadId);
   revalidatePath("/funil");
+}
+
+/** "Marcar como visto": the lead stops alerting until it writes again. */
+export async function markAlertSeenAction(leadId: string) {
+  const user = await requireUser();
+  await clearAlerts(leadId);
+  await logEvent(leadId, "alert.seen", user.name, "Aviso marcado como visto.");
+  revalidatePath("/funil");
+  revalidatePath("/conversas");
+  revalidatePath(`/leads/${leadId}`);
 }
 
 export async function createLeadAction(form: FormData) {
@@ -53,6 +65,7 @@ export async function sendMessageAction(leadId: string, form: FormData) {
   if (!body) return;
   const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId } });
   const res = await sendWhatsApp(lead, body, user.name);
+  if (res.ok) await clearAlerts(leadId);
   if (res.ok && !lead.aiPaused) {
     // A person answered: the AI steps back so the two never talk over each other
     await db.lead.update({ where: { id: leadId }, data: { aiPaused: true } });
@@ -126,6 +139,7 @@ export async function markLostAction(leadId: string, form: FormData) {
     (await db.stage.findFirst({ where: { pipelineId: lead.pipelineId, kind: "LOST" }, orderBy: { position: "asc" } }));
   if (!stage) throw new Error("Este funil não tem etapa de perdido.");
   await moveLead(leadId, stage.id, user.name, { lostReason: reason, aiPaused: true });
+  await clearAlerts(leadId);
   revalidatePath(`/leads/${leadId}`);
 }
 
@@ -652,6 +666,7 @@ export async function cancelMeetingAction(meetingId: string) {
   const meeting = await db.meeting.findUnique({ where: { id: meetingId }, select: { leadId: true } });
   if (!meeting) return;
   await cancelMeeting(meetingId, user.name);
+  await clearAlerts(meeting.leadId);
   revalidatePath(`/leads/${meeting.leadId}`);
   revalidatePath("/agenda");
 }
@@ -679,6 +694,7 @@ export async function scheduleMeetingAction(leadId: string, _: unknown, form: Fo
   if (!lead) return { error: "Lead não encontrado." };
   try {
     const { meeting, sent } = await scheduleMeeting(lead, { userId, slot: { startsAt, endsAt }, actor: user.name, notify: form.get("notify") === "on" });
+    await clearAlerts(leadId);
     revalidatePath(`/leads/${leadId}`);
     revalidatePath("/agenda");
     const google = meeting.meetLink ? "Entrou no Google Agenda com link do Meet." : "Ficou só no CRM (sem Google Agenda conectado ou o Google falhou; veja o histórico).";

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useOptimistic, useTransition, useState } from "react";
 import { Bot } from "lucide-react";
-import { moveLeadAction } from "../../actions";
+import { markAlertSeenAction, moveLeadAction } from "../../actions";
 import { Avatar } from "@/components/ui";
 
 export type KanbanCard = {
@@ -56,6 +56,8 @@ const TEMP: Record<string, string> = {
 export function Kanban({ columns }: { columns: KanbanColumn[] }) {
   const [, start] = useTransition();
   const [dragOver, setDragOver] = useState<string | null>(null);
+  // Alerts marked as seen go away at once, before the board reloads
+  const [seen, markSeen] = useOptimistic<string[], string>([], (s, id) => [...s, id]);
   const [cols, move] = useOptimistic(columns, (state, { leadId, to }: { leadId: string; to: string }) => {
     const card = state.flatMap((c) => c.leads).find((l) => l.id === leadId);
     if (!card) return state;
@@ -102,67 +104,87 @@ export function Kanban({ columns }: { columns: KanbanColumn[] }) {
             {col.value > 0 && <div className="mt-1.5 text-[11px] font-medium text-slate-500">{brl(col.value)} em negociação</div>}
           </header>
           <div className="flex min-h-24 flex-1 flex-col gap-2 overflow-y-auto px-2 pb-2">
-            {col.leads.map((l) => (
-              <Link
-                key={l.id}
-                href={`/leads/${l.id}`}
-                draggable
-                onDragStart={(e) => e.dataTransfer.setData("text/lead", l.id)}
-                className={`group block rounded-xl border bg-white p-3 shadow-[0_1px_2px_rgba(15,23,42,0.05)] transition hover:-translate-y-px hover:shadow-md ${
-                  l.alert ? "border-red-400 ring-2 ring-red-500/60" : "border-slate-200/80 hover:border-brand/40"
-                }`}
-              >
-                {l.alert && (
-                  <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-red-600">
-                    <span className="relative flex h-2 w-2">
-                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500 opacity-75" />
-                      <span className="relative inline-flex h-2 w-2 rounded-full bg-red-600" />
-                    </span>
-                    {l.alert === "new" ? "Lead novo" : "Esperando resposta"}
-                  </div>
-                )}
-                <div className="flex items-start gap-2.5">
-                  <Avatar name={l.name} size={30} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="truncate text-sm font-semibold text-slate-900">{l.name}</div>
-                      <span className="shrink-0 text-[11px] text-slate-400">{since(l.lastActivity)}</span>
+            {col.leads.map((card) => {
+              const l = seen.includes(card.id) ? { ...card, alert: null } : card;
+              return (
+                <Link
+                  key={l.id}
+                  href={`/leads/${l.id}`}
+                  draggable
+                  onDragStart={(e) => e.dataTransfer.setData("text/lead", l.id)}
+                  className={`group block rounded-xl border bg-white p-3 shadow-[0_1px_2px_rgba(15,23,42,0.05)] transition hover:-translate-y-px hover:shadow-md ${
+                    l.alert ? "border-red-400 ring-2 ring-red-500/60" : "border-slate-200/80 hover:border-brand/40"
+                  }`}
+                >
+                  {l.alert && (
+                    <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-red-600">
+                      <span className="relative flex h-2 w-2">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500 opacity-75" />
+                        <span className="relative inline-flex h-2 w-2 rounded-full bg-red-600" />
+                      </span>
+                      {l.alert === "new" ? "Lead novo" : "Esperando resposta"}
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        title="Tirar o aviso deste lead"
+                        onClick={(e) => {
+                          // Inside the card's link: only the alert goes, the lead does not open
+                          e.preventDefault();
+                          e.stopPropagation();
+                          start(async () => {
+                            markSeen(l.id);
+                            await markAlertSeenAction(l.id);
+                          });
+                        }}
+                        className="ml-auto cursor-pointer rounded-md px-1.5 py-0.5 text-[10px] font-semibold normal-case tracking-normal text-slate-500 ring-1 ring-slate-200 hover:bg-slate-50 hover:text-slate-700"
+                      >
+                        Marcar como visto
+                      </span>
                     </div>
-                    {(l.city || l.value) && (
-                      <div className="flex items-center gap-2 text-xs text-slate-500">
-                        {l.city && <span className="truncate">{l.city}</span>}
-                        {l.value ? <span className="ml-auto shrink-0 font-semibold text-emerald-700">{brl(l.value)}</span> : null}
+                  )}
+                  <div className="flex items-start gap-2.5">
+                    <Avatar name={l.name} size={30} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="truncate text-sm font-semibold text-slate-900">{l.name}</div>
+                        <span className="shrink-0 text-[11px] text-slate-400">{since(l.lastActivity)}</span>
                       </div>
+                      {(l.city || l.value) && (
+                        <div className="flex items-center gap-2 text-xs text-slate-500">
+                          {l.city && <span className="truncate">{l.city}</span>}
+                          {l.value ? <span className="ml-auto shrink-0 font-semibold text-emerald-700">{brl(l.value)}</span> : null}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  {l.lastMessage && (
+                    <div className={`mt-2 line-clamp-2 rounded-lg px-2 py-1.5 text-xs ${l.failed ? "bg-red-50 text-red-700" : "bg-slate-50 text-slate-600"}`}>
+                      {l.failed ? "Falhou: " : ""}
+                      {l.lastMessage}
+                    </div>
+                  )}
+                  <div className="mt-2 flex flex-wrap items-center gap-1">
+                    {l.temperature && (
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold capitalize ${TEMP[l.temperature] ?? ""}`}>
+                        {l.temperature}
+                      </span>
                     )}
+                    {l.score !== null && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">{l.score} pts</span>}
+                    {l.sdr && (
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ${
+                          l.aiActive ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"
+                        }`}
+                      >
+                        <Bot size={12} /> {l.sdr}
+                        {!l.aiActive && " (pausada)"}
+                      </span>
+                    )}
+                    {l.owner && <span className="ml-auto"><Avatar name={l.owner} size={20} /></span>}
                   </div>
-                </div>
-                {l.lastMessage && (
-                  <div className={`mt-2 line-clamp-2 rounded-lg px-2 py-1.5 text-xs ${l.failed ? "bg-red-50 text-red-700" : "bg-slate-50 text-slate-600"}`}>
-                    {l.failed ? "Falhou: " : ""}
-                    {l.lastMessage}
-                  </div>
-                )}
-                <div className="mt-2 flex flex-wrap items-center gap-1">
-                  {l.temperature && (
-                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold capitalize ${TEMP[l.temperature] ?? ""}`}>
-                      {l.temperature}
-                    </span>
-                  )}
-                  {l.score !== null && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">{l.score} pts</span>}
-                  {l.sdr && (
-                    <span
-                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ${
-                        l.aiActive ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"
-                      }`}
-                    >
-                      <Bot size={12} /> {l.sdr}
-                      {!l.aiActive && " (pausada)"}
-                    </span>
-                  )}
-                  {l.owner && <span className="ml-auto"><Avatar name={l.owner} size={20} /></span>}
-                </div>
-              </Link>
-            ))}
+                </Link>
+              );
+            })}
             {col.leads.length === 0 && <div className="rounded-xl border border-dashed border-slate-300 py-6 text-center text-xs text-slate-400">Solte um card aqui</div>}
             {col.total > col.leads.length && (
               <div className="py-1 text-center text-[11px] text-slate-500">+{col.total - col.leads.length} (use a busca)</div>

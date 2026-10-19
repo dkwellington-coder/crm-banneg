@@ -1,6 +1,7 @@
 import { after } from "next/server";
 import { currentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { clearAlerts } from "@/lib/alerts";
 import { logEvent } from "@/lib/events";
 import { sendAudioMessage, transcribeSentAudio } from "@/lib/messaging";
 
@@ -21,6 +22,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/leads/[id]/
     const res = await sendAudioMessage(lead, new Uint8Array(await file.arrayBuffer()), file.type, user.name);
     if (!res.ok) return Response.json({ error: res.error }, { status: 502 });
     if ("messageId" in res) after(() => transcribeSentAudio(res.messageId));
+    await clearAlerts(id);
     if (!lead.aiPaused) {
       // A person answered: the AI steps back so the two never talk over each other
       await db.lead.update({ where: { id }, data: { aiPaused: true } });

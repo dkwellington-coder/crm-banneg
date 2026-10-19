@@ -105,6 +105,25 @@ describe.skipIf(!dbUrl)("alerts, Google agenda and meetings booked by the team",
     expect((await alerts.teamAlerts()).items).toMatchObject([{ kind: "waiting", leadId: lead.id, text: "Assumir conversa: quer falar com uma pessoa" }]);
   });
 
+  it("goes away when the team handles the lead, and comes back when the lead writes again", async () => {
+    const { lead } = await leads.createLead({ name: "Caio", phone: "41999990002", source: "Meta Ads" }, "Formulário");
+    await db.lead.update({ where: { id: lead.id }, data: { aiPaused: true } });
+    await db.message.create({ data: { leadId: lead.id, channel: "WHATSAPP", direction: "IN", body: "Tenho interesse", author: "Caio" } });
+    await leads.ensureTask(lead.id, null, "Responder mensagem do lead no WhatsApp");
+    expect((await alerts.teamAlerts()).items).toMatchObject([{ kind: "waiting", leadId: lead.id }]);
+
+    // Moved, booked, answered or marked as seen: no alert, and it no longer counts as new
+    await alerts.clearAlerts(lead.id);
+    expect((await alerts.teamAlerts()).items).toEqual([]);
+    expect((await db.lead.findUniqueOrThrow({ where: { id: lead.id } })).seenAt).not.toBeNull();
+
+    // The lead writes again: it alerts again
+    await db.message.create({
+      data: { leadId: lead.id, channel: "WHATSAPP", direction: "IN", body: "Ainda tem vaga?", author: "Caio", createdAt: new Date(Date.now() + 1000) },
+    });
+    expect((await alerts.teamAlerts()).items).toMatchObject([{ kind: "waiting", leadId: lead.id, text: "Ainda tem vaga?" }]);
+  });
+
   it("does not light up for imported leads waiting in a queue", async () => {
     const { importLeads } = await import("@/lib/import");
     const pipeline = await leads.defaultPipeline();

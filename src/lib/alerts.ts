@@ -33,12 +33,13 @@ export async function teamAlerts(now = new Date()) {
             WHERE channel = 'WHATSAPP' ORDER BY "leadId", "createdAt" DESC) m
       JOIN "Lead" l ON l.id = m."leadId"
       WHERE m.direction = 'IN' AND (l."sdrId" IS NULL OR l."aiPaused")
+        AND (l."alertsClearedAt" IS NULL OR m."createdAt" > l."alertsClearedAt")
       ORDER BY m."createdAt" DESC LIMIT 100`,
     db.task.findMany({
       where: { doneAt: null, dueAt: { lte: now }, leadId: { not: null } },
       orderBy: { dueAt: "desc" },
       take: 100,
-      select: { id: true, title: true, dueAt: true, lead: { select: { id: true, pipelineId: true, name: true, phone: true } } },
+      select: { id: true, title: true, dueAt: true, lead: { select: { id: true, pipelineId: true, name: true, phone: true, alertsClearedAt: true } } },
     }),
   ]);
   const label = (l: { name: string | null; phone?: string | null; email?: string | null }) => l.name ?? l.phone ?? l.email ?? "Lead sem nome";
@@ -63,6 +64,8 @@ export async function teamAlerts(now = new Date()) {
   const waitingIds = new Set(waiting.map((w) => w.leadId));
   for (const t of tasks) {
     if (!t.lead || waitingIds.has(t.lead.id)) continue;
+    // Already handled: a later task still rings when it falls due
+    if (t.lead.alertsClearedAt && t.dueAt <= t.lead.alertsClearedAt) continue;
     waitingIds.add(t.lead.id);
     waiting.push({
       key: `task:${t.id}`,
@@ -88,4 +91,13 @@ export type TeamAlerts = Awaited<ReturnType<typeof teamAlerts>>;
 /** The lead was opened by someone on the team: it stops counting as new. */
 export function markSeen(leadId: string) {
   return db.lead.updateMany({ where: { id: leadId, seenAt: null }, data: { seenAt: new Date() } });
+}
+
+/**
+ * Someone answered the lead, moved it, booked or marked the alert as seen: the alert goes away.
+ * A new message from the lead, or a task that falls due later, alerts again.
+ */
+export async function clearAlerts(leadId: string) {
+  await db.lead.update({ where: { id: leadId }, data: { alertsClearedAt: new Date() } });
+  await markSeen(leadId);
 }

@@ -29,7 +29,8 @@ async function Inbox({ searchParams }: { searchParams: PageProps<"/conversas">["
     const l = byId.get(m.leadId);
     return l ? [{ ...l, messages: [m] }] : [];
   });
-  const needsHuman = (l: (typeof leads)[number]) => l.messages[0]?.direction === "IN" && (!l.sdr || l.aiPaused);
+  const needsHuman = (l: (typeof leads)[number]) =>
+    l.messages[0]?.direction === "IN" && (!l.sdr || l.aiPaused) && (!l.alertsClearedAt || l.messages[0].createdAt > l.alertsClearedAt);
   const failed = (l: (typeof leads)[number]) => l.messages[0]?.status === "FAILED";
   const shown = leads.filter((l) => (filter === "humano" ? needsHuman(l) : filter === "falhas" ? failed(l) : filter === "ia" ? l.sdr && !l.aiPaused : true));
   const tabs = [

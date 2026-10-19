@@ -80,7 +80,7 @@ export function Sidebar() {
         {item({ href: "/integracoes", label: "Integrar", icon: Plug })}
         {item({ href: "/configuracoes", label: "Ajustes", icon: Settings })}
       </div>
-      <AlertToasts toasts={alerts.toasts} dismiss={alerts.dismiss} />
+      <AlertToasts toasts={alerts.toasts} dismiss={alerts.dismiss} seen={alerts.seen} />
     </nav>
   );
 }
