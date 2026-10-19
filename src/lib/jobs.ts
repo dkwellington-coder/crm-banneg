@@ -10,7 +10,7 @@ import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, pic
 import { runSdrTurn } from "./sdr";
 import { planFromDecision, STAGE_KEYS } from "./plan";
 import { ensureTask, moveLead, pickSdr, stageByKey } from "./leads";
-import { fillVariables, type RuleConfig } from "./rules";
+import { fillVariables, templateSlots, type RuleConfig } from "./rules";
 import type { RuleJobPayload } from "./automations";
 import { attachMaterials, emailHtml, renderTemplate, sendEmail, withButton } from "./email";
 import { sendCof } from "./cof";
@@ -310,12 +310,25 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig):
       const vars = messageVars(settings, lead, sdr?.name ?? "");
       const text = fillVariables(config.text ?? "", vars);
       if (!text) return "Ignorado: mensagem vazia.";
+      const open = isWindowOpen(lead.lastInboundAt);
+      // A referral's store and product have no stand-in: without them the sentence breaks ("corretora oficial da.")
+      let missing = open ? [...new Set([...(config.text ?? "").matchAll(/\{\{\s*(parceiro|produto)\s*\}\}/g)].map((m) => m[1]))].filter((v) => !vars[v as "parceiro"]) : [];
       // Outside the 24 h window the template goes, each {{n}} filled with the variable the rule chose
-      const params = config.templateName && config.templateParams?.length
-        ? config.templateParams.map((v) => (v === "nome" ? vars.nome || "tudo bem" : (vars[v as keyof typeof vars] ?? "")).trim())
-        : undefined;
-      const missing = params && !isWindowOpen(lead.lastInboundAt) ? config.templateParams!.filter((_, i) => !params[i]) : [];
-      if (missing.length) return `Ignorado: o modelo ${config.templateName} usa {{${missing.join("}}, {{")}}} e este lead não tem.`;
+      let params: string[] | undefined;
+      const template = !open && config.templateName && config.templateParams?.length
+        ? await db.whatsAppTemplate.findUnique({ where: { name: config.templateName }, select: { body: true } })
+        : null;
+      if (template) {
+        // The template may have changed since the rule was saved, and Meta refuses a different number of variables
+        const slots = templateSlots(template.body);
+        const chosen = config.templateParams!.slice(0, slots);
+        if (chosen.length < slots)
+          return `Ignorado: o modelo ${config.templateName} pede ${slots} variáveis e a automação preenche ${chosen.length}. Abra a automação e salve de novo.`;
+        // Meta refuses a variable with a line break, a tab or a run of spaces
+        params = chosen.map((v) => (v === "nome" ? vars.nome || "tudo bem" : String(vars[v as keyof typeof vars] ?? "")).replace(/\s+/g, " ").trim());
+        missing = chosen.filter((_, i) => !params![i]);
+      }
+      if (missing.length) return `Ignorado: ${template ? `o modelo ${config.templateName}` : "a mensagem"} usa {{${missing.join("}}, {{")}}} e este lead não tem.`;
       const res = await sendWhatsApp(lead, text, sdr?.name ?? "Automação", {
         automatic: true,
         templateName: config.templateName,

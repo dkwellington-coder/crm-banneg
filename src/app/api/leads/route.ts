@@ -1,7 +1,9 @@
 import { z } from "zod";
-import { createLead, pipelineByRef } from "@/lib/leads";
+import { createLead, ensureTask, moveLead, pipelineByRef, stageByKey } from "@/lib/leads";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
+import { SEND_ERROR_STAGE } from "@/lib/messaging";
+import { STAGE_KEYS } from "@/lib/plan";
 
 const text = (max: number) => z.union([z.string(), z.number(), z.boolean()]).transform((v) => String(v).trim().slice(0, max)).optional();
 
@@ -31,6 +33,8 @@ const LeadInput = z.object({
   // Portal de indicações: the partner store that referred the client ({{parceiro}}) and the client's file as text
   parceiro: text(160),
   observacao: text(4000),
+  // The sender's id for this request ("portal:<id>"): the same referral sent again changes nothing
+  ref: text(120),
   associado_sindicato: z.union([z.boolean(), z.string()]).optional(),
 });
 
@@ -61,6 +65,12 @@ export async function POST(request: Request) {
     ),
   ) as Record<string, string>;
 
+  // A retry of a referral that already arrived (the portal gave up waiting and sent it again)
+  if (b.ref) {
+    const seen = await db.leadEvent.findFirst({ where: { type: "lead.form", data: { path: ["ref"], equals: b.ref } }, select: { leadId: true } });
+    if (seen) return Response.json({ id: seen.leadId, created: false, moved: false, task: false, repeated: true, ...(await placeOf(seen.leadId)) });
+  }
+
   const { lead, created } = await createLead(
     {
       name: b.name || b.nome,
@@ -76,11 +86,15 @@ export async function POST(request: Request) {
     `Formulário (${source})`,
   );
   if (!created && b.produto) await logEvent(lead.id, "lead.form", "Formulário", `Pediu informações de ${b.produto} de novo.`);
-  // A lead that already existed keeps its funnel, but learns which store sent it this time
+  let moved = false;
+  let task = false;
   if (!created && b.parceiro) {
-    await db.lead.update({ where: { id: lead.id }, data: { qualification: { ...(lead.qualification as object), parceiro: b.parceiro } } });
+    ({ moved } = await referAgain(lead.id, pipeline?.id, b.parceiro, b.produto, source));
+    // A person decides what to do with a contact the CRM already had, and the alert tells them
+    await ensureTask(lead.id, lead.ownerId, `Nova indicação da ${b.parceiro}${b.produto ? `: cotar ${b.produto}` : ""}`);
+    task = true;
   }
-  if (b.observacao) await logEvent(lead.id, "lead.form", source, b.observacao);
+  if (b.observacao || b.ref) await logEvent(lead.id, "lead.form", source, b.observacao || "Indicação recebida.", b.ref ? { ref: b.ref } : undefined);
 
   // The member referred someone: that person becomes a lead too, credited to who referred
   let referral: string | undefined;
@@ -98,5 +112,38 @@ export async function POST(request: Request) {
     );
     referral = r.lead.id;
   }
-  return Response.json({ id: lead.id, created, referral }, { status: created ? 201 : 200 });
+  return Response.json({ id: lead.id, created, referral, moved, task, ...(await placeOf(lead.id)) }, { status: created ? 201 : 200 });
+}
+
+/** The funnel and column the lead is in, by name, so the sender can say where it went. */
+async function placeOf(leadId: string) {
+  const l = await db.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { name: true } }, stage: { select: { name: true } } } });
+  return { pipeline: l?.pipeline.name ?? null, stage: l?.stage.name ?? null };
+}
+
+/**
+ * A partner store referred a contact the CRM already had. A closed or queued lead starts over in the referral's funnel,
+ * with this store and product, so the greeting goes out; one someone may be working (or a client already) stays where it is.
+ */
+async function referAgain(leadId: string, pipelineId: string | undefined, parceiro: string, produto: string | undefined, source: string) {
+  const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId }, include: { stage: true } });
+  const qualification = (lead.qualification ?? {}) as Record<string, unknown>;
+  const closed = lead.stage.kind === "LOST" && lead.stage.key !== SEND_ERROR_STAGE.key;
+  const entry =
+    pipelineId && (closed || lead.stage.key === "fila") && !lead.whatsappOptOut
+      ? ((await stageByKey(STAGE_KEYS.NEW, pipelineId)) ?? (await db.stage.findFirst({ where: { pipelineId, kind: "OPEN" }, orderBy: { position: "asc" } })))
+      : null;
+  if (entry) {
+    await db.lead.update({ where: { id: leadId }, data: { qualification: { ...qualification, parceiro, ...(produto && { produto }) } } });
+    await moveLead(leadId, entry.id, `Formulário (${source})`);
+    return { moved: true };
+  }
+  // Only fills what is missing: the lead's current conversation keeps the store and product it already has
+  if (!qualification.parceiro || (produto && !qualification.produto)) {
+    await db.lead.update({
+      where: { id: leadId },
+      data: { qualification: { ...qualification, parceiro: qualification.parceiro ?? parceiro, ...(produto && !qualification.produto && { produto }) } },
+    });
+  }
+  return { moved: false };
 }
