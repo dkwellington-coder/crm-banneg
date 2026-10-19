@@ -14,6 +14,7 @@ import {
   addNoteAction,
   assignSdrAction,
   cancelMeetingAction,
+  sendCofAction,
   completeTaskAction,
   markAlertSeenAction,
   markLostAction,
@@ -25,6 +26,7 @@ import { Composer } from "./Composer";
 import { AudioRecorder } from "./AudioRecorder";
 import { ScheduleMeeting } from "./ScheduleMeeting";
 import { googleConfigured, googleLinks } from "@/lib/google";
+import { cofDeadline, dateTimeBr } from "@/lib/cof";
 
 export default function LeadPage({ params }: PageProps<"/leads/[id]">) {
   return (
@@ -56,6 +58,10 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
         events: { orderBy: { createdAt: "asc" }, take: 300 },
         tasks: { where: { doneAt: null }, orderBy: { dueAt: "asc" } },
         meetings: { orderBy: { startsAt: "desc" }, include: { user: true } },
+        cofDeliveries: {
+          orderBy: { sentAt: "desc" },
+          select: { id: true, to: true, sentAt: true, sentBy: true, openedAt: true, downloadedAt: true, confirmedAt: true, confirmIp: true },
+        },
         jobs: { where: { status: { in: ["PENDING", "FAILED"] } }, orderBy: { runAt: "asc" }, take: 10 },
       },
     }),
@@ -223,6 +229,44 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
               google={agendaOf(meetingWith.id)}
             />
           )}
+        </Card>
+
+        <Card className="space-y-2">
+          <div className="text-sm font-bold">COF</div>
+          {lead.cofDeliveries.map((c) => {
+            const deadline = cofDeadline(c);
+            return (
+              <div key={c.id} className="space-y-0.5 text-sm">
+                <div>
+                  Enviada {dateTimeBr(c.sentAt)} para {c.to}
+                  <a href={`/api/cof-email/${c.id}`} className="ml-1 text-xs text-brand underline">
+                    cópia .eml
+                  </a>
+                </div>
+                <div className="text-xs text-slate-500">
+                  {c.confirmedAt
+                    ? `Recebimento confirmado em ${dateTimeBr(c.confirmedAt)} (IP ${c.confirmIp ?? "?"})`
+                    : c.downloadedAt
+                      ? `Baixou os documentos em ${dateTimeBr(c.downloadedAt)}; ainda não confirmou`
+                      : c.openedAt
+                        ? `Abriu em ${dateTimeBr(c.openedAt)}; ainda não confirmou`
+                        : "Ainda não abriu"}
+                  {" · "}
+                  {deadline <= new Date() ? "10 dias cumpridos: pode assinar" : `Contrato ou pagamento só a partir de ${dateTimeBr(deadline).slice(0, 10)}`}
+                </div>
+              </div>
+            );
+          })}
+          {!lead.cofDeliveries.length && <p className="text-xs text-slate-500">Ainda não enviada.</p>}
+          {/* Two clicks: the COF starts the law's 10 days */}
+          <details>
+            <summary className="cursor-pointer text-xs text-brand underline">Enviar COF agora</summary>
+            <form action={sendCofAction.bind(null, lead.id)} className="mt-1">
+              <button disabled={!lead.email} className="rounded border border-brand px-2 py-0.5 text-xs text-brand disabled:opacity-40">
+                {lead.email ? `Confirmar: mandar a COF e os documentos para ${lead.email}` : "Cadastre o e-mail do lead primeiro"}
+              </button>
+            </form>
+          </details>
         </Card>
 
         <Card>

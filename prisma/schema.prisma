@@ -161,51 +161,52 @@ model SdrAgent {
 }
 
 model Lead {
-  id             String      @id @default(cuid())
-  name           String?
-  phone          String?     @unique
-  email          String?
-  city           String?
-  state          String?
-  source         String      @default("manual")
-  campaign       String?
-  externalId     String?
-  pipelineId     String
-  pipeline       Pipeline    @relation(fields: [pipelineId], references: [id])
-  stageId        String
-  stage          Stage       @relation(fields: [stageId], references: [id])
+  id              String        @id @default(cuid())
+  name            String?
+  phone           String?       @unique
+  email           String?
+  city            String?
+  state           String?
+  source          String        @default("manual")
+  campaign        String?
+  externalId      String?
+  pipelineId      String
+  pipeline        Pipeline      @relation(fields: [pipelineId], references: [id])
+  stageId         String
+  stage           Stage         @relation(fields: [stageId], references: [id])
   // Deal value in reais, for the sales goal
-  value          Int?
-  wonAt          DateTime?
-  status         LeadStatus  @default(NEW)
-  ownerId        String?
-  owner          User?       @relation(fields: [ownerId], references: [id])
-  sdrId          String?
-  sdr            SdrAgent?   @relation(fields: [sdrId], references: [id])
-  aiPaused       Boolean     @default(false)
-  emailOptOut    Boolean     @default(false)
+  value           Int?
+  wonAt           DateTime?
+  status          LeadStatus    @default(NEW)
+  ownerId         String?
+  owner           User?         @relation(fields: [ownerId], references: [id])
+  sdrId           String?
+  sdr             SdrAgent?     @relation(fields: [sdrId], references: [id])
+  aiPaused        Boolean       @default(false)
+  emailOptOut     Boolean       @default(false)
   // Lead tapped "Parar mensagens" (or wrote PARAR/SAIR): no more automatic WhatsApp
-  whatsappOptOut Boolean     @default(false)
-  score          Int?
-  temperature    String?
+  whatsappOptOut  Boolean       @default(false)
+  score           Int?
+  temperature     String?
   // Answers the SDR collected (capital, region, timeline, decision maker...)
-  qualification  Json        @default("{}")
-  aiSummary      String?
-  lostReason     String?
-  lastInboundAt  DateTime?
-  lastContactAt  DateTime?
+  qualification   Json          @default("{}")
+  aiSummary       String?
+  lostReason      String?
+  lastInboundAt   DateTime?
+  lastContactAt   DateTime?
   // When someone on the team first opened the lead; null = new lead nobody has looked at yet
-  seenAt         DateTime?
+  seenAt          DateTime?
   // Someone answered, moved the lead or marked the alert as seen: what came before stops alerting
   alertsClearedAt DateTime?
-  stageEnteredAt DateTime    @default(now())
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
-  messages       Message[]
-  events         LeadEvent[]
-  tasks          Task[]
-  meetings       Meeting[]
-  jobs           Job[]
+  stageEnteredAt  DateTime      @default(now())
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  messages        Message[]
+  events          LeadEvent[]
+  tasks           Task[]
+  meetings        Meeting[]
+  cofDeliveries   CofDelivery[]
+  jobs            Job[]
 
   @@index([stageId])
   @@index([status])
@@ -370,4 +371,48 @@ model AdSpend {
   updatedAt    DateTime @updatedAt
 
   @@index([date])
+}
+
+// A document of the franchise offer (COF, balance sheets, contract), uploaded in Ajustes. Removing or
+// replacing one keeps the old file, so every COF already sent still opens exactly what went.
+model FranchiseDocument {
+  id         String   @id @default(cuid())
+  name       String
+  mimeType   String
+  size       Int      @default(0)
+  // Set when the upload finished; until then the file is still arriving in parts
+  sha256     String?
+  data       Bytes
+  active     Boolean  @default(false)
+  uploadedBy String
+  createdAt  DateTime @default(now())
+}
+
+// Each COF e-mailed to a lead: the e-mail exactly as it went, and the proof the lead got it.
+model CofDelivery {
+  id           String    @id @default(cuid())
+  leadId       String
+  lead         Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  // In the lead's confirmation link
+  token        String    @unique
+  to           String
+  subject      String
+  body         String
+  // [{ id, name, size, sha256 }] of the documents sent
+  documents    Json
+  attached     Boolean   @default(true)
+  messageId    String?
+  // What the mail server answered ("250 OK ...")
+  smtpResponse String?
+  // The .eml, byte for byte as it went
+  raw          Bytes?
+  sentBy       String
+  sentAt       DateTime  @default(now())
+  openedAt     DateTime?
+  downloadedAt DateTime?
+  confirmedAt  DateTime?
+  confirmIp    String?
+  confirmAgent String?
+
+  @@index([leadId, sentAt])
 }

@@ -53,7 +53,7 @@ export function emailHtml(body: string) {
 
 /** A big button for the main link of an e-mail: where the link is written in the text, or at the end. */
 export function withButton(html: string, button: { label: string; url: string }) {
-  const tag = `<p><a href="${button.url}" style="display:inline-block;background:#0f3d2e;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">${button.label}</a></p>`;
+  const tag = `<p><a href="${button.url}" style="display:inline-block;background:#12357a;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold">${button.label}</a></p>`;
   const inline = `<p><a href="${button.url}">${button.url}</a></p>`;
   return html.includes(inline) ? html.replace(inline, tag) : html + tag;
 }

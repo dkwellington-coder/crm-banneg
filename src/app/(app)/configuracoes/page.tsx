@@ -2,9 +2,12 @@ import { Suspense, type ReactNode } from "react";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
+import { cofDeadline, dateTimeBr, sizeLabel } from "@/lib/cof";
+import { CofUpload } from "./CofUpload";
 import { Card, Loading, PageHeader, btnCls, btnGhostCls, fmt, inputCls } from "@/components/ui";
 import {
   logoutAction,
+  removeDocumentAction,
   retryJobAction,
   saveAgentAction,
   saveEmailTemplateAction,
@@ -50,7 +53,7 @@ const ENV_CHECKS: [string, string[]][] = [
 async function Config() {
   const user = await requireUser();
   const owner = user.role === "OWNER";
-  const [settings, agents, knowledge, emails, waTemplates, macros, users, jobs] = await Promise.all([
+  const [settings, agents, knowledge, emails, waTemplates, macros, users, jobs, documents, cofs] = await Promise.all([
     getSettings(),
     db.sdrAgent.findMany({ orderBy: { name: "asc" } }),
     db.knowledgeItem.findMany({ orderBy: { title: "asc" } }),
@@ -59,7 +62,30 @@ async function Config() {
     db.macro.findMany({ orderBy: { title: "asc" } }),
     db.user.findMany({ orderBy: { name: "asc" } }),
     db.job.findMany({ orderBy: { createdAt: "desc" }, take: 60, include: { lead: { select: { name: true, phone: true } } } }),
+    db.franchiseDocument.findMany({
+      where: { active: true },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, name: true, size: true, sha256: true, uploadedBy: true, createdAt: true },
+    }),
+    db.cofDelivery.findMany({
+      orderBy: { sentAt: "desc" },
+      take: 50,
+      select: {
+        id: true,
+        leadId: true,
+        to: true,
+        sentAt: true,
+        sentBy: true,
+        openedAt: true,
+        downloadedAt: true,
+        confirmedAt: true,
+        confirmIp: true,
+        smtpResponse: true,
+        lead: { select: { name: true } },
+      },
+    }),
   ]);
+  const now = new Date();
 
   return (
     <div className="grid gap-4 px-6 pb-6 xl:grid-cols-2">
@@ -152,7 +178,7 @@ async function Config() {
         ))}
       </Section>
 
-      <Section id="emails" title="E-mails automáticos" hint="Variáveis: {{nome}}, {{empresa}}, {{cidade}}, {{apresentacao}}. Dia = dias depois do lead entrar. boas_vindas_* vai para todo lead novo; nutricao_* para quem entra em Nutrição.">
+      <Section id="emails" title="E-mails automáticos" hint="Variáveis: {{nome}}, {{empresa}}, {{cidade}}, {{apresentacao}}. Dia = dias depois do lead entrar. boas_vindas_* vai para todo lead novo; nutricao_* para quem entra em Nutrição. No e-mail cof: {{documentos}} e {{link_cof}} (o link de confirmação de recebimento).">
         {[...emails, null].map((e) => (
           <form key={e?.key ?? "new"} action={saveEmailTemplateAction} className="space-y-2 border-t border-slate-100 pt-2 first:border-0 first:pt-0">
             <fieldset disabled={!owner} className="space-y-2">
@@ -170,6 +196,98 @@ async function Config() {
             </fieldset>
           </form>
         ))}
+      </Section>
+
+      <Section
+        id="cof"
+        title="COF e documentos da franquia"
+        hint="A Circular de Oferta de Franquia, os balanços e o contrato. Vão por e-mail, com o assunto COF, quando a automação “Enviar a COF” roda ou alguém clica em “Enviar COF agora” no lead."
+      >
+        {documents.length ? (
+          <ul className="divide-y divide-slate-100 text-sm">
+            {documents.map((d) => (
+              <li key={d.id} className="flex items-center justify-between gap-3 py-2">
+                <div className="min-w-0">
+                  <div className="truncate font-medium">{d.name}</div>
+                  <div className="text-xs text-slate-500">
+                    {sizeLabel(d.size)} · {fmt(d.createdAt)} por {d.uploadedBy} · impressão digital {d.sha256?.slice(0, 12)}
+                  </div>
+                </div>
+                {user.role !== "SELLER" && (
+                  <form action={removeDocumentAction.bind(null, d.id)}>
+                    <button className="text-xs text-slate-400 hover:text-red-600">tirar</button>
+                  </form>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-amber-700">Nenhum documento ainda: a automação cria uma tarefa em vez de mandar a COF.</p>
+        )}
+        {user.role !== "SELLER" && <CofUpload />}
+      </Section>
+
+      <Section
+        id="cofs"
+        title="Registro de COFs enviadas"
+        hint="Cópia de cada e-mail como ele saiu (.eml) e o comprovante: quando o lead abriu, baixou e confirmou o recebimento, com o IP. A Lei 13.966 pede 10 dias entre a COF e o contrato ou qualquer pagamento."
+      >
+        {cofs.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="text-slate-500">
+                <tr>
+                  <th className="py-1 pr-2">Lead</th>
+                  <th className="pr-2">Enviada</th>
+                  <th className="pr-2">Abriu</th>
+                  <th className="pr-2">Confirmou</th>
+                  <th className="pr-2">Pode assinar</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {cofs.map((c) => {
+                  const deadline = cofDeadline(c);
+                  return (
+                    <tr key={c.id} className="align-top">
+                      <td className="py-1.5 pr-2">
+                        <a href={`/leads/${c.leadId}`} className="font-medium text-brand hover:underline">
+                          {c.lead.name ?? c.to}
+                        </a>
+                        <div className="text-slate-500">{c.to}</div>
+                      </td>
+                      <td className="pr-2">
+                        {dateTimeBr(c.sentAt)}
+                        <div className="text-slate-500">{c.sentBy}</div>
+                      </td>
+                      <td className="pr-2">{c.openedAt ? dateTimeBr(c.openedAt) : "—"}</td>
+                      <td className="pr-2">
+                        {c.confirmedAt ? (
+                          <>
+                            <span className="text-emerald-700">{dateTimeBr(c.confirmedAt)}</span>
+                            <div className="text-slate-500">IP {c.confirmIp ?? "?"}</div>
+                          </>
+                        ) : (
+                          <span className="text-amber-700">aguardando</span>
+                        )}
+                      </td>
+                      <td className={`pr-2 ${deadline <= now ? "text-emerald-700" : "text-slate-600"}`}>
+                        {deadline <= now ? "liberado" : `a partir de ${dateTimeBr(deadline).slice(0, 10)}`}
+                      </td>
+                      <td>
+                        <a href={`/api/cof-email/${c.id}`} className="text-brand hover:underline">
+                          cópia .eml
+                        </a>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-slate-500">Nenhuma COF enviada ainda.</p>
+        )}
       </Section>
 
       <Section id="modelos" title="Modelos do WhatsApp" hint="Cadastre aqui os modelos já aprovados no Meta, com o mesmo nome. Use {{1}} para o primeiro nome. Finalidades: first_contact, followup, reminder, reengagement, prospeccao. Os importados do CRM antigo (importado) só vão pelo nome, nas automações.">

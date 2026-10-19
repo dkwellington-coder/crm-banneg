@@ -3,6 +3,7 @@
 export const ACTIONS = {
   whatsapp: { label: "Enviar WhatsApp", icon: "message" },
   email: { label: "Enviar e-mail", icon: "mail" },
+  cof: { label: "Enviar a COF por e-mail", icon: "file" },
   task: { label: "Criar tarefa", icon: "check" },
   move: { label: "Mover para etapa", icon: "arrow" },
   ai_on: { label: "Ativar SDR de IA", icon: "bot" },
@@ -79,6 +80,8 @@ export function actionLabel(action: string, config: RuleConfig, names: { stages?
       return `Enviar WhatsApp: “${config.text ?? ""}”${config.buttons?.length ? ` [${config.buttons.join(" · ")}]` : ""}${config.templateName ? ` (fora das 24 h: modelo ${config.templateName})` : ""}`;
     case "email":
       return `Enviar e-mail “${names.emails?.[config.templateKey ?? ""] ?? config.templateKey}”`;
+    case "cof":
+      return "Enviar por e-mail a COF, os balanços e o contrato (com cópia guardada e confirmação de recebimento)";
     case "task":
       return `Criar tarefa “${config.title ?? ""}”`;
     case "move":

@@ -265,6 +265,12 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
           ))}
         </select>
       )}
+      {d.action === "cof" && (
+        <p className="text-xs text-slate-500">
+          Vai por e-mail, com o assunto COF, com os documentos que estão em Ajustes. O CRM guarda a cópia do e-mail e o lead confirma o recebimento pelo
+          link. Se o lead já recebeu estes mesmos arquivos, não manda de novo.
+        </p>
+      )}
       {d.action === "task" && (
         <input
           name="title"

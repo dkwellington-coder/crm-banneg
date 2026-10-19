@@ -9,6 +9,7 @@ import {
   CalendarClock,
   CheckSquare,
   Clock,
+  FileText,
   Hourglass,
   MousePointerClick,
   Mail,
@@ -37,6 +38,7 @@ export type StageData = {
 export const ACTION_ICON: Record<string, LucideIcon> = {
   whatsapp: MessageCircle,
   email: Mail,
+  cof: FileText,
   task: CheckSquare,
   move: ArrowRightLeft,
   ai_on: Bot,
@@ -46,6 +48,7 @@ export const ACTION_ICON: Record<string, LucideIcon> = {
 const ACTION_TINT: Record<string, string> = {
   whatsapp: "bg-emerald-50 text-emerald-700",
   email: "bg-sky-50 text-sky-700",
+  cof: "bg-teal-50 text-teal-700",
   task: "bg-amber-50 text-amber-700",
   move: "bg-violet-50 text-violet-700",
   ai_on: "bg-indigo-50 text-indigo-700",

@@ -13,6 +13,7 @@ import { ensureTask, moveLead, pickSdr, stageByKey } from "./leads";
 import { fillVariables, type RuleConfig } from "./rules";
 import type { RuleJobPayload } from "./automations";
 import { attachMaterials, emailHtml, renderTemplate, sendEmail, withButton } from "./email";
+import { sendCof } from "./cof";
 
 type Handler = (job: Job, lead: Lead | null) => Promise<string>;
 
@@ -319,6 +320,8 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig):
     }
     case "email":
       return sendTemplateEmail(lead, config.templateKey ?? "");
+    case "cof":
+      return sendCof(lead, "Automação", { once: true });
     case "task": {
       await ensureTask(lead.id, lead.ownerId, config.title || "Falar com o lead");
       return `Tarefa criada: ${config.title}`;

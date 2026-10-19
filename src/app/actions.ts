@@ -13,6 +13,7 @@ import { getSettings, saveSettings } from "@/lib/settings";
 import { importLeads, importSummary } from "@/lib/import";
 import { ACTIONS, UNITS, type RuleConfig } from "@/lib/rules";
 import { METRICS } from "@/lib/goals";
+import { sendCof } from "@/lib/cof";
 
 export async function loginAction(_: unknown, form: FormData) {
   const user = await login(String(form.get("email") ?? ""), String(form.get("password") ?? ""));
@@ -40,6 +41,23 @@ export async function markAlertSeenAction(leadId: string) {
   revalidatePath("/funil");
   revalidatePath("/conversas");
   revalidatePath(`/leads/${leadId}`);
+}
+
+/** The team's "Enviar COF agora": always sends, even if the lead already got these files. */
+export async function sendCofAction(leadId: string) {
+  const user = await requireUser();
+  const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId } });
+  const result = await sendCof(lead, user.name);
+  await logEvent(leadId, "cof.button", user.name, result);
+  revalidatePath(`/leads/${leadId}`);
+  revalidatePath("/configuracoes");
+}
+
+/** Takes a document out of the next COFs. The file stays saved: COFs already sent point to it. */
+export async function removeDocumentAction(id: string) {
+  await requireManager();
+  await db.franchiseDocument.update({ where: { id }, data: { active: false } });
+  revalidatePath("/configuracoes");
 }
 
 export async function createLeadAction(form: FormData) {
