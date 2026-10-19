@@ -375,16 +375,32 @@ describe.skipIf(!dbUrl)("funnels", () => {
     // A second store referring him later does not rename the store his conversation is about
     await post({ ...referral, parceiro: "Auto Norte", ref: "portal:rui-2" });
     expect((await db.lead.findUniqueOrThrow({ where: { id: old.id } })).qualification).toMatchObject({ parceiro: "Garagem Sul" });
+    // The same store again after the team saw the first one: the open task rings again
+    const seenAt = new Date();
+    await db.lead.update({ where: { id: old.id }, data: { alertsClearedAt: seenAt } });
+    await post({ ...referral, ref: "portal:rui-3" });
+    const rings = await db.task.findFirstOrThrow({ where: { leadId: old.id, title: "Nova indicação da Garagem Sul: cotar consórcio" } });
+    expect(rings.dueAt.getTime()).toBeGreaterThan(seenAt.getTime());
 
     // A client the CRM had lost starts over in Cotações with this store and product, and gets the greeting
     const perdido = await db.stage.findFirstOrThrow({ where: { pipelineId: franchise.id, key: "perdido" } });
     const ana = (await leads.createLead({ name: "Ana Lima", phone: "11966665555", source: "site", qualification: { produto: "franquia" } }, "teste")).lead;
-    await leads.moveLead(ana.id, perdido.id, "teste");
+    // Marked lost the way the team does it: AI paused, with a reason
+    await leads.moveLead(ana.id, perdido.id, "teste", { aiPaused: true, lostReason: "Sem interesse", sdrId: null });
     const back = await post({ name: "Ana Lima", phone: "11966665555", funil: "parceiro-veiculos", parceiro: "Lotus Veículos", produto: "consórcio", ref: "portal:ana" });
     expect(await back.json()).toMatchObject({ created: false, moved: true, task: true, pipeline: "Cotações/ Seguros e Consórcios", stage: "Novo" });
-    expect((await db.lead.findUniqueOrThrow({ where: { id: ana.id } })).qualification).toMatchObject({ parceiro: "Lotus Veículos", produto: "consórcio" });
+    const anaNow = await db.lead.findUniqueOrThrow({ where: { id: ana.id } });
+    expect(anaNow).toMatchObject({ status: "NEW", aiPaused: false, lostReason: null, stageId: novo.id });
+    expect(anaNow.sdrId).toBeTruthy();
+    expect(anaNow.qualification).toEqual({ parceiro: "Lotus Veículos", produto: "consórcio" });
     await drain();
     expect(sent.find((m) => m.to === "5511966665555")).toMatchObject({ type: "template", params: ["Ana", "Duda", "Lotus Veículos", "consórcio"] });
+
+    // A restart never greets with the product of an old form
+    const lia = (await leads.createLead({ name: "Lia", phone: "11922221111", source: "site", qualification: { produto: "franquia" } }, "teste")).lead;
+    await leads.moveLead(lia.id, perdido.id, "teste");
+    await post({ name: "Lia", phone: "11922221111", funil: "parceiro-veiculos", parceiro: "Lotus Veículos", ref: "portal:lia" });
+    expect((await db.lead.findUniqueOrThrow({ where: { id: lia.id } })).qualification).toEqual({ parceiro: "Lotus Veículos" });
 
     // One whose WhatsApp does not arrive stays in "Erro no WhatsApp": the team fixes the number first
     const erro = await db.stage.create({ data: { pipelineId: franchise.id, key: "erro_envio", name: "Erro no WhatsApp", kind: "LOST", position: 99 } });

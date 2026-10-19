@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createLead, ensureTask, moveLead, pipelineByRef, stageByKey } from "@/lib/leads";
+import { createLead, ensureTask, moveLead, pickSdr, pipelineByRef, stageByKey } from "@/lib/leads";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { SEND_ERROR_STAGE } from "@/lib/messaging";
@@ -91,7 +91,10 @@ export async function POST(request: Request) {
   if (!created && b.parceiro) {
     ({ moved } = await referAgain(lead.id, pipeline?.id, b.parceiro, b.produto, source));
     // A person decides what to do with a contact the CRM already had, and the alert tells them
-    await ensureTask(lead.id, lead.ownerId, `Nova indicação da ${b.parceiro}${b.produto ? `: cotar ${b.produto}` : ""}`);
+    const title = `Nova indicação da ${b.parceiro}${b.produto ? `: cotar ${b.produto}` : ""}`;
+    await ensureTask(lead.id, lead.ownerId, title);
+    // The same store referring again (a renewal next year): the open task rings again
+    await db.task.updateMany({ where: { leadId: lead.id, title, doneAt: null }, data: { dueAt: new Date() } });
     task = true;
   }
   if (b.observacao || b.ref) await logEvent(lead.id, "lead.form", source, b.observacao || "Indicação recebida.", b.ref ? { ref: b.ref } : undefined);
@@ -134,8 +137,16 @@ async function referAgain(leadId: string, pipelineId: string | undefined, parcei
       ? ((await stageByKey(STAGE_KEYS.NEW, pipelineId)) ?? (await db.stage.findFirst({ where: { pipelineId, kind: "OPEN" }, orderBy: { position: "asc" } })))
       : null;
   if (entry) {
-    await db.lead.update({ where: { id: leadId }, data: { qualification: { ...qualification, parceiro, ...(produto && { produto }) } } });
-    await moveLead(leadId, entry.id, `Formulário (${source})`);
+    // Starts over like a new lead: this store and product (never an old product), an SDR and the AI on
+    const rest = { ...qualification };
+    delete rest.produto;
+    await moveLead(leadId, entry.id, `Formulário (${source})`, {
+      qualification: { ...rest, parceiro, ...(produto && { produto }) },
+      status: "NEW",
+      lostReason: null,
+      aiPaused: false,
+      sdrId: lead.sdrId ?? (await pickSdr())?.id ?? null,
+    });
     return { moved: true };
   }
   // Only fills what is missing: the lead's current conversation keeps the store and product it already has
