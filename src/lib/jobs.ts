@@ -2,7 +2,9 @@ import type { Job, Lead } from "@prisma/client";
 import { db } from "./db";
 import { logEvent } from "./events";
 import { backoffMs, cancelJobs, enqueue } from "./queue";
-import { sendWhatsApp } from "./messaging";
+import { moveToSendError, SEND_ERROR_STAGE, sendWhatsApp, type SendOutcome } from "./messaging";
+import { isUndelivered } from "./whatsapp";
+import { whatsappNumber } from "./integrations";
 import { getSettings, isTestContact, messageVars } from "./settings";
 import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
@@ -10,7 +12,7 @@ import { planFromDecision, STAGE_KEYS } from "./plan";
 import { ensureTask, moveLead, pickSdr, stageByKey } from "./leads";
 import { fillVariables, type RuleConfig } from "./rules";
 import type { RuleJobPayload } from "./automations";
-import { attachMaterials, renderTemplate, sendEmail } from "./email";
+import { attachMaterials, emailHtml, renderTemplate, sendEmail, withButton } from "./email";
 
 type Handler = (job: Job, lead: Lead | null) => Promise<string>;
 
@@ -70,6 +72,7 @@ const handlers: Record<string, Handler> = {
       await ensureTask(lead.id, lead.ownerId, "Fazer o primeiro contato: o modelo da Meta ainda não foi aprovado");
       return res.skipped;
     }
+    if (!res.ok && undelivered(res, lead)) return `Não chegou: ${res.error}`;
     if (!res.ok) throw new Error(res.error);
     const next = await stageByKey(STAGE_KEYS.AI_QUALIFYING, lead.pipelineId);
     if (next) await moveLead(lead.id, next.id, agent.name);
@@ -141,6 +144,30 @@ const handlers: Record<string, Handler> = {
     return sendTemplateEmail(needLead(l), templateKey);
   },
 
+  async "whatsapp.undelivered_emails"(_job, l) {
+    return sendUndeliveredEmails(needLead(l));
+  },
+
+  async "whatsapp.other_category"(job, l) {
+    const lead = needLead(l);
+    const { category } = job.payload as { category: "UTILITY" | "MARKETING" };
+    const label = category === "UTILITY" ? "utilidade" : "marketing";
+    if (lead.lastInboundAt && lead.lastInboundAt > job.createdAt) return "Ignorado: o lead respondeu.";
+    const pipeline = await db.pipeline.findUniqueOrThrow({ where: { id: lead.pipelineId } });
+    const name = sameMessage(pipeline.name)?.[category];
+    const template = name ? await db.whatsAppTemplate.findFirst({ where: { name, category, active: true } }) : null;
+    if (!template) {
+      await moveToSendError(lead.id, `não chegou e este funil não tem mensagem de ${label} aprovada para tentar`);
+      return `Sem mensagem de ${label} para tentar: lead movido para ${SEND_ERROR_STAGE.name}.`;
+    }
+    const sdr = lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null;
+    const text = template.body.replace("{{1}}", firstName(lead)).replace("{{2}}", sdr?.name ?? "Duda");
+    const res = await sendWhatsApp(lead, text, sdr?.name ?? "Automação", { automatic: true, templateName: template.name });
+    if (res.skipped) return res.skipped;
+    await logEvent(lead.id, "whatsapp.other_category", "WhatsApp", `Nova tentativa como ${label} (${template.name}): ${res.ok ? "enviada" : res.error}.`);
+    return res.ok ? `Tentativa como ${label} ${sentHow(res)}.` : `Tentativa como ${label} não chegou: ${res.error}`;
+  },
+
   async "meeting.reminder"(job, l) {
     const lead = needLead(l);
     const { meetingId, label } = job.payload as { meetingId: string; label: string };
@@ -182,20 +209,31 @@ const decisionLabel: Record<string, string> = {
   disqualify: "Descartou",
 };
 
-async function sendTemplateEmail(lead: Lead, templateKey: string) {
+type EmailOptions = {
+  vars?: Record<string, string>;
+  button?: { label: string; url: string };
+  // The e-mails for a lead WhatsApp can't reach still go after it was moved to "Erro no WhatsApp"
+  evenInSendError?: boolean;
+};
+
+async function sendTemplateEmail(lead: Lead, templateKey: string, opts: EmailOptions = {}) {
   if (!lead.email) return "Ignorado: lead sem e-mail.";
   if (lead.emailOptOut) return "Ignorado: lead pediu para não receber e-mails.";
-  if (["DISQUALIFIED", "WON", "LOST"].includes(lead.status)) return "Ignorado: lead encerrado.";
+  const sendError = opts.evenInSendError && (await db.stage.count({ where: { id: lead.stageId, key: SEND_ERROR_STAGE.key } })) > 0;
+  if (["DISQUALIFIED", "WON", "LOST"].includes(lead.status) && !sendError) return "Ignorado: lead encerrado.";
   const t = await db.emailTemplate.findUnique({ where: { key: templateKey } });
   if (!t || !t.active) return "Ignorado: modelo de e-mail inativo.";
+  // The same e-mail never goes twice to a lead, even when two automations ask for it
+  if (await db.message.count({ where: { leadId: lead.id, channel: "EMAIL", template: templateKey, status: { not: "FAILED" } } }))
+    return `Ignorado: o e-mail "${t.name}" já foi enviado para este lead.`;
   const settings = await getSettings();
   // "A {{sdr}}, do nosso time de expansão": the e-mail names the SDR who is talking to this lead
   const sdr = lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null;
-  const vars = messageVars(settings, lead, sdr?.name ?? "Duda");
+  const vars = { ...messageVars(settings, lead, sdr?.name ?? "Duda"), ...opts.vars };
   const subject = renderTemplate(t.subject, vars);
-  const { text: body, attachments } = attachMaterials(renderTemplate(t.body, vars), Object.values(settings.materials));
+  const { text: body, attachments } = attachMaterials(renderTemplate(t.body, vars).replace("Olá, !", "Olá!"), Object.values(settings.materials));
   const simulated = settings.testMode && !isTestContact(settings, lead.email);
-  if (!simulated) await sendEmail(lead.email, subject, body, attachments);
+  if (!simulated) await sendEmail(lead.email, subject, body, attachments, opts.button ? withButton(emailHtml(body), opts.button) : undefined);
   await db.message.create({
     data: {
       leadId: lead.id,
@@ -204,9 +242,60 @@ async function sendTemplateEmail(lead: Lead, templateKey: string) {
       body: `${subject}\n\n${body}`,
       author: "E-mail automático",
       status: simulated ? "SIMULATED" : "SENT",
+      template: templateKey,
     },
   });
   return simulated ? `E-mail "${t.name}" simulado (modo teste).` : `E-mail "${t.name}" enviado.`;
+}
+
+// The same first message, approved by Meta as utility and as marketing, for each kind of funnel (by its name).
+// When one is denied the other goes. Captação writes to people who never asked: no "we got your request".
+const SAME_MESSAGE = [
+  { funnel: /capta/i, UTILITY: null, MARKETING: null, welcome: null },
+  { funnel: /sindicat/i, UTILITY: "banneg_sindicato_pedido", MARKETING: "banneg_sindicato_contato", welcome: null },
+  { funnel: /cota|produto|seguro|cons[oó]rcio/i, UTILITY: "banneg_cotacao_recebida", MARKETING: "banneg_produtos_contato", welcome: null },
+  { funnel: /franquia|expans/i, UTILITY: "banneg_cadastro_recebido", MARKETING: "banneg_primeiro_contato", welcome: "boas_vindas_0" },
+];
+const sameMessage = (pipelineName: string) => SAME_MESSAGE.find((m) => m.funnel.test(pipelineName));
+
+function undelivered(res: Extract<SendOutcome, { ok: false }>, lead: Lead) {
+  return isUndelivered(res.code, lead.phone);
+}
+
+/** The code the "Chamar no WhatsApp" button writes, so a lead who calls from another number keeps its history. */
+export const emailCode = (leadId: string) => leadId.slice(-6).toUpperCase();
+export const CONTACT_EMAIL = "whatsapp_nao_chegou";
+
+/**
+ * WhatsApp did not reach the lead: the welcome e-mail (if the funnel has one and it has not gone) and the
+ * e-mail with a button that opens our WhatsApp with a message ready, so the lead can call us.
+ */
+async function sendUndeliveredEmails(lead: Lead) {
+  if (!lead.email) return "Ignorado: lead sem e-mail.";
+  const results: string[] = [];
+  const pipeline = await db.pipeline.findUniqueOrThrow({ where: { id: lead.pipelineId } });
+  const welcome = sameMessage(pipeline.name)?.welcome;
+  if (welcome) {
+    // An automation of the stage may already have the welcome on its way: that one goes, not two
+    const rules = await db.automationRule.findMany({ where: { action: "email", config: { path: ["templateKey"], equals: welcome } }, select: { id: true } });
+    const coming = rules.length
+      ? await db.job.count({ where: { leadId: lead.id, status: "PENDING", OR: rules.map((r) => ({ payload: { path: ["ruleId"], equals: r.id } })) } })
+      : 0;
+    if (!coming) results.push(await sendTemplateEmail(lead, welcome, { evenInSendError: true }));
+  }
+  const number = await whatsappNumber();
+  if (!number) return [...results, "E-mail de contato não enviado: o número do WhatsApp do CRM não foi encontrado na Meta."].join(" ");
+  const settings = await getSettings();
+  const text = `Oi! Recebi o e-mail do ${settings.companyName} e quero conversar. (código ${emailCode(lead.id)})`;
+  const url = `https://wa.me/${number.replace(/\D/g, "")}?text=${encodeURIComponent(text)}`;
+  results.push(
+    await sendTemplateEmail(lead, CONTACT_EMAIL, {
+      vars: { link_whatsapp: url, numero_whatsapp: number },
+      button: { label: "Chamar no WhatsApp", url },
+      evenInSendError: true,
+    }),
+  );
+  return results.join(" ");
 }
 
 /** Does what a rule says. Throws on a failure worth retrying (WhatsApp down, SMTP error). */
@@ -224,6 +313,7 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig):
         buttons: config.buttons,
       });
       if (res.skipped) return res.skipped;
+      if (!res.ok && undelivered(res, lead)) return `WhatsApp não chegou: ${res.error}`;
       if (!res.ok) throw new Error(res.error);
       return `WhatsApp ${sentHow(res)}.`;
     }

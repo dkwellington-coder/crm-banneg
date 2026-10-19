@@ -7,7 +7,9 @@ export type JobType =
   | "rule.run"
   | "email.send"
   | "meeting.reminder"
-  | "whatsapp.retry";
+  | "whatsapp.retry"
+  | "whatsapp.undelivered_emails"
+  | "whatsapp.other_category";
 
 /**
  * Schedules work. A dedupeKey makes the call idempotent: scheduling the same step twice

@@ -2,7 +2,7 @@ import { after } from "next/server";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { handleInbound } from "@/lib/leads";
-import { stopAfterSendErrors } from "@/lib/messaging";
+import { afterUndelivered } from "@/lib/messaging";
 import { classifyError, messageText, setHealth, verifySignature, type WebhookPayload } from "@/lib/whatsapp";
 import { forwardCopy } from "@/lib/whatsapp-forward";
 
@@ -47,7 +47,7 @@ export async function POST(request: Request) {
           if (accountLevel) await setHealth({ code: err?.code, message: friendly });
           await db.message.update({ where: { id: msg.id }, data: { status: "FAILED", error: friendly, errorCode: err?.code } });
           await logEvent(msg.leadId, "whatsapp.failed", "WhatsApp", `Mensagem não entregue: ${friendly}`, { code: err?.code ?? null });
-          await stopAfterSendErrors(msg.leadId, friendly);
+          await afterUndelivered(msg.leadId, friendly);
         } else {
           const status = st.status === "read" ? "READ" : st.status === "delivered" ? "DELIVERED" : "SENT";
           await db.message.update({ where: { id: msg.id }, data: { status } });

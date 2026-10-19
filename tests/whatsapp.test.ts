@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { classifyError, isContactError, isWindowOpen, normalizePhone, phoneVariants, verifySignature } from "@/lib/whatsapp";
+import { classifyError, isContactError, isUndelivered, isWindowOpen, normalizePhone, phoneVariants, verifySignature } from "@/lib/whatsapp";
 import { renderTemplate } from "@/lib/email";
 import { createHmac } from "node:crypto";
 
@@ -12,6 +12,14 @@ describe("whatsapp helpers", () => {
     expect(isContactError(131049, "11955554444")).toBe(false);
     expect(isContactError(131042, "11955554444")).toBe(false);
     expect(isContactError(null, "11955554444")).toBe(false);
+  });
+
+  it("counts as not delivered the number errors and Meta holding the message back, never account problems", () => {
+    expect(isUndelivered(131026, "5511955554444")).toBe(true);
+    expect(isUndelivered(131049, "5511955554444")).toBe(true);
+    expect(isUndelivered(130472, "5511955554444")).toBe(true);
+    expect(isUndelivered(131042, "5511955554444")).toBe(false);
+    expect(isUndelivered(131009, "5511955554444")).toBe(false);
   });
 
   it("opens the 24h window only after a recent inbound message", () => {

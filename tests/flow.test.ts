@@ -16,6 +16,15 @@ vi.mock("@/lib/sdr", async (orig) => ({
   runSdrTurn: vi.fn(async () => nextDecision.value),
 }));
 
+const sentEmails = vi.hoisted(() => [] as { to: string; subject: string; body: string; html?: string }[]);
+vi.mock("@/lib/email", async (orig) => ({
+  ...(await orig<typeof import("@/lib/email")>()),
+  sendEmail: vi.fn(async (to: string, subject: string, body: string, _a: unknown, html?: string) => {
+    sentEmails.push({ to, subject, body, html });
+    return "id";
+  }),
+}));
+
 const empty = { name: null, email: null, city: null, state: null, capital: null, timeline: null, experience: null, decisionMaker: null };
 
 describe.skipIf(!dbUrl)("lead flow", () => {
@@ -149,33 +158,65 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(msg.status).toBe("FAILED");
   });
 
-  it("stops writing to a contact WhatsApp can't reach and moves it to the error column", async () => {
+  it("when WhatsApp doesn't reach a lead: e-mails, the other category, then the error column, and the lead can come back", async () => {
     const messaging = await import("@/lib/messaging");
-    const { lead } = await leads.createLead({ name: "Edu", phone: "11955554444", source: "site" }, "teste");
-    const send = async () =>
-      messaging.sendWhatsApp(await db.lead.findUniqueOrThrow({ where: { id: lead.id } }), "Oi", "Duda", { automatic: true, purpose: "first_contact" });
+    await db.whatsAppTemplate.createMany({
+      data: [
+        { name: "banneg_cadastro_recebido", body: "Olá, {{1}}! Aqui é a {{2}}, do Banneg.", purpose: "first_contact", category: "UTILITY" },
+        { name: "banneg_primeiro_contato", body: "Olá, {{1}}! Aqui é a {{2}}.", purpose: "first_contact" },
+      ],
+    });
+    await db.emailTemplate.create({
+      data: { key: "whatsapp_nao_chegou", name: "c", subject: "Tentamos falar com você no WhatsApp", body: "Olá, {{nome}}!\n\n{{link_whatsapp}}\n\n{{numero_whatsapp}}" },
+    });
+    await db.setting.create({ data: { key: "whatsapp_number", value: { number: "+55 11 92013-8123" } } });
+    const { lead } = await leads.createLead({ name: "Edu", phone: "11955554444", email: "edu@x.com", source: "site" }, "teste");
+    // Only what this test sends: the stage's own automations stay out of the way
+    await db.job.updateMany({ where: { leadId: lead.id }, data: { status: "CANCELLED" } });
     const stageKey = async () => (await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } })).stage.key;
 
-    // Meta holding back a marketing message says nothing about the number: it does not count
+    // Meta holds back the marketing message
     failNext = { code: 131049, message: "This message was not delivered to maintain healthy ecosystem engagement." };
-    await send();
-    failNext = { code: 131026, message: "Message undeliverable" };
-    await send();
+    const first = await messaging.sendWhatsApp(lead, "Oi", "Duda", { automatic: true, templateName: "banneg_primeiro_contato" });
+    expect(first.ok).toBe(false);
     expect(await stageKey()).not.toBe("erro_envio");
 
-    // Second message that can't reach the number: out of the cadence, into the error column
+    // The e-mails go and the same message is tried as utility, which doesn't reach either
+    sentEmails.length = 0;
+    sent.length = 0;
     failNext = { code: 131026, message: "Message undeliverable" };
-    await send();
+    await drain();
+    expect(sentEmails.map((e) => e.subject)).toEqual(["s", "Tentamos falar com você no WhatsApp"]);
+    const contact = sentEmails[1];
+    const code = lead.id.slice(-6).toUpperCase();
+    expect(contact.body).toContain(`https://wa.me/5511920138123?text=`);
+    expect(decodeURIComponent(contact.body)).toContain(`(código ${code})`);
+    expect(contact.html).toContain("Chamar no WhatsApp");
+    const tries = await db.message.findMany({ where: { leadId: lead.id, channel: "WHATSAPP" }, orderBy: { createdAt: "asc" } });
+    expect(tries.map((m) => m.template)).toEqual(["banneg_primeiro_contato", "banneg_cadastro_recebido"]);
+
+    // Marketing and utility denied: out of the cadence, into the error column
     const l = await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } });
     expect(l.stage).toMatchObject({ key: "erro_envio", name: "Erro no WhatsApp", kind: "LOST" });
     expect(l.aiPaused).toBe(true);
     expect(l.lostReason).toMatch(/WhatsApp não chega/);
-    expect(await db.job.count({ where: { leadId: lead.id, type: { in: ["sdr.first_contact", "rule.run"] }, status: "PENDING" } })).toBe(0);
 
-    // A retry that was already on its way writes nothing
+    // A retry that was already on its way writes nothing, and the e-mails never go twice
     const before = sent.length;
-    expect(await send()).toMatchObject({ ok: true, skipped: expect.stringContaining("coluna de erro") });
+    expect(await messaging.sendWhatsApp(l, "Oi", "Duda", { automatic: true, purpose: "first_contact" })).toMatchObject({
+      ok: true,
+      skipped: expect.stringContaining("coluna de erro"),
+    });
     expect(sent.length).toBe(before);
+    await drain();
+    expect(sentEmails).toHaveLength(2);
+
+    // The lead taps the e-mail's button and writes from another number: same lead, number fixed, back in the conversation
+    await leads.handleInbound({ phone: "11911112222", body: `Oi! Recebi o e-mail do Banneg e quero conversar. (código ${code})`, externalId: "in-code", at: new Date() });
+    const back = await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } });
+    expect(back).toMatchObject({ phone: "5511911112222", status: "AI_QUALIFYING", lostReason: null });
+    expect(back.stage.key).toBe("qualificando");
+    expect(await db.lead.count()).toBe(1);
   });
 
   it("does not duplicate a lead that comes back from another source", async () => {

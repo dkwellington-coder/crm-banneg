@@ -128,6 +128,19 @@ export async function whatsappSendStatus(): Promise<{ canSend: boolean; problem:
   return { canSend: false, problem: { code: error?.error_code, message: error?.error_description ?? `Meta: envio ${health.can_send_message}` } };
 }
 
+/** The CRM's WhatsApp number as people dial it ("+55 11 92013-8123"), read from Meta once and kept. */
+export async function whatsappNumber(): Promise<string | null> {
+  const saved = await db.setting.findUnique({ where: { key: "whatsapp_number" } });
+  const number = (saved?.value as { number?: string } | undefined)?.number;
+  if (number) return number;
+  if (!process.env.WHATSAPP_TOKEN || !process.env.WHATSAPP_PHONE_NUMBER_ID) return null;
+  const n = await graphGet<{ display_phone_number?: string }>(`${process.env.WHATSAPP_PHONE_NUMBER_ID}?fields=display_phone_number`).catch(() => null);
+  if (!n?.display_phone_number) return null;
+  const value = { number: n.display_phone_number };
+  await db.setting.upsert({ where: { key: "whatsapp_number" }, create: { key: "whatsapp_number", value }, update: { value } });
+  return n.display_phone_number;
+}
+
 /** Reads the number's profile from Meta without sending anything. */
 export async function checkWhatsApp(): Promise<CheckResult> {
   const { WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID } = process.env;

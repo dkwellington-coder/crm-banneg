@@ -52,6 +52,14 @@ export function isContactError(code: number | null | undefined, phone: string | 
   return code === 131009 && !/^\d{12,13}$/.test(normalizePhone(phone ?? ""));
 }
 
+/**
+ * The message did not reach this person: the number can't get WhatsApp, or Meta held back the message for
+ * it (131049, marketing limits per person; 130472, a Meta experiment). The other category may still go.
+ */
+export function isUndelivered(code: number | null | undefined, phone: string | null) {
+  return isContactError(code, phone) || code === 131049 || code === 130472;
+}
+
 export function classifyError(code: number | undefined, message: string) {
   const accountMessage = code !== undefined ? ACCOUNT_ERRORS[code] : undefined;
   return { accountLevel: !!accountMessage, friendly: accountMessage ?? message };

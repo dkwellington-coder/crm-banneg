@@ -1,9 +1,10 @@
 import type { Lead } from "@prisma/client";
 import { db } from "./db";
 import { logEvent } from "./events";
-import { isContactError, isWindowOpen, mediaKind, sendAudio, sendButtons, sendMedia, sendTemplate, sendText, type SendResult } from "./whatsapp";
+import { isUndelivered, isWindowOpen, mediaKind, sendAudio, sendButtons, sendMedia, sendTemplate, sendText, type SendResult } from "./whatsapp";
 import { AUDIO_MARK, WHATSAPP_AUDIO, baseMime, transcribe, uploadWhatsAppMedia, webmToOgg } from "./audio";
 import { getSettings, materialFileName, whatsappIsReal } from "./settings";
+import { enqueue } from "./queue";
 
 export type SendOptions = {
   // Picks the approved template by its use when the 24-hour window is closed (first_contact, reminder, reengagement)
@@ -122,7 +123,7 @@ export async function sendWhatsApp(lead: Lead, body: string, author: string, opt
   }
   await db.message.update({ where: { id: msg.id }, data: { status: "FAILED", error: res.error, errorCode: res.code } });
   await logEvent(lead.id, "whatsapp.failed", author, `Mensagem não enviada: ${res.error}`, { code: res.code ?? null });
-  await stopAfterSendErrors(lead.id, res.error);
+  await afterUndelivered(lead.id, res.error);
   return { ok: false, error: res.error, code: res.code, messageId: msg.id, usedTemplate: !!template, simulated: false };
 }
 
@@ -174,7 +175,7 @@ export async function sendAudioMessage(lead: Lead, audio: Uint8Array, mimeType: 
   }
   await db.message.update({ where: { id: msg.id }, data: { status: "FAILED", error: res.error, errorCode: res.code } });
   await logEvent(lead.id, "whatsapp.failed", author, `Áudio não enviado: ${res.error}`, { code: res.code ?? null });
-  await stopAfterSendErrors(lead.id, res.error);
+  await afterUndelivered(lead.id, res.error);
   return { ok: false, error: res.error, code: res.code, messageId: msg.id, usedTemplate: false, simulated: false };
 }
 
@@ -188,20 +189,37 @@ export async function transcribeSentAudio(messageId: string) {
 
 // The funnel column where contacts WhatsApp can't reach go, created in each funnel the first time it is needed
 export const SEND_ERROR_STAGE = { key: "erro_envio", name: "Erro no WhatsApp", color: "#b91c1c" } as const;
-export const SEND_ERROR_LIMIT = 2;
+export const UNDELIVERED_CATEGORIES = ["UTILITY", "MARKETING"] as const;
 
 /**
- * The second WhatsApp message that can't reach this contact: stop writing to it (AI and automations)
- * and move it to "Erro no WhatsApp", where the team sees it and can fix the number.
+ * A WhatsApp message did not reach the lead. The first time, e-mails go (welcome and a button to call us
+ * on WhatsApp) and the message is tried in the other Meta category, marketing or utility. Only when both
+ * were denied does the lead stop getting WhatsApp and go to "Erro no WhatsApp", where the team sees it.
  */
-export async function stopAfterSendErrors(leadId: string, lastError: string) {
+export async function afterUndelivered(leadId: string, lastError: string) {
   const lead = await db.lead.findUnique({ where: { id: leadId }, include: { stage: true } });
-  if (!lead || lead.stage.key === SEND_ERROR_STAGE.key) return false;
+  if (!lead || lead.stage.key === SEND_ERROR_STAGE.key) return;
   const failed = await db.message.findMany({
     where: { leadId, channel: "WHATSAPP", direction: "OUT", status: "FAILED" },
-    select: { errorCode: true },
+    select: { template: true, errorCode: true },
   });
-  if (failed.filter((m) => isContactError(m.errorCode, lead.phone)).length < SEND_ERROR_LIMIT) return false;
+  const denied = failed.filter((m) => isUndelivered(m.errorCode, lead.phone));
+  if (!denied.length) return;
+  await enqueue("whatsapp.undelivered_emails", { leadId, dedupeKey: `undelivered_emails:${leadId}` });
+  const names = denied.flatMap((m) => (m.template ? [m.template] : []));
+  const tried = new Set((await db.whatsAppTemplate.findMany({ where: { name: { in: names } }, select: { category: true } })).map((t) => t.category));
+  const next = UNDELIVERED_CATEGORIES.find((c) => !tried.has(c));
+  if (next) {
+    await enqueue("whatsapp.other_category", { leadId, payload: { category: next }, dedupeKey: `other_category:${leadId}:${next}`, maxAttempts: 2 });
+    return;
+  }
+  await moveToSendError(leadId, `marketing e utilidade não chegaram (${lastError})`);
+}
+
+/** Stops writing to this contact (AI and automations) and moves it to "Erro no WhatsApp". */
+export async function moveToSendError(leadId: string, reason: string) {
+  const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId }, include: { stage: true } });
+  if (lead.stage.key === SEND_ERROR_STAGE.key) return false;
   const stage =
     (await db.stage.findUnique({ where: { pipelineId_key: { pipelineId: lead.pipelineId, key: SEND_ERROR_STAGE.key } } })) ??
     (await db.stage.create({
@@ -214,6 +232,6 @@ export async function stopAfterSendErrors(leadId: string, lastError: string) {
     }));
   // Imported here: leads.ts sends WhatsApp through this file
   const { moveLead } = await import("./leads");
-  await moveLead(lead.id, stage.id, "WhatsApp", { aiPaused: true, lostReason: `WhatsApp não chega neste contato: ${lastError}` });
+  await moveLead(lead.id, stage.id, "WhatsApp", { aiPaused: true, lostReason: `WhatsApp não chega neste contato: ${reason}` });
   return true;
 }

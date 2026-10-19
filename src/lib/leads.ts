@@ -5,7 +5,7 @@ import { cancelJobs, enqueueDebounced } from "./queue";
 import { cancelRuleJobs, scheduleAnswerRules, scheduleStageRules } from "./automations";
 import { normalizePhone, phoneVariants } from "./whatsapp";
 import { AUDIO_MARK, downloadWhatsAppMedia, transcribe } from "./audio";
-import { sendWhatsApp } from "./messaging";
+import { SEND_ERROR_STAGE, sendWhatsApp } from "./messaging";
 import { STAGE_KEYS } from "./plan";
 
 /** A stage of the given funnel by its AI key; null when that funnel has no such stage. */
@@ -150,12 +150,13 @@ export async function handleInbound(input: {
   const phone = normalizePhone(input.phone);
   const dup = await db.message.findUnique({ where: { externalId: input.externalId } });
   if (dup) return null;
-  let lead = await leadByPhone(phone);
+  let lead = (await leadByPhone(phone)) ?? (await leadByEmailCode(input.body, phone));
   if (!lead) {
     lead = (await createLead({ phone, name: input.profileName, source: "whatsapp" }, "WhatsApp")).lead;
     // The lead wrote first, so the SDR answers the message instead of sending a cold opening
     await cancelJobs(lead.id, ["sdr.first_contact"]);
   }
+  lead = await backFromSendError(lead);
   const msg = await db.message.create({
     data: {
       leadId: lead.id,
@@ -192,6 +193,30 @@ export async function handleInbound(input: {
     await ensureTask(lead.id, lead.ownerId, "Responder mensagem do lead no WhatsApp");
   }
   return lead;
+}
+
+/**
+ * The "Chamar no WhatsApp" button of the e-mail writes the lead's code. A lead whose number WhatsApp could
+ * not reach comes back from another number: the number is fixed and the conversation stays in its history.
+ */
+async function leadByEmailCode(body: string, phone: string) {
+  const code = body.match(/c[oó]digo:?\s*([a-z0-9]{6})\b/i)?.[1];
+  if (!code) return null;
+  const lead = await db.lead.findFirst({ where: { id: { endsWith: code.toLowerCase() } } });
+  if (!lead) return null;
+  await logEvent(lead.id, "lead.phone_changed", "WhatsApp", `Chamou no WhatsApp pelo botão do e-mail, de outro número: ${lead.phone ?? "sem número"} → ${phone}.`);
+  return db.lead.update({ where: { id: lead.id }, data: { phone } });
+}
+
+/** A lead in "Erro no WhatsApp" wrote: the number works, so it goes back to the conversation. */
+async function backFromSendError(lead: Lead) {
+  const stage = await db.stage.findUnique({ where: { id: lead.stageId } });
+  if (stage?.key !== SEND_ERROR_STAGE.key) return lead;
+  const back =
+    (await stageByKey(STAGE_KEYS.AI_QUALIFYING, lead.pipelineId)) ??
+    (await db.stage.findFirst({ where: { pipelineId: lead.pipelineId, kind: "OPEN" }, orderBy: { position: "asc" } }));
+  if (!back) return lead;
+  return moveLead(lead.id, back.id, "WhatsApp", { status: "AI_QUALIFYING", aiPaused: !lead.sdrId, lostReason: null });
 }
 
 // The "Parar mensagens" button of the templates, or the lead typing it
