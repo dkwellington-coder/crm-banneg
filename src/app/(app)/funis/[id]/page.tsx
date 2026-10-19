@@ -36,7 +36,7 @@ async function Editor({ params }: { params: PageProps<"/funis/[id]">["params"] }
     db.stage.findMany({ orderBy: [{ pipeline: { position: "asc" } }, { position: "asc" }], include: { pipeline: { select: { name: true } } } }),
     db.emailTemplate.findMany({ where: { active: true }, orderBy: { key: "asc" }, select: { key: true, name: true } }),
     db.sdrAgent.findMany({ where: { active: true }, select: { id: true, name: true } }),
-    db.whatsAppTemplate.findMany({ orderBy: { name: "asc" }, select: { name: true, status: true } }),
+    db.whatsAppTemplate.findMany({ orderBy: { name: "asc" }, select: { name: true, status: true, body: true } }),
     db.pipeline.findMany({ where: { id: { not: id } }, orderBy: { position: "asc" }, select: { id: true, name: true } }),
   ]);
   const canEdit = user.role !== "SELLER";

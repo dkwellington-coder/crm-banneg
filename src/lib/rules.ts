@@ -23,6 +23,8 @@ export type RuleConfig = {
   sdrId?: string;
   // WhatsApp: Meta template used when the 24 h window is closed (without one, the message waits for the lead)
   templateName?: string;
+  // WhatsApp: the variable that fills each {{1}}, {{2}}... of that template; empty = {{1}} the name and {{2}} the SDR
+  templateParams?: string[];
   // WhatsApp: quick reply buttons shown with the text
   buttons?: string[];
   // daily: how many leads leave the queue per business day
@@ -109,4 +111,9 @@ export function fillVariables(text: string, vars: Record<string, string>) {
 /** Same-delay rules run in the order shown on screen. */
 export function ruleRunAt(base: Date, delayMinutes: number, position: number) {
   return new Date(base.getTime() + delayMinutes * 60_000 + position * 1000);
+}
+
+/** How many {{1}}, {{2}}... a Meta template asks for. */
+export function templateSlots(body: string) {
+  return Math.max(0, ...[...body.matchAll(/\{\{(\d+)\}\}/g)].map((m) => Number(m[1])));
 }

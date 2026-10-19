@@ -101,14 +101,18 @@ export async function getSettings(): Promise<CrmSettings> {
   return { ...DEFAULT_SETTINGS, ...saved, materials: { ...DEFAULT_MATERIALS, ...saved.materials } };
 }
 
-/** {{nome}}, {{empresa}}, {{apresentacao}}, {{video_ganhos}}... for one lead. */
-export function messageVars(settings: CrmSettings, lead: { name: string | null; city: string | null }, sdrName = "") {
+/** {{nome}}, {{empresa}}, {{parceiro}}, {{produto}}, {{apresentacao}}, {{video_ganhos}}... for one lead. */
+export function messageVars(settings: CrmSettings, lead: { name: string | null; city: string | null; qualification?: unknown }, sdrName = "") {
+  const qualification = (lead.qualification ?? {}) as Record<string, unknown>;
   return {
     ...settings.materials,
     nome: lead.name?.split(" ")[0] ?? "",
     empresa: settings.companyName,
     cidade: lead.city ?? "",
     sdr: sdrName,
+    // The partner store that referred the lead and what it wants a quote for (Portal de indicações)
+    parceiro: typeof qualification.parceiro === "string" ? qualification.parceiro : "",
+    produto: typeof qualification.produto === "string" ? qualification.produto : "",
     apresentacao: settings.presentationUrl,
   };
 }

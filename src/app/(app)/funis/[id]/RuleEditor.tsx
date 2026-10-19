@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { Wand2 } from "lucide-react";
-import { ACTIONS, UNITS, splitDelay, type ActionKey, type RuleConfig, type RuleTrigger } from "@/lib/rules";
+import { ACTIONS, UNITS, splitDelay, templateSlots, type ActionKey, type RuleConfig, type RuleTrigger } from "@/lib/rules";
 import { saveRuleAction } from "../../../actions";
 import { btnCls, btnGhostCls, inputCls } from "@/components/ui";
 
@@ -20,7 +20,7 @@ export type EditorOptions = {
   stages: { id: string; name: string; pipeline: string; same: boolean }[];
   emails: { key: string; name: string }[];
   sdrs: { id: string; name: string }[];
-  waTemplates: { name: string; status: string }[];
+  waTemplates: { name: string; status: string; body: string }[];
 };
 
 type Draft = {
@@ -51,7 +51,7 @@ const PRESETS: { label: string; draft: Partial<Draft> }[] = [
   { label: "Mover quando tocar no botão", draft: { trigger: "answer", action: "move", config: { answers: ["Quero ver"] } } },
 ];
 
-const VARIABLES = ["nome", "empresa", "cidade", "sdr", "apresentacao", "video_ganhos", "simulacoes", "por_que_investir", "video_fundador", "video_bottini"];
+const VARIABLES = ["nome", "empresa", "parceiro", "produto", "cidade", "sdr", "apresentacao", "video_ganhos", "simulacoes", "por_que_investir", "video_fundador", "video_bottini"];
 
 function fromRule(rule?: RuleData): Draft {
   if (!rule) return { trigger: "enter", when: "now", amount: 1, unit: "d", action: "whatsapp", config: {}, runAfterLeaving: false };
@@ -87,6 +87,12 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
     setConfig({ text: `${value.slice(0, at)}{{${v}}}${value.slice(at)}` });
     requestAnimationFrame(() => el?.focus());
   }
+
+  // The chosen template's {{1}}, {{2}}...: name and SDR unless the person picks other variables
+  const template = options.waTemplates.find((t) => t.name === d.config.templateName);
+  const slots = template ? templateSlots(template.body) : 0;
+  const params = Array.from({ length: slots }, (_, i) => d.config.templateParams?.[i] ?? ["nome", "sdr"][i] ?? "");
+  const setParam = (i: number, v: string) => setConfig({ templateParams: params.map((p, j) => (j === i ? v : p)) });
 
   const sameFunnel = options.stages.filter((s) => s.same);
   const otherFunnels = options.stages.filter((s) => !s.same);
@@ -241,7 +247,12 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
           />
           <label className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
             Se o lead não escreveu nas últimas 24 h, mandar o modelo da Meta:
-            <select name="templateName" value={d.config.templateName ?? ""} onChange={(e) => setConfig({ templateName: e.target.value || undefined })} className={`${inputCls} w-auto!`}>
+            <select
+              name="templateName"
+              value={d.config.templateName ?? ""}
+              onChange={(e) => setConfig({ templateName: e.target.value || undefined, templateParams: undefined })}
+              className={`${inputCls} w-auto!`}
+            >
               <option value="">nenhum (espera o lead escrever)</option>
               {options.waTemplates.map((t) => (
                 <option key={t.name} value={t.name}>
@@ -251,6 +262,29 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
               ))}
             </select>
           </label>
+          {template && slots > 0 && (
+            <div className="space-y-1.5 rounded-lg bg-slate-50 p-2 text-xs text-slate-600">
+              <div className="whitespace-pre-line text-slate-500">{template.body}</div>
+              <div className="flex flex-wrap items-center gap-2">
+                No modelo, preencher:
+                {params.map((p, i) => (
+                  <label key={i} className="flex items-center gap-1">
+                    <span className="font-mono">{`{{${i + 1}}}`}</span>=
+                    <select name="templateParams" required value={p} onChange={(e) => setParam(i, e.target.value)} className={`${inputCls} w-auto! py-1`}>
+                      <option value="" disabled>
+                        escolha
+                      </option>
+                      {VARIABLES.map((v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
       {d.action === "email" && (

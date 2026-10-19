@@ -49,6 +49,7 @@ const ENV_CHECKS: [string, string[]][] = [
   ["E-mail (SMTP)", ["SMTP_HOST", "SMTP_USER", "SMTP_PASS"]],
   ["Google Agenda", ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]],
   ["Formulários do site", ["LEADS_API_TOKEN"]],
+  ["Portal de indicações", ["PORTAL_LEADS_TOKEN"]],
   ["Agendador", ["CRON_SECRET"]],
 ];
 
@@ -194,7 +195,7 @@ async function Config() {
         ))}
       </Section>
 
-      <Section id="emails" title="E-mails automáticos" hint="Variáveis: {{nome}}, {{empresa}}, {{cidade}}, {{apresentacao}}. Dia = dias depois do lead entrar. boas_vindas_* vai para todo lead novo; nutricao_* para quem entra em Nutrição. No e-mail cof: {{documentos}} e {{link_cof}} (o link de confirmação de recebimento).">
+      <Section id="emails" title="E-mails automáticos" hint="Variáveis: {{nome}}, {{empresa}}, {{parceiro}}, {{produto}}, {{cidade}}, {{apresentacao}}. Dia = dias depois do lead entrar. boas_vindas_* vai para todo lead novo; nutricao_* para quem entra em Nutrição. No e-mail cof: {{documentos}} e {{link_cof}} (o link de confirmação de recebimento).">
         {[...emails, null].map((e) => (
           <form key={e?.key ?? "new"} action={saveEmailTemplateAction} className="space-y-2 border-t border-slate-100 pt-2 first:border-0 first:pt-0">
             <fieldset disabled={!owner} className="space-y-2">
@@ -306,7 +307,7 @@ async function Config() {
         )}
       </Section>
 
-      <Section id="modelos" title="Modelos do WhatsApp" hint="Cadastre aqui os modelos já aprovados no Meta, com o mesmo nome. Use {{1}} para o primeiro nome. Finalidades: first_contact, followup, reminder, reengagement, prospeccao. Os importados do CRM antigo (importado) só vão pelo nome, nas automações.">
+      <Section id="modelos" title="Modelos do WhatsApp" hint="Cadastre aqui os modelos já aprovados no Meta, com o mesmo nome. Use {{1}} para o primeiro nome; nas automações você escolhe o que vai em cada {{1}}, {{2}}, {{3}}... (nome, SDR, loja parceira, produto). Finalidades: first_contact, followup, reminder, reengagement, prospeccao. Os importados do CRM antigo (importado) só vão pelo nome, nas automações.">
         {[...waTemplates, null].map((t) => (
           <form key={t?.id ?? "new"} action={saveWaTemplateAction} className="space-y-2 border-t border-slate-100 pt-2 first:border-0 first:pt-0">
             <fieldset disabled={!owner} className="space-y-2">

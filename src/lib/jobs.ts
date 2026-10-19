@@ -3,7 +3,7 @@ import { db } from "./db";
 import { logEvent } from "./events";
 import { backoffMs, cancelJobs, enqueue } from "./queue";
 import { isClosed, moveToSendError, SEND_ERROR_STAGE, sendWhatsApp, type SendOutcome } from "./messaging";
-import { isUndelivered } from "./whatsapp";
+import { isUndelivered, isWindowOpen } from "./whatsapp";
 import { whatsappNumber } from "./integrations";
 import { getSettings, isTestContact, messageVars } from "./settings";
 import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, pickOwner, type Slot } from "./calendar";
@@ -307,12 +307,20 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig):
       if (!lead.phone) return "Ignorado: lead sem telefone.";
       const settings = await getSettings();
       const sdr = lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null;
-      const text = fillVariables(config.text ?? "", messageVars(settings, lead, sdr?.name ?? ""));
+      const vars = messageVars(settings, lead, sdr?.name ?? "");
+      const text = fillVariables(config.text ?? "", vars);
       if (!text) return "Ignorado: mensagem vazia.";
+      // Outside the 24 h window the template goes, each {{n}} filled with the variable the rule chose
+      const params = config.templateName && config.templateParams?.length
+        ? config.templateParams.map((v) => (v === "nome" ? vars.nome || "tudo bem" : (vars[v as keyof typeof vars] ?? "")).trim())
+        : undefined;
+      const missing = params && !isWindowOpen(lead.lastInboundAt) ? config.templateParams!.filter((_, i) => !params[i]) : [];
+      if (missing.length) return `Ignorado: o modelo ${config.templateName} usa {{${missing.join("}}, {{")}}} e este lead não tem.`;
       const res = await sendWhatsApp(lead, text, sdr?.name ?? "Automação", {
         automatic: true,
         templateName: config.templateName,
         buttons: config.buttons,
+        params,
       });
       if (res.skipped) return res.skipped;
       if (!res.ok && undelivered(res, lead)) return `WhatsApp não chegou: ${res.error}`;

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createLead, pipelineByRef } from "@/lib/leads";
+import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 
 const text = (max: number) => z.union([z.string(), z.number(), z.boolean()]).transform((v) => String(v).trim().slice(0, max)).optional();
@@ -27,12 +28,15 @@ const LeadInput = z.object({
   empresa: text(160),
   indicado_nome: text(160),
   indicado_whatsapp: text(40),
+  // Portal de indicações: the partner store that referred the client ({{parceiro}}) and the client's file as text
+  parceiro: text(160),
+  observacao: text(4000),
   associado_sindicato: z.union([z.boolean(), z.string()]).optional(),
 });
 
 function authorized(header: string | null) {
   // One token per site, so one can be revoked without breaking the others
-  const tokens = [process.env.LEADS_API_TOKEN, process.env.SITE_LEADS_TOKEN].filter(Boolean);
+  const tokens = [process.env.LEADS_API_TOKEN, process.env.SITE_LEADS_TOKEN, process.env.PORTAL_LEADS_TOKEN].filter(Boolean);
   return tokens.some((t) => header === `Bearer ${t}`);
 }
 
@@ -52,7 +56,9 @@ export async function POST(request: Request) {
   const pipeline = (await pipelineByRef(b.pipeline || b.funil)) ?? (union ? await pipelineByRef("sindicatos") : null);
   const source = b.source || b.origem || "site";
   const qualification = Object.fromEntries(
-    Object.entries({ produto: b.produto, empresa: b.empresa, associado: union ? "associado do sindicato" : undefined }).filter(([, v]) => !!v),
+    Object.entries({ produto: b.produto, empresa: b.empresa, parceiro: b.parceiro, associado: union ? "associado do sindicato" : undefined }).filter(
+      ([, v]) => !!v,
+    ),
   ) as Record<string, string>;
 
   const { lead, created } = await createLead(
@@ -70,6 +76,11 @@ export async function POST(request: Request) {
     `Formulário (${source})`,
   );
   if (!created && b.produto) await logEvent(lead.id, "lead.form", "Formulário", `Pediu informações de ${b.produto} de novo.`);
+  // A lead that already existed keeps its funnel, but learns which store sent it this time
+  if (!created && b.parceiro) {
+    await db.lead.update({ where: { id: lead.id }, data: { qualification: { ...(lead.qualification as object), parceiro: b.parceiro } } });
+  }
+  if (b.observacao) await logEvent(lead.id, "lead.form", source, b.observacao);
 
   // The member referred someone: that person becomes a lead too, credited to who referred
   let referral: string | undefined;

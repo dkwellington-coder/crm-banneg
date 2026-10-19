@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { actionLabel, delayLabel, fillVariables, splitDelay, triggerLabel } from "@/lib/rules";
-import { isTestContact, whatsappIsReal } from "@/lib/settings";
+import { actionLabel, delayLabel, fillVariables, splitDelay, templateSlots, triggerLabel } from "@/lib/rules";
+import { DEFAULT_SETTINGS, isTestContact, messageVars, whatsappIsReal } from "@/lib/settings";
 import { currentPeriod, pace, periodRange, shiftPeriod, todayRange, workingDays } from "@/lib/goals";
 
 describe("automation rules", () => {
@@ -19,6 +19,21 @@ describe("automation rules", () => {
     expect(fillVariables("Oi, {{nome}}! Tudo bem?", { nome: "" })).toBe("Oi! Tudo bem?");
     expect(fillVariables("{{nome}}, passando aqui.", { nome: "" })).toBe("Passando aqui.");
     expect(fillVariables("Vou encerrar, {{nome}}. Se quiser", { nome: "" })).toBe("Vou encerrar. Se quiser");
+  });
+
+  it("names the partner store that referred the lead", () => {
+    const text = "Oi, {{nome}}! Aqui é a {{sdr}}, do {{empresa}}, somos a corretora oficial da {{parceiro}}.";
+    const lead = { name: "Maria Souza", city: null, qualification: { parceiro: "Lotus Veículos" } };
+    expect(fillVariables(text, messageVars(DEFAULT_SETTINGS, lead, "Duda"))).toBe(
+      "Oi, Maria! Aqui é a Duda, do Banneg, somos a corretora oficial da Lotus Veículos.",
+    );
+    expect(messageVars(DEFAULT_SETTINGS, { name: "Ana", city: null }).parceiro).toBe("");
+  });
+
+  it("counts the slots of a Meta template", () => {
+    expect(templateSlots("Oi, {{1}}! Aqui é a {{2}}, da {{3}}. Cotação de {{4}}?")).toBe(4);
+    expect(templateSlots("Oi, {{1}}!")).toBe(1);
+    expect(templateSlots("Sem variáveis")).toBe(0);
   });
 
   it("describes actions in plain words", () => {
