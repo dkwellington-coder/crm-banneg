@@ -3,5 +3,6 @@ import path from "node:path";
 
 export default defineConfig({
   resolve: { alias: { "@": path.resolve(import.meta.dirname, "src") } },
-  test: { include: ["tests/**/*.test.ts"] },
+  // The test files share one database and each one starts by wiping it, so they run one at a time
+  test: { include: ["tests/**/*.test.ts"], fileParallelism: false },
 });
