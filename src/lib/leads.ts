@@ -7,6 +7,7 @@ import { normalizePhone, phoneVariants } from "./whatsapp";
 import { AUDIO_MARK, downloadWhatsAppMedia, transcribe } from "./audio";
 import { SEND_ERROR_STAGE, sendWhatsApp } from "./messaging";
 import { STAGE_KEYS } from "./plan";
+import { queueCapi } from "./meta-capi";
 
 /** A stage of the given funnel by its AI key; null when that funnel has no such stage. */
 export async function stageByKey(key: string, pipelineId: string) {
@@ -110,6 +111,7 @@ export async function createLead(input: NewLeadInput, actor: string) {
     },
   });
   await logEvent(lead.id, "lead.created", actor, `Lead criado (origem: ${input.source}).`);
+  await queueCapi(db, lead, stage).catch(() => console.error("Meta CAPI: falha ao registrar evento na fila."));
   if (!input.reactivation) await startAutomations(lead);
   return { lead, created: true };
 }
@@ -276,6 +278,7 @@ export async function moveLead(leadId: string, stageId: string, actor: string, e
     },
   });
   if (entering) {
+    await queueCapi(db, updated, stage).catch(() => console.error("Meta CAPI: falha ao registrar evento na fila."));
     const crossed = stage.pipelineId !== lead.pipelineId ? " (outro funil)" : "";
     await logEvent(leadId, "stage.changed", actor, `${lead.stage.name} → ${stage.name}${crossed}`);
     if (stage.kind !== "OPEN") {

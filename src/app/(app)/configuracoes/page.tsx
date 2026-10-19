@@ -4,6 +4,8 @@ import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { cofDeadline, dateTimeBr, sizeLabel } from "@/lib/cof";
 import { CofUpload } from "./CofUpload";
+import { MetaCapiForm } from "./MetaCapiForm";
+import { CAPI_JOB, capiStatus, capiReport, type CapiEvent } from "@/lib/meta-capi";
 import { Card, Loading, PageHeader, btnCls, btnGhostCls, fmt, inputCls } from "@/components/ui";
 import {
   logoutAction,
@@ -86,9 +88,23 @@ async function Config() {
     }),
   ]);
   const now = new Date();
+  const capi = owner ? await capiStatus() : null;
+  const capiTotals = owner ? await capiReport() : [];
+  const capiLogs = owner ? await db.job.findMany({ where: { type: CAPI_JOB }, orderBy: { createdAt: "desc" }, take: 20 }) : [];
 
   return (
     <div className="grid gap-4 px-6 pb-6 xl:grid-cols-2">
+      {owner && <Section id="meta-capi" title="API de Conversões Meta" hint="Prospecção e meta · eventos de formulários no funil Franquias. Nenhuma mensagem é enviada ao lead.">
+        <MetaCapiForm configured={capi!.configured} />
+        <p className="text-xs text-slate-500">Novo → Lead; Qualificado → Lead qualificado; Reunião marcada → Reuniao agendada; Reunião realizada → Reuniao realizada; Ganho → Franquia vendida; Perdido/Descartado → Desqualificado. As demais etapas usam o próprio nome. Com o gerente não confirma reunião realizada.</p>
+        <h3 className="font-semibold">Últimos 20 envios</h3>
+        <ul className="text-sm">{capiTotals.map((row, i) => <li key={i}>{row.event}: {row.count} {row.status === "DONE" ? "enviados" : row.status === "FAILED" ? "com erro definitivo" : "pendentes"}{row.error ? ` · ${row.error}` : ""}</li>)}</ul>
+        {!capiLogs.length && <p className="text-sm">Nenhum evento registrado.</p>}
+        <ul className="space-y-2 text-sm">{capiLogs.map(job => <li key={job.id} className="border-b pb-2">
+          <strong>{(job.payload as unknown as CapiEvent).event_name}</strong> · {job.status === "DONE" ? "ok" : job.lastError ? "erro" : "aguardando"} · {job.attempts}/4 tentativas · {dateTimeBr(job.createdAt)}
+          <p>{job.lastError || job.result || "Aguardando processamento e credenciais."}</p>
+        </li>)}</ul>
+      </Section>}
       <Section id="integracoes" title="Integrações" hint="Configuradas nas variáveis de ambiente do servidor.">
         <ul className="space-y-1 text-sm">
           {ENV_CHECKS.map(([label, keys]) => {

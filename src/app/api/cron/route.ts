@@ -7,6 +7,7 @@ import { runDailyBatches } from "@/lib/batches";
 import { pullMetaLeads } from "@/lib/meta-leads";
 import { syncAdSpend } from "@/lib/meta-ads";
 import { forwardTarget } from "@/lib/whatsapp-forward";
+import { backfillCapi, runCapi } from "@/lib/meta-capi";
 
 // Called every minute by the server's scheduler (cron, Vercel Cron, or the worker script).
 export async function GET(request: Request) {
@@ -15,6 +16,8 @@ export async function GET(request: Request) {
     return new Response("unauthorized", { status: 401 });
   }
   const minute = new Date().getMinutes();
+  await backfillCapi().catch(() => console.error("Meta CAPI: falha ao preparar histórico."));
+  await runCapi(3).catch(() => console.error("Meta CAPI: falha ao processar fila."));
   const batches = await runDailyBatches().catch((e: Error) => ({ error: e.message }));
   const results = await runDueJobs();
   const meta: Record<string, unknown> = {};

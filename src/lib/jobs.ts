@@ -458,7 +458,7 @@ export async function sendMeetingLink(lead: Lead, meeting: { startsAt: Date; mee
 /** Runs due jobs. Called every minute by the scheduler (cron hitting /api/cron). */
 export async function runDueJobs(limit = 20) {
   const due = await db.job.findMany({
-    where: { status: "PENDING", runAt: { lte: new Date() } },
+    where: { status: "PENDING", type: { not: "meta.capi" }, runAt: { lte: new Date() } },
     orderBy: { runAt: "asc" },
     take: limit,
   });
