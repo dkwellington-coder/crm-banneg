@@ -149,6 +149,35 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(msg.status).toBe("FAILED");
   });
 
+  it("stops writing to a contact WhatsApp can't reach and moves it to the error column", async () => {
+    const messaging = await import("@/lib/messaging");
+    const { lead } = await leads.createLead({ name: "Edu", phone: "11955554444", source: "site" }, "teste");
+    const send = async () =>
+      messaging.sendWhatsApp(await db.lead.findUniqueOrThrow({ where: { id: lead.id } }), "Oi", "Duda", { automatic: true, purpose: "first_contact" });
+    const stageKey = async () => (await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } })).stage.key;
+
+    // Meta holding back a marketing message says nothing about the number: it does not count
+    failNext = { code: 131049, message: "This message was not delivered to maintain healthy ecosystem engagement." };
+    await send();
+    failNext = { code: 131026, message: "Message undeliverable" };
+    await send();
+    expect(await stageKey()).not.toBe("erro_envio");
+
+    // Second message that can't reach the number: out of the cadence, into the error column
+    failNext = { code: 131026, message: "Message undeliverable" };
+    await send();
+    const l = await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } });
+    expect(l.stage).toMatchObject({ key: "erro_envio", name: "Erro no WhatsApp", kind: "LOST" });
+    expect(l.aiPaused).toBe(true);
+    expect(l.lostReason).toMatch(/WhatsApp não chega/);
+    expect(await db.job.count({ where: { leadId: lead.id, type: { in: ["sdr.first_contact", "rule.run"] }, status: "PENDING" } })).toBe(0);
+
+    // A retry that was already on its way writes nothing
+    const before = sent.length;
+    expect(await send()).toMatchObject({ ok: true, skipped: expect.stringContaining("coluna de erro") });
+    expect(sent.length).toBe(before);
+  });
+
   it("does not duplicate a lead that comes back from another source", async () => {
     await leads.createLead({ name: "Caio", phone: "11977776666", source: "site" }, "teste");
     const again = await leads.createLead({ name: "Caio", phone: "+55 11 97777-6666", source: "instagram" }, "teste");

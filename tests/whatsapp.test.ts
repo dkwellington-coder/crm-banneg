@@ -1,9 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { classifyError, isWindowOpen, normalizePhone, phoneVariants, verifySignature } from "@/lib/whatsapp";
+import { classifyError, isContactError, isWindowOpen, normalizePhone, phoneVariants, verifySignature } from "@/lib/whatsapp";
 import { renderTemplate } from "@/lib/email";
 import { createHmac } from "node:crypto";
 
 describe("whatsapp helpers", () => {
+  it("counts as a contact error only what says the number can't get WhatsApp", () => {
+    expect(isContactError(131026, "5511955554444")).toBe(true);
+    // Invalid parameter on a number that isn't a phone, not on a good number (that would be our template)
+    expect(isContactError(131009, "12")).toBe(true);
+    expect(isContactError(131009, "11955554444")).toBe(false);
+    expect(isContactError(131049, "11955554444")).toBe(false);
+    expect(isContactError(131042, "11955554444")).toBe(false);
+    expect(isContactError(null, "11955554444")).toBe(false);
+  });
+
   it("opens the 24h window only after a recent inbound message", () => {
     const now = new Date("2026-10-14T12:00:00Z");
     expect(isWindowOpen(null, now)).toBe(false);

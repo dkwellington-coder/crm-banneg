@@ -223,6 +223,8 @@ model Message {
   externalId String?       @unique
   template   String?
   error      String?
+  // Meta's error code, so failures that mean "this number can't get WhatsApp" can be counted
+  errorCode  Int?
   // "audio" for a voice note or audio file: the body holds its transcript and the bytes live in MessageMedia
   mediaKind  String?
   mediaType  String?

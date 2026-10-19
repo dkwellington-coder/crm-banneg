@@ -42,6 +42,16 @@ export function phoneVariants(raw: string) {
   return phone ? [phone] : [];
 }
 
+/**
+ * Failures that say this contact cannot get WhatsApp messages: the number has no WhatsApp, or it is
+ * not a phone at all. Not account problems, and not Meta holding back a marketing message (131049).
+ */
+export function isContactError(code: number | null | undefined, phone: string | null) {
+  if (code === 131026 || code === 131021) return true;
+  // "Parameter value is not valid" on a number too short or too long to be a phone
+  return code === 131009 && !/^\d{12,13}$/.test(normalizePhone(phone ?? ""));
+}
+
 export function classifyError(code: number | undefined, message: string) {
   const accountMessage = code !== undefined ? ACCOUNT_ERRORS[code] : undefined;
   return { accountLevel: !!accountMessage, friendly: accountMessage ?? message };
