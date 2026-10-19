@@ -65,10 +65,17 @@ export async function POST(request: Request) {
     ),
   ) as Record<string, string>;
 
-  // A retry of a referral that already arrived (the portal gave up waiting and sent it again)
+  // A referral must land in its own funnel: never in the default one, greeted with another funnel's pitch
+  if ((b.ref || b.parceiro) && (b.pipeline || b.funil) && !pipeline) {
+    return Response.json({ error: `funil '${b.pipeline || b.funil}' não existe no CRM` }, { status: 422 });
+  }
+
+  // A retry of a referral that already arrived: the lead it created carries the ref, a contact the CRM had gets it on its timeline
   if (b.ref) {
-    const seen = await db.leadEvent.findFirst({ where: { type: "lead.form", data: { path: ["ref"], equals: b.ref } }, select: { leadId: true } });
-    if (seen) return Response.json({ id: seen.leadId, created: false, moved: false, task: false, repeated: true, ...(await placeOf(seen.leadId)) });
+    const seen =
+      (await db.lead.findFirst({ where: { externalId: b.ref }, select: { id: true } }))?.id ??
+      (await db.leadEvent.findFirst({ where: { type: "lead.form", data: { path: ["ref"], equals: b.ref } }, select: { leadId: true } }))?.leadId;
+    if (seen) return Response.json({ id: seen, created: false, moved: false, task: false, repeated: true, ...(await placeOf(seen)) });
   }
 
   const { lead, created } = await createLead(
@@ -80,6 +87,7 @@ export async function POST(request: Request) {
       state: b.state || b.estado,
       source,
       campaign: b.campaign || b.campanha,
+      externalId: b.ref,
       pipelineId: pipeline?.id,
       qualification,
     },

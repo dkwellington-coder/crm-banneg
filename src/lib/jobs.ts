@@ -324,7 +324,9 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig):
         const slots = templateSlots(template.body);
         const chosen = config.templateParams!.slice(0, slots);
         // Meta refuses a variable with a line break, a tab or a run of spaces
-        params = chosen.map((v) => (v === "nome" ? vars.nome || "tudo bem" : String(vars[v as keyof typeof vars] ?? "")).replace(/\s+/g, " ").trim());
+        // The name and the SDR have stand-ins, as in the rest of the CRM; the store and the product do not
+        const sdrName = vars.sdr || (await pickSdr())?.name || "";
+        params = chosen.map((v) => (v === "nome" ? vars.nome || "tudo bem" : v === "sdr" ? sdrName : String(vars[v as keyof typeof vars] ?? "")).replace(/\s+/g, " ").trim());
         if (!open && chosen.length < slots)
           return `Ignorado: o modelo ${config.templateName} pede ${slots} variáveis e a automação preenche ${chosen.length}. Abra a automação e salve de novo.`;
         if (!open) missing = chosen.filter((_, i) => !params![i]);

@@ -419,6 +419,25 @@ describe.skipIf(!dbUrl)("funnels", () => {
     expect(twice.map((r) => r.status).sort()).toEqual([200, 201]);
     expect(await db.lead.count({ where: { phone: { contains: "33332222" } } })).toBe(1);
 
+    // A retry of a new client's referral finds the lead it created, even before the ficha reached the timeline
+    const fresh = await (await post({ name: "Gil", phone: "11911112222", funil: "parceiro-veiculos", parceiro: "Lotus Veículos", ref: "portal:gil" })).json();
+    await db.leadEvent.deleteMany({ where: { leadId: fresh.id, type: "lead.form" } });
+    expect(await (await post({ name: "Gil", phone: "11911112222", funil: "parceiro-veiculos", parceiro: "Lotus Veículos", ref: "portal:gil" })).json()).toMatchObject({
+      id: fresh.id,
+      repeated: true,
+    });
+    expect(await db.task.count({ where: { leadId: fresh.id } })).toBe(0);
+
+    // A funnel the CRM does not have: refused, never dropped in the default funnel with its pitch
+    const lost = await post({ name: "Leo", phone: "11900002222", funil: "nao-existe", parceiro: "Lotus Veículos", ref: "portal:leo" });
+    expect(lost.status).toBe(422);
+    expect(await db.lead.count({ where: { phone: { contains: "900002222" } } })).toBe(0);
+
+    // A lead without an SDR still gets {{2}}: the SDR who would take it
+    const noSdr = await db.lead.update({ where: { id: fresh.id }, data: { sdrId: null, qualification: { parceiro: "Lotus Veículos", produto: "seguro auto" } } });
+    expect(await jobs.runAction(noSdr, "whatsapp", rule)).toMatch(/^WhatsApp/);
+    expect(sent.at(-1)).toMatchObject({ params: ["Gil", "Duda", "Lotus Veículos", "seguro auto"] });
+
     // Only the portal's own token, not any token
     expect((await post({ name: "X", phone: "11900001111" }, "outro")).status).toBe(401);
   });
