@@ -190,6 +190,8 @@ export async function transcribeSentAudio(messageId: string) {
 // The funnel column where contacts WhatsApp can't reach go, created in each funnel the first time it is needed
 export const SEND_ERROR_STAGE = { key: "erro_envio", name: "Erro no WhatsApp", color: "#b91c1c" } as const;
 export const UNDELIVERED_CATEGORIES = ["UTILITY", "MARKETING"] as const;
+// Won, lost or discarded by the team: the lead stays in that column and gets no new tries
+export const isClosed = (lead: Pick<Lead, "status">) => ["DISQUALIFIED", "WON", "LOST"].includes(lead.status);
 
 /**
  * A WhatsApp message did not reach the lead. The first time, e-mails go (welcome and a button to call us
@@ -198,7 +200,7 @@ export const UNDELIVERED_CATEGORIES = ["UTILITY", "MARKETING"] as const;
  */
 export async function afterUndelivered(leadId: string, lastError: string) {
   const lead = await db.lead.findUnique({ where: { id: leadId }, include: { stage: true } });
-  if (!lead || lead.stage.key === SEND_ERROR_STAGE.key) return;
+  if (!lead || lead.stage.key === SEND_ERROR_STAGE.key || isClosed(lead)) return;
   const failed = await db.message.findMany({
     where: { leadId, channel: "WHATSAPP", direction: "OUT", status: "FAILED" },
     select: { template: true, errorCode: true },
@@ -219,7 +221,7 @@ export async function afterUndelivered(leadId: string, lastError: string) {
 /** Stops writing to this contact (AI and automations) and moves it to "Erro no WhatsApp". */
 export async function moveToSendError(leadId: string, reason: string) {
   const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId }, include: { stage: true } });
-  if (lead.stage.key === SEND_ERROR_STAGE.key) return false;
+  if (lead.stage.key === SEND_ERROR_STAGE.key || isClosed(lead)) return false;
   const stage =
     (await db.stage.findUnique({ where: { pipelineId_key: { pipelineId: lead.pipelineId, key: SEND_ERROR_STAGE.key } } })) ??
     (await db.stage.create({

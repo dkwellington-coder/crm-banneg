@@ -219,6 +219,33 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(await db.lead.count()).toBe(1);
   });
 
+  it("leaves a lead the team closed where it is when WhatsApp doesn't reach it", async () => {
+    const messaging = await import("@/lib/messaging");
+    await db.whatsAppTemplate.create({ data: { name: "banneg_cadastro_recebido", body: "Olá, {{1}}!", purpose: "first_contact", category: "UTILITY" } });
+    const { lead } = await leads.createLead({ name: "Gil", phone: "11955553333", email: "gil@x.com", source: "site" }, "teste");
+    const won = await db.stage.findFirstOrThrow({ where: { pipelineId: lead.pipelineId, key: "ganho" } });
+    await leads.moveLead(lead.id, won.id, "Wellington");
+    await db.job.updateMany({ where: { leadId: lead.id }, data: { status: "CANCELLED" } });
+    sentEmails.length = 0;
+    sent.length = 0;
+
+    failNext = { code: 131026, message: "Message undeliverable" };
+    const closed = await db.lead.findUniqueOrThrow({ where: { id: lead.id } });
+    expect((await messaging.sendWhatsApp(closed, "Parabéns!", "Wellington")).ok).toBe(false);
+    await drain();
+    const after = await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } });
+    expect(after.stage.key).toBe("ganho");
+    expect(after.status).toBe("WON");
+    // Only the team's own message was tried: no utility try, no e-mails
+    expect(await db.message.count({ where: { leadId: lead.id, channel: "WHATSAPP" } })).toBe(1);
+    expect(sentEmails).toHaveLength(0);
+    // A try queued before the team closed the lead doesn't go either
+    await db.job.create({ data: { type: "whatsapp.other_category", leadId: lead.id, payload: { category: "UTILITY" }, runAt: new Date() } });
+    await drain();
+    expect(sent).toHaveLength(0);
+    expect((await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } })).stage.key).toBe("ganho");
+  });
+
   it("does not duplicate a lead that comes back from another source", async () => {
     await leads.createLead({ name: "Caio", phone: "11977776666", source: "site" }, "teste");
     const again = await leads.createLead({ name: "Caio", phone: "+55 11 97777-6666", source: "instagram" }, "teste");
