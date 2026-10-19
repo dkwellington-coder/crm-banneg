@@ -2,7 +2,7 @@ import type { Job, Lead } from "@prisma/client";
 import { db } from "./db";
 import { logEvent } from "./events";
 import { backoffMs, cancelJobs, enqueue } from "./queue";
-import { moveToSendError, SEND_ERROR_STAGE, sendWhatsApp, type SendOutcome } from "./messaging";
+import { isClosed, moveToSendError, SEND_ERROR_STAGE, sendWhatsApp, type SendOutcome } from "./messaging";
 import { isUndelivered } from "./whatsapp";
 import { whatsappNumber } from "./integrations";
 import { getSettings, isTestContact, messageVars } from "./settings";
@@ -154,6 +154,7 @@ const handlers: Record<string, Handler> = {
     const { category } = job.payload as { category: "UTILITY" | "MARKETING" };
     const label = category === "UTILITY" ? "utilidade" : "marketing";
     if (lead.lastInboundAt && lead.lastInboundAt > job.createdAt) return "Ignorado: o lead respondeu.";
+    if (isClosed(lead)) return "Ignorado: lead encerrado.";
     const pipeline = await db.pipeline.findUniqueOrThrow({ where: { id: lead.pipelineId } });
     const name = sameMessage(pipeline.name)?.[category];
     const template = name ? await db.whatsAppTemplate.findFirst({ where: { name, category, active: true } }) : null;
@@ -221,7 +222,7 @@ async function sendTemplateEmail(lead: Lead, templateKey: string, opts: EmailOpt
   if (!lead.email) return "Ignorado: lead sem e-mail.";
   if (lead.emailOptOut) return "Ignorado: lead pediu para não receber e-mails.";
   const sendError = opts.evenInSendError && (await db.stage.count({ where: { id: lead.stageId, key: SEND_ERROR_STAGE.key } })) > 0;
-  if (["DISQUALIFIED", "WON", "LOST"].includes(lead.status) && !sendError) return "Ignorado: lead encerrado.";
+  if (isClosed(lead) && !sendError) return "Ignorado: lead encerrado.";
   const t = await db.emailTemplate.findUnique({ where: { key: templateKey } });
   if (!t || !t.active) return "Ignorado: modelo de e-mail inativo.";
   // The same e-mail never goes twice to a lead, even when two automations ask for it
