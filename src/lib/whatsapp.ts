@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { db } from "./db";
+import { templateSlots } from "./rules";
 
 const GRAPH = `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION ?? "v21.0"}`;
 const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -223,12 +224,15 @@ async function graph<T>(path: string, init?: { method: "POST"; body: unknown }):
   return json;
 }
 
+// Samples Meta's review reads in place of {{1}}, {{2}}...: the name, the SDR, the partner store and the product
+const TEMPLATE_EXAMPLES = ["Maria", "Duda", "Lotus Veículos", "seguro auto"];
+
 /**
- * Meta's template body: {{1}} is the lead's first name and {{2}} the SDR's, with examples so review
- * can read it. A media header needs a sample Meta already holds (headerHandle).
+ * Meta's template body: {{1}} is the lead's first name and {{2}} the SDR's (automations can fill more,
+ * like the partner store), with examples so review can read it. A media header needs a sample Meta already holds (headerHandle).
  */
 export function templateComponents(t: { body: string; buttons: string[]; headerKind?: MediaKind | null; headerHandle?: string }) {
-  const example = ["Maria", "Duda"].slice(0, t.body.includes("{{2}}") ? 2 : t.body.includes("{{1}}") ? 1 : 0);
+  const example = Array.from({ length: templateSlots(t.body) }, (_, i) => TEMPLATE_EXAMPLES[i] ?? `exemplo ${i + 1}`);
   const components: Record<string, unknown>[] = [];
   if (t.headerKind && t.headerHandle) components.push({ type: "HEADER", format: t.headerKind.toUpperCase(), example: { header_handle: [t.headerHandle] } });
   components.push({ type: "BODY", text: t.body, ...(example.length && { example: { body_text: [example] } }) });

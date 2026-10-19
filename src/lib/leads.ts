@@ -92,24 +92,32 @@ export async function createLead(input: NewLeadInput, actor: string) {
     (await stageByKey(STAGE_KEYS.NEW, pipelineId)) ??
     (await db.stage.findFirstOrThrow({ where: { pipelineId }, orderBy: { position: "asc" } }));
   const sdr = await pickSdr();
-  const lead = await db.lead.create({
-    data: {
-      name: input.name?.trim() || null,
-      phone,
-      email: input.email?.trim().toLowerCase() || null,
-      city: input.city?.trim() || null,
-      state: input.state?.trim() || null,
-      source: input.source,
-      campaign: input.campaign ?? null,
-      externalId: input.externalId ?? null,
-      pipelineId,
-      stageId: stage.id,
-      sdrId: sdr?.id,
-      ...(input.qualification && { qualification: input.qualification }),
-      ...(input.createdAt && { createdAt: input.createdAt, stageEnteredAt: input.createdAt }),
-      ...(input.seen && { seenAt: new Date() }),
-    },
-  });
+  let lead: Lead;
+  try {
+    lead = await db.lead.create({
+      data: {
+        name: input.name?.trim() || null,
+        phone,
+        email: input.email?.trim().toLowerCase() || null,
+        city: input.city?.trim() || null,
+        state: input.state?.trim() || null,
+        source: input.source,
+        campaign: input.campaign ?? null,
+        externalId: input.externalId ?? null,
+        pipelineId,
+        stageId: stage.id,
+        sdrId: sdr?.id,
+        ...(input.qualification && { qualification: input.qualification }),
+        ...(input.createdAt && { createdAt: input.createdAt, stageEnteredAt: input.createdAt }),
+        ...(input.seen && { seenAt: new Date() }),
+      },
+    });
+  } catch (e) {
+    // Two posts with the same number at the same moment: the second gets the lead the first one created
+    const existing = (e as { code?: string }).code === "P2002" && phone ? await leadByPhone(phone) : null;
+    if (!existing) throw e;
+    return { lead: existing, created: false };
+  }
   await logEvent(lead.id, "lead.created", actor, `Lead criado (origem: ${input.source}).`);
   await queueCapi(db, lead, stage).catch(() => console.error("Meta CAPI: falha ao registrar evento na fila."));
   if (!input.reactivation) await startAutomations(lead);

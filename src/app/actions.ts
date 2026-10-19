@@ -446,6 +446,13 @@ export async function saveRuleAction(form: FormData) {
   const config: RuleConfig = {
     text: action === "whatsapp" ? pick("text") : undefined,
     templateName: action === "whatsapp" ? pick("templateName") : undefined,
+    templateParams:
+      action === "whatsapp" && pick("templateName")
+        ? form
+            .getAll("templateParams")
+            .map((v) => String(v).trim())
+            .filter((v) => /^\w+$/.test(v))
+        : undefined,
     buttons:
       action === "whatsapp"
         ? String(form.get("buttons") ?? "")

@@ -3,14 +3,14 @@ import { db } from "./db";
 import { logEvent } from "./events";
 import { backoffMs, cancelJobs, enqueue } from "./queue";
 import { isClosed, moveToSendError, SEND_ERROR_STAGE, sendWhatsApp, type SendOutcome } from "./messaging";
-import { isUndelivered } from "./whatsapp";
+import { isUndelivered, isWindowOpen } from "./whatsapp";
 import { whatsappNumber } from "./integrations";
 import { getSettings, isTestContact, messageVars } from "./settings";
 import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
 import { planFromDecision, STAGE_KEYS } from "./plan";
 import { ensureTask, moveLead, pickSdr, stageByKey } from "./leads";
-import { fillVariables, type RuleConfig } from "./rules";
+import { fillVariables, templateSlots, type RuleConfig } from "./rules";
 import type { RuleJobPayload } from "./automations";
 import { attachMaterials, emailHtml, renderTemplate, sendEmail, withButton } from "./email";
 import { sendCof } from "./cof";
@@ -307,12 +307,36 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig):
       if (!lead.phone) return "Ignorado: lead sem telefone.";
       const settings = await getSettings();
       const sdr = lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null;
-      const text = fillVariables(config.text ?? "", messageVars(settings, lead, sdr?.name ?? ""));
+      const vars = messageVars(settings, lead, sdr?.name ?? "");
+      const text = fillVariables(config.text ?? "", vars);
       if (!text) return "Ignorado: mensagem vazia.";
+      const open = isWindowOpen(lead.lastInboundAt);
+      // A referral's store and product have no stand-in: without them the sentence breaks ("corretora oficial da.")
+      let missing = open ? [...new Set([...(config.text ?? "").matchAll(/\{\{\s*(parceiro|produto)\s*\}\}/g)].map((m) => m[1]))].filter((v) => !vars[v as "parceiro"]) : [];
+      // Outside the 24 h window the template goes, each {{n}} filled with the variable the rule chose
+      // (built even inside it: the window may close in the instant before sendWhatsApp looks again)
+      let params: string[] | undefined;
+      const template = config.templateName && config.templateParams?.length
+        ? await db.whatsAppTemplate.findUnique({ where: { name: config.templateName }, select: { body: true } })
+        : null;
+      if (template) {
+        // The template may have changed since the rule was saved, and Meta refuses a different number of variables
+        const slots = templateSlots(template.body);
+        const chosen = config.templateParams!.slice(0, slots);
+        // Meta refuses a variable with a line break, a tab or a run of spaces
+        // The name and the SDR have stand-ins, as in the rest of the CRM; the store and the product do not
+        const sdrName = vars.sdr || (await pickSdr())?.name || "";
+        params = chosen.map((v) => (v === "nome" ? vars.nome || "tudo bem" : v === "sdr" ? sdrName : String(vars[v as keyof typeof vars] ?? "")).replace(/\s+/g, " ").trim());
+        if (!open && chosen.length < slots)
+          return `Ignorado: o modelo ${config.templateName} pede ${slots} variáveis e a automação preenche ${chosen.length}. Abra a automação e salve de novo.`;
+        if (!open) missing = chosen.filter((_, i) => !params![i]);
+      }
+      if (missing.length) return `Ignorado: ${template && !open ? `o modelo ${config.templateName}` : "a mensagem"} usa {{${missing.join("}}, {{")}}} e este lead não tem.`;
       const res = await sendWhatsApp(lead, text, sdr?.name ?? "Automação", {
         automatic: true,
         templateName: config.templateName,
         buttons: config.buttons,
+        params,
       });
       if (res.skipped) return res.skipped;
       if (!res.ok && undelivered(res, lead)) return `WhatsApp não chegou: ${res.error}`;

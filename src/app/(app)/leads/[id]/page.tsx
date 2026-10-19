@@ -44,6 +44,13 @@ const QUAL_LABEL: Record<string, string> = {
   decisionMaker: "Quem decide",
 };
 
+// What forms and the Portal de indicações send along, shown only when the lead has it
+const FORM_LABEL: Record<string, string> = {
+  parceiro: "Loja parceira",
+  produto: "Produto",
+  empresa: "Empresa",
+};
+
 async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"] }) {
   const { id } = await params;
   // The lead and everything around it load together, in one round
@@ -157,6 +164,14 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
                 <dd className={qual[k] ? "" : "text-slate-400"}>{qual[k] ?? "a perguntar"}</dd>
               </div>
             ))}
+            {Object.entries(FORM_LABEL)
+              .filter(([k]) => qual[k])
+              .map(([k, label]) => (
+                <div key={k} className="contents">
+                  <dt className="text-slate-500">{label}</dt>
+                  <dd>{qual[k]}</dd>
+                </div>
+              ))}
           </dl>
           <div className="flex flex-wrap gap-2 pt-1">
             <form action={toggleAiAction.bind(null, lead.id)}>

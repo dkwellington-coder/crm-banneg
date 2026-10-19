@@ -11,6 +11,7 @@ process.env.WHATSAPP_TOKEN = "t";
 process.env.WHATSAPP_PHONE_NUMBER_ID = "123";
 process.env.SDR_DEBOUNCE_MS = "0";
 process.env.SITE_LEADS_TOKEN = "site-token";
+process.env.PORTAL_LEADS_TOKEN = "portal-token";
 
 const nextDecision = vi.hoisted(() => ({ value: null as SdrDecision | null }));
 vi.mock("@/lib/sdr", async (orig) => ({
@@ -37,7 +38,7 @@ describe.skipIf(!dbUrl)("funnels", () => {
   let jobs: typeof import("@/lib/jobs");
   let batches: typeof import("@/lib/batches");
   let api: typeof import("@/app/api/leads/route");
-  const sent: { to: string; type: string; body: unknown }[] = [];
+  const sent: { to: string; type: string; body: unknown; params?: string[] }[] = [];
   let franchise: { id: string };
 
   const drain = async () => {
@@ -52,7 +53,8 @@ describe.skipIf(!dbUrl)("funnels", () => {
     api = await import("@/app/api/leads/route");
     vi.stubGlobal("fetch", async (_url: string, init: { body: string }) => {
       const body = JSON.parse(init.body);
-      sent.push({ to: body.to, type: body.type, body: body.text?.body ?? body.template?.name });
+      const params = body.template?.components?.find((c: { type: string }) => c.type === "body")?.parameters.map((p: { text: string }) => p.text);
+      sent.push({ to: body.to, type: body.type, body: body.text?.body ?? body.template?.name, params });
       return new Response(JSON.stringify({ messages: [{ id: `wamid.${sent.length}.${Date.now()}` }] }), { status: 200 });
     });
   });
@@ -270,5 +272,173 @@ describe.skipIf(!dbUrl)("funnels", () => {
     // Without a funnel the lead goes to the default one
     const plain = await (await post({ name: "Davi", phone: "11933332222" })).json();
     expect((await db.lead.findUniqueOrThrow({ where: { id: plain.id } })).pipelineId).toBe(franchise.id);
+  });
+
+  it("the Portal de indicações drops the client in Cotações with the partner store for {{parceiro}}", async () => {
+    const cot = await db.pipeline.create({ data: { name: "Cotações/ Seguros e Consórcios", slug: "parceiro-veiculos", position: 6 } });
+    const novo = await db.stage.create({ data: { pipelineId: cot.id, key: "novo", name: "Novo", position: 0 } });
+    // The client never wrote, so the greeting goes as the Meta template, with the store and the product in it
+    await db.whatsAppTemplate.create({
+      data: {
+        name: "banneg_cotacao_parceiro",
+        body: "Oi, {{1}}! Aqui é a {{2}}, do Banneg, somos a corretora oficial da {{3}}. Recebi seu contato para uma cotação de {{4}}, pode ser?",
+        purpose: "importado",
+        status: "APPROVED",
+        active: true,
+      },
+    });
+    await db.automationRule.create({
+      data: {
+        stageId: novo.id,
+        action: "whatsapp",
+        config: {
+          text: "Oi, {{nome}}! Aqui é a {{sdr}}, do {{empresa}}, somos a corretora oficial da {{parceiro}}. Recebi seu contato para uma cotação de {{produto}}, pode ser?",
+          templateName: "banneg_cotacao_parceiro",
+          templateParams: ["nome", "sdr", "parceiro", "produto"],
+        },
+      },
+    });
+    const post = (body: unknown, token = "portal-token") =>
+      api.POST(new Request("http://x/api/leads", { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) }));
+    const ficha = "Seguro · Renovação indicado pela Lotus Veículos. Pedido ABC123.\n\nFicha completa no portal do Banneg: https://portal/admin/indicacoes/x";
+
+    const res = await post({
+      name: "Maria Souza",
+      phone: "5541999998888",
+      email: "maria@x.com",
+      source: "Parceiro Lotus Veículos",
+      campaign: "Portal de indicações",
+      funil: "parceiro-veiculos",
+      produto: "seguro auto",
+      parceiro: "Lotus Veículos",
+      observacao: ficha,
+    });
+    expect(res.status).toBe(201);
+    const { id } = await res.json();
+    const maria = await db.lead.findUniqueOrThrow({ where: { id }, include: { events: true } });
+    expect(maria).toMatchObject({ pipelineId: cot.id, stageId: novo.id, source: "Parceiro Lotus Veículos", campaign: "Portal de indicações" });
+    expect(maria.qualification).toMatchObject({ produto: "seguro auto", parceiro: "Lotus Veículos" });
+    expect(maria.events.find((e) => e.type === "lead.form")).toMatchObject({ actor: "Parceiro Lotus Veículos", summary: ficha });
+
+    // The stage's greeting names the partner store
+    await drain();
+    expect(sent.find((m) => m.to === "5541999998888")).toMatchObject({
+      type: "template",
+      body: "banneg_cotacao_parceiro",
+      params: ["Maria", "Duda", "Lotus Veículos", "seguro auto"],
+    });
+    const greeting = await db.message.findFirstOrThrow({ where: { leadId: id, direction: "OUT" } });
+    expect(greeting.body).toBe("Oi, Maria! Aqui é a Duda, do Banneg, somos a corretora oficial da Lotus Veículos. Recebi seu contato para uma cotação de seguro auto, pode ser?");
+
+    // A lead in the funnel without a store: the template is not sent half empty
+    const { lead: semLoja } = await leads.createLead({ name: "Zé", phone: "11955554444", source: "manual", pipelineId: cot.id }, "teste");
+    await drain();
+    expect(sent.some((m) => m.to === "5511955554444")).toBe(false);
+    const job = await db.job.findFirstOrThrow({ where: { leadId: semLoja.id } });
+    expect(job.result).toContain("usa {{parceiro}}, {{produto}} e este lead não tem");
+
+    // Inside the 24 h window the free text goes, and it is not sent half empty either
+    const ze = await db.lead.update({ where: { id: semLoja.id }, data: { lastInboundAt: new Date() } });
+    expect(await jobs.runAction(ze, "whatsapp", { text: "Somos a corretora oficial da {{parceiro}}, {{nome}}." })).toBe(
+      "Ignorado: a mensagem usa {{parceiro}} e este lead não tem.",
+    );
+
+    // A template edited after the rule was saved is never sent with the wrong number of variables
+    await db.whatsAppTemplate.update({ where: { name: "banneg_cotacao_parceiro" }, data: { body: "Oi, {{1}}! Aqui é a {{2}}." } });
+    const rule = { text: "Oi", templateName: "banneg_cotacao_parceiro", templateParams: ["nome", "sdr", "parceiro", "produto"] };
+    const mariaNow = await db.lead.findUniqueOrThrow({ where: { id } });
+    expect(await jobs.runAction(mariaNow, "whatsapp", rule)).toMatch(/^WhatsApp/);
+    expect(sent.at(-1)).toMatchObject({ type: "template", params: ["Maria", "Duda"] });
+    expect(await jobs.runAction(mariaNow, "whatsapp", { ...rule, templateParams: ["nome"] })).toBe(
+      "Ignorado: o modelo banneg_cotacao_parceiro pede 2 variáveis e a automação preenche 1. Abra a automação e salve de novo.",
+    );
+    await db.whatsAppTemplate.update({
+      where: { name: "banneg_cotacao_parceiro" },
+      data: { body: "Oi, {{1}}! Aqui é a {{2}}, do Banneg, somos a corretora oficial da {{3}}. Recebi seu contato para uma cotação de {{4}}, pode ser?" },
+    });
+
+    // A client the CRM already had, open in another funnel: stays there, learns the store and the product it lacked, and the team gets a task
+    const old = (await leads.createLead({ name: "Rui", phone: "11977776666", source: "site" }, "teste")).lead;
+    const referral = { name: "Rui", phone: "11977776666", funil: "parceiro-veiculos", parceiro: "Garagem Sul", produto: "consórcio", observacao: "Ficha do Rui", ref: "portal:rui" };
+    const first = await post(referral);
+    expect(first.status).toBe(200);
+    const franchiseName = (await db.pipeline.findUniqueOrThrow({ where: { id: franchise.id } })).name;
+    expect(await first.json()).toMatchObject({ id: old.id, created: false, moved: false, task: true, pipeline: franchiseName });
+    const rui = await db.lead.findUniqueOrThrow({ where: { id: old.id }, include: { tasks: true } });
+    expect(rui.pipelineId).toBe(franchise.id);
+    expect(rui.qualification).toMatchObject({ parceiro: "Garagem Sul", produto: "consórcio" });
+    expect(rui.tasks.map((t) => t.title)).toEqual(["Nova indicação da Garagem Sul: cotar consórcio"]);
+    // The portal sending the same referral again (it gave up waiting) changes nothing
+    expect(await (await post(referral)).json()).toMatchObject({ id: old.id, created: false, repeated: true });
+    expect(await db.task.count({ where: { leadId: old.id } })).toBe(1);
+    expect(await db.leadEvent.count({ where: { leadId: old.id, summary: "Ficha do Rui" } })).toBe(1);
+    // A second store referring him later does not rename the store his conversation is about
+    await post({ ...referral, parceiro: "Auto Norte", ref: "portal:rui-2" });
+    expect((await db.lead.findUniqueOrThrow({ where: { id: old.id } })).qualification).toMatchObject({ parceiro: "Garagem Sul" });
+    // The same store again after the team saw the first one: the open task rings again
+    const seenAt = new Date();
+    await db.lead.update({ where: { id: old.id }, data: { alertsClearedAt: seenAt } });
+    await post({ ...referral, ref: "portal:rui-3" });
+    const rings = await db.task.findFirstOrThrow({ where: { leadId: old.id, title: "Nova indicação da Garagem Sul: cotar consórcio" } });
+    expect(rings.dueAt.getTime()).toBeGreaterThan(seenAt.getTime());
+
+    // A client the CRM had lost starts over in Cotações with this store and product, and gets the greeting
+    const perdido = await db.stage.findFirstOrThrow({ where: { pipelineId: franchise.id, key: "perdido" } });
+    const ana = (await leads.createLead({ name: "Ana Lima", phone: "11966665555", source: "site", qualification: { produto: "franquia" } }, "teste")).lead;
+    // Marked lost the way the team does it: AI paused, with a reason
+    await leads.moveLead(ana.id, perdido.id, "teste", { aiPaused: true, lostReason: "Sem interesse", sdrId: null });
+    const back = await post({ name: "Ana Lima", phone: "11966665555", funil: "parceiro-veiculos", parceiro: "Lotus Veículos", produto: "consórcio", ref: "portal:ana" });
+    expect(await back.json()).toMatchObject({ created: false, moved: true, task: true, pipeline: "Cotações/ Seguros e Consórcios", stage: "Novo" });
+    const anaNow = await db.lead.findUniqueOrThrow({ where: { id: ana.id } });
+    expect(anaNow).toMatchObject({ status: "NEW", aiPaused: false, lostReason: null, stageId: novo.id });
+    expect(anaNow.sdrId).toBeTruthy();
+    expect(anaNow.qualification).toEqual({ parceiro: "Lotus Veículos", produto: "consórcio" });
+    await drain();
+    expect(sent.find((m) => m.to === "5511966665555")).toMatchObject({ type: "template", params: ["Ana", "Duda", "Lotus Veículos", "consórcio"] });
+
+    // A restart never greets with the product of an old form
+    const lia = (await leads.createLead({ name: "Lia", phone: "11922221111", source: "site", qualification: { produto: "franquia" } }, "teste")).lead;
+    await leads.moveLead(lia.id, perdido.id, "teste");
+    await post({ name: "Lia", phone: "11922221111", funil: "parceiro-veiculos", parceiro: "Lotus Veículos", ref: "portal:lia" });
+    expect((await db.lead.findUniqueOrThrow({ where: { id: lia.id } })).qualification).toEqual({ parceiro: "Lotus Veículos" });
+
+    // One whose WhatsApp does not arrive stays in "Erro no WhatsApp": the team fixes the number first
+    const erro = await db.stage.create({ data: { pipelineId: franchise.id, key: "erro_envio", name: "Erro no WhatsApp", kind: "LOST", position: 99 } });
+    const bia = (await leads.createLead({ name: "Bia", phone: "11944443333", source: "site" }, "teste")).lead;
+    await leads.moveLead(bia.id, erro.id, "teste");
+    expect(await (await post({ name: "Bia", phone: "11944443333", funil: "parceiro-veiculos", parceiro: "Lotus Veículos", produto: "seguro auto" })).json()).toMatchObject({
+      moved: false,
+      task: true,
+      stage: "Erro no WhatsApp",
+    });
+
+    // The same new number posted twice at the same moment: one lead, and neither post fails
+    const twice = await Promise.all(
+      ["portal:caio-1", "portal:caio-2"].map((ref) => post({ name: "Caio", phone: "11933332222", funil: "parceiro-veiculos", parceiro: "Lotus Veículos", ref })),
+    );
+    expect(twice.map((r) => r.status).sort()).toEqual([200, 201]);
+    expect(await db.lead.count({ where: { phone: { contains: "33332222" } } })).toBe(1);
+
+    // A retry of a new client's referral finds the lead it created, even before the ficha reached the timeline
+    const fresh = await (await post({ name: "Gil", phone: "11911112222", funil: "parceiro-veiculos", parceiro: "Lotus Veículos", ref: "portal:gil" })).json();
+    await db.leadEvent.deleteMany({ where: { leadId: fresh.id, type: "lead.form" } });
+    expect(await (await post({ name: "Gil", phone: "11911112222", funil: "parceiro-veiculos", parceiro: "Lotus Veículos", ref: "portal:gil" })).json()).toMatchObject({
+      id: fresh.id,
+      repeated: true,
+    });
+    expect(await db.task.count({ where: { leadId: fresh.id } })).toBe(0);
+
+    // A funnel the CRM does not have: refused, never dropped in the default funnel with its pitch
+    const lost = await post({ name: "Leo", phone: "11900002222", funil: "nao-existe", parceiro: "Lotus Veículos", ref: "portal:leo" });
+    expect(lost.status).toBe(422);
+    expect(await db.lead.count({ where: { phone: { contains: "900002222" } } })).toBe(0);
+
+    // A lead without an SDR still gets {{2}}: the SDR who would take it
+    const noSdr = await db.lead.update({ where: { id: fresh.id }, data: { sdrId: null, qualification: { parceiro: "Lotus Veículos", produto: "seguro auto" } } });
+    expect(await jobs.runAction(noSdr, "whatsapp", rule)).toMatch(/^WhatsApp/);
+    expect(sent.at(-1)).toMatchObject({ params: ["Gil", "Duda", "Lotus Veículos", "seguro auto"] });
+
+    // Only the portal's own token, not any token
+    expect((await post({ name: "X", phone: "11900001111" }, "outro")).status).toBe(401);
   });
 });
