@@ -2,7 +2,7 @@ import type { Lead, LeadStatus, Prisma } from "@prisma/client";
 import { db } from "./db";
 import { logEvent } from "./events";
 import { cancelJobs, enqueueDebounced } from "./queue";
-import { cancelRuleJobs, scheduleAnswerRules, scheduleStageRules } from "./automations";
+import { cancelGreetings, cancelRuleJobs, scheduleAnswerRules, scheduleStageRules } from "./automations";
 import { normalizePhone, numberName, phoneVariants } from "./whatsapp";
 import { AUDIO_MARK, downloadWhatsAppMedia, transcribe } from "./audio";
 import { SEND_ERROR_STAGE, sendWhatsApp } from "./messaging";
@@ -189,8 +189,9 @@ export async function handleInbound(input: {
       ? await db.pipeline.findFirst({ where: { whatsappNumberId: numberId }, orderBy: [{ isDefault: "desc" }, { position: "asc" }], select: { id: true } })
       : null;
     lead = (await createLead({ phone, name: input.profileName, source: "whatsapp", pipelineId: funnel?.id, whatsappNumberId: numberId }, "WhatsApp")).lead;
-    // The lead wrote first, so the SDR answers the message instead of sending a cold opening
+    // The lead wrote first, so the SDR answers the message instead of sending a cold opening (or the stage's greeting)
     await cancelJobs(lead.id, ["sdr.first_contact"]);
+    await cancelGreetings(lead.id);
   } else if (numberId !== undefined && numberId !== lead.whatsappNumberId) {
     // We answer where the person writes: the conversation goes on from the number the lead wrote to
     lead = await db.lead.update({ where: { id: lead.id }, data: { whatsappNumberId: numberId } });

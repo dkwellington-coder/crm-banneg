@@ -5,6 +5,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Prisma } from "@prisma/client";
 import type { SdrDecision } from "@/lib/sdr";
 import { installDefaultPipeline } from "@/lib/pipeline-defaults";
+import { buildUserTurn, type SdrContext } from "@/lib/sdr";
+import { DEFAULT_SETTINGS } from "@/lib/settings";
 
 const dbUrl = process.env.TEST_DATABASE_URL;
 if (dbUrl) process.env.DATABASE_URL = dbUrl;
@@ -38,6 +40,29 @@ const reply = (text: string): SdrDecision => ({
   summary: "Pediu cotação.",
 });
 
+describe("the AI with a referral", () => {
+  const turn = (qualification: Record<string, unknown>) =>
+    buildUserTurn({
+      agentName: "Alice",
+      persona: "x",
+      settings: DEFAULT_SETTINGS,
+      knowledge: [],
+      lead: { name: "Maria", phone: null, email: null, city: null, state: null, source: "Portal", qualification, summary: null },
+      transcript: [],
+      slots: [],
+      now: new Date("2026-10-20T15:00:00Z"),
+    } satisfies SdrContext);
+
+  it("knows the store that referred the client and the quote it came for", () => {
+    expect(turn({ parceiro: "Lotus Veículos", produto: "seguro auto" })).toContain(
+      'Indicação: o lead veio pela loja parceira "Lotus Veículos" para uma cotação de seguro auto. O Banneg é a corretora oficial dessa loja',
+    );
+    expect(turn({ parceiro: "Lotus Veículos" })).toContain("diga que você é do Banneg, a corretora oficial da Lotus Veículos");
+    // Other funnels' leads (a franchise form with a product) get nothing new
+    expect(turn({ produto: "franquia" })).not.toContain("Indicação");
+  });
+});
+
 describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
   let db: typeof import("@/lib/db").db;
   let whatsapp: typeof import("@/lib/whatsapp");
@@ -57,7 +82,7 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
   const post = (body: unknown) =>
     api.POST(new Request("http://x/api/leads", { method: "POST", headers: { authorization: "Bearer portal-token" }, body: JSON.stringify(body) }));
   // A message as Meta's webhook delivers it, to one of our numbers
-  const inbound = (to: string, from: string, text: string, id: string, name = "Caio") =>
+  const inbound = (to: string, from: string, text: string, id: string, name = "Caio", at = new Date()) =>
     webhook.POST(
       new Request("http://x/api/whatsapp/webhook", {
         method: "POST",
@@ -69,7 +94,7 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
                   value: {
                     metadata: { phone_number_id: to, display_phone_number: to === ALICE_NUMBER ? "5517996790187" : "5511920138123" },
                     contacts: [{ profile: { name }, wa_id: from }],
-                    messages: [{ from, id, timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: text } }],
+                    messages: [{ from, id, timestamp: String(Math.floor(at.getTime() / 1000)), type: "text", text: { body: text } }],
                   },
                 },
               ],
@@ -323,5 +348,60 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     expect(sends().at(-1)?.body).toMatchObject({ template: { components: [{ parameters: [{ text: "Gil" }, { text: "Alice" }, {}, {}] }] } });
     expect(await jobs.runAction(noSdr, "ai_on", {})).toBe("IA ativada; primeiro contato a caminho.");
     expect((await db.lead.findUniqueOrThrow({ where: { id: lead.id } })).sdrId).toBe(alice.id);
+  });
+
+  // The store shows the client a QR code to write to Alice; the paid greeting only goes if the client does not write
+  it("the greeting waits 15 minutes and does not go when the client wrote first", async () => {
+    await referralFunnel({ delayMinutes: 15 });
+    const referral = { funil: "parceiro-veiculos", produto: "seguro auto", parceiro: "Lotus Veículos" };
+    const maria = await (await post({ ...referral, name: "Maria Souza", phone: "5541999998888", ref: "portal:maria" })).json();
+    const greeting = await db.job.findFirstOrThrow({ where: { leadId: maria.id, type: "rule.run" } });
+    expect(greeting.runAt.getTime()).toBeGreaterThan(Date.now() + 14 * 60_000);
+
+    // A few seconds later, still in the store, she sends the ready message to Alice's number
+    await inbound(ALICE_NUMBER, "5541999998888", "Oi, Alice! Sou Maria, vim pela Lotus Veículos para a cotação de seguro auto.", "wamid.in1", "Maria", new Date(Date.now() + 5000));
+    const { runSdrTurn } = await import("@/lib/sdr");
+    vi.mocked(runSdrTurn).mockClear();
+    await drain();
+    // Alice answers for free inside the window Maria opened, knowing the store and the product
+    expect(sends().map((c) => [c.url.split("/").at(-2), c.body?.type])).toEqual([[ALICE_NUMBER, "text"]]);
+    expect(buildUserTurn(vi.mocked(runSdrTurn).mock.calls[0][0])).toContain("O Banneg é a corretora oficial dessa loja");
+
+    // Fifteen minutes later the greeting has nothing to do
+    await db.job.update({ where: { id: greeting.id }, data: { runAt: new Date() } });
+    await drain();
+    expect(await db.job.findUniqueOrThrow({ where: { id: greeting.id } })).toMatchObject({ status: "DONE", result: "Ignorado: o lead já escreveu." });
+    expect(sends()).toHaveLength(1);
+
+    // A client who left without writing gets the approved template from Alice's number
+    calls.length = 0;
+    const rui = await (await post({ ...referral, name: "Rui", phone: "5541999997777", ref: "portal:rui" })).json();
+    await db.job.updateMany({ where: { leadId: rui.id, type: "rule.run" }, data: { runAt: new Date() } });
+    await drain();
+    expect(sends().map((c) => [c.url.split("/").at(-2), c.body?.type])).toEqual([[ALICE_NUMBER, "template"]]);
+  });
+
+  it("a client who writes to Alice before any referral never gets the greeting", async () => {
+    await referralFunnel({ delayMinutes: 15 });
+    await inbound(ALICE_NUMBER, "5511933332222", "Oi, Alice! Quero cotar um seguro.", "wamid.in1");
+    const caio = await db.lead.findUniqueOrThrow({ where: { phone: "5511933332222" } });
+    expect(await db.job.findFirstOrThrow({ where: { leadId: caio.id, type: "rule.run" } })).toMatchObject({
+      status: "CANCELLED",
+      result: "Cancelado: o lead escreveu primeiro.",
+    });
+  });
+
+  it("other delayed WhatsApp automations still go after the lead writes", async () => {
+    const duda = await db.sdrAgent.findUniqueOrThrow({ where: { name: "Duda" } });
+    const perdido = await db.stage.findFirstOrThrow({ where: { pipeline: { isDefault: true }, key: "perdido" } });
+    const lead = await newLead({ sdrId: duda.id });
+    await leads.moveLead(lead.id, perdido.id, "teste");
+    // Writes while lost: the 90-day reactivation still goes (the window is open, so as plain text)
+    await leads.handleInbound({ phone: "5541999998888", body: "Oi", externalId: "wamid.in1", at: new Date(Date.now() + 5000) });
+    const rule = await db.automationRule.findFirstOrThrow({ where: { stageId: perdido.id, action: "whatsapp" } });
+    const job = await db.job.findFirstOrThrow({ where: { leadId: lead.id, payload: { path: ["ruleId"], equals: rule.id } } });
+    await db.job.update({ where: { id: job.id }, data: { runAt: new Date() } });
+    await drain();
+    expect((await db.job.findUniqueOrThrow({ where: { id: job.id } })).result).toBe("WhatsApp enviado.");
   });
 });

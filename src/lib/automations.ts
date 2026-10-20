@@ -1,7 +1,8 @@
-import type { Lead, Prisma } from "@prisma/client";
+import type { AutomationRule, Lead, Prisma, Stage } from "@prisma/client";
 import { db } from "./db";
 import { enqueue } from "./queue";
 import { matchesAnswer, ruleRunAt, type RuleConfig } from "./rules";
+import { STAGE_KEYS } from "./plan";
 
 export type RuleJobPayload = {
   ruleId: string;
@@ -100,4 +101,34 @@ export async function cancelRuleJobs(leadId: string, which: "idle" | "stage" | "
       result: which === "idle" ? "Cancelado: o lead respondeu." : which === "stage" ? "Cancelado: o lead mudou de etapa." : "Cancelado: negócio encerrado.",
     },
   });
+}
+
+/**
+ * A greeting that waits for the lead: a WhatsApp some minutes after the lead lands in its funnel's first stage.
+ * A lead who writes first (the store's QR code) is answered by the AI instead, for free inside Meta's window.
+ */
+export async function isGreeting(rule: Pick<AutomationRule, "trigger" | "action" | "delayMinutes"> & { stage: Pick<Stage, "id" | "pipelineId"> }) {
+  if (rule.trigger !== "enter" || rule.action !== "whatsapp" || rule.delayMinutes <= 0) return false;
+  // Where createLead puts new leads: the "novo" stage, else the first one
+  const pipelineId = rule.stage.pipelineId;
+  const entry =
+    (await db.stage.findUnique({ where: { pipelineId_key: { pipelineId, key: STAGE_KEYS.NEW } } })) ??
+    (await db.stage.findFirst({ where: { pipelineId }, orderBy: { position: "asc" } }));
+  return entry?.id === rule.stage.id;
+}
+
+/** The lead wrote first: the greetings waiting for it are cancelled, the AI answers the message. */
+export async function cancelGreetings(leadId: string) {
+  const pending = await db.job.findMany({ where: { leadId, type: "rule.run", status: "PENDING" }, select: { id: true, payload: true } });
+  const ruleOf = (j: { payload: Prisma.JsonValue }) => (j.payload as RuleJobPayload).ruleId;
+  const rules = await db.automationRule.findMany({ where: { id: { in: pending.map(ruleOf) } }, include: { stage: true } });
+  const greetings = new Set<string>();
+  for (const rule of rules) if (await isGreeting(rule)) greetings.add(rule.id);
+  const ids = pending.filter((j) => greetings.has(ruleOf(j))).map((j) => j.id);
+  if (!ids.length) return 0;
+  await db.job.updateMany({
+    where: { id: { in: ids }, status: "PENDING" },
+    data: { status: "CANCELLED", finishedAt: new Date(), dedupeKey: null, result: "Cancelado: o lead escreveu primeiro." },
+  });
+  return ids.length;
 }
