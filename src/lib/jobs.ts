@@ -4,7 +4,7 @@ import { logEvent } from "./events";
 import { backoffMs, cancelJobs, enqueue } from "./queue";
 import { isClosed, moveToSendError, SEND_ERROR_STAGE, sendWhatsApp, type SendOutcome } from "./messaging";
 import { isUndelivered, isWindowOpen } from "./whatsapp";
-import { whatsappNumber } from "./integrations";
+import { whatsappNumberFor } from "./integrations";
 import { getSettings, isTestContact, messageVars } from "./settings";
 import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
@@ -287,7 +287,8 @@ async function sendUndeliveredEmails(lead: Lead) {
       : 0;
     if (!coming) results.push(await sendTemplateEmail(lead, welcome, { evenInSendError: true }));
   }
-  const number = await whatsappNumber();
+  // The lead's own number: a client of the referral funnel calls Alice's number, not the main one
+  const number = await whatsappNumberFor(lead);
   if (!number) return [...results, "E-mail de contato não enviado: o número do WhatsApp do CRM não foi encontrado na Meta."].join(" ");
   const settings = await getSettings();
   const text = `Oi! Recebi o e-mail do ${settings.companyName} e quero conversar. (código ${emailCode(lead.id)})`;

@@ -10,6 +10,7 @@ import { sendWhatsApp } from "@/lib/messaging";
 import { clearAlerts } from "@/lib/alerts";
 import { enqueue } from "@/lib/queue";
 import { getSettings, saveSettings } from "@/lib/settings";
+import { savedWhatsAppNumbers } from "@/lib/whatsapp";
 import { importLeads, importSummary } from "@/lib/import";
 import { ACTIONS, UNITS, type RuleConfig } from "@/lib/rules";
 import { METRICS } from "@/lib/goals";
@@ -358,6 +359,22 @@ export async function savePipelineAiAction(pipelineId: string, form: FormData) {
   revalidatePath(`/funis/${pipelineId}`);
 }
 
+/** The WhatsApp number new conversations in this funnel start from, and the SDR who takes its new leads. */
+export async function savePipelineWhatsAppAction(pipelineId: string, form: FormData) {
+  await requireManager();
+  const raw = String(form.get("whatsappNumberId") ?? "");
+  // The main number is kept as null, so it follows WHATSAPP_PHONE_NUMBER_ID (and inbound messages to it)
+  const whatsappNumberId = raw && raw !== process.env.WHATSAPP_PHONE_NUMBER_ID ? raw : null;
+  const current = await db.pipeline.findUniqueOrThrow({ where: { id: pipelineId }, select: { whatsappNumberId: true } });
+  if (whatsappNumberId && whatsappNumberId !== current.whatsappNumberId && !(await savedWhatsAppNumbers())?.numbers.some((n) => n.id === whatsappNumberId))
+    throw new Error("Esse número não está na conta do WhatsApp. Atualize a lista em Integrações > Verificar número.");
+  const sdrId = String(form.get("sdrId") ?? "") || null;
+  if (sdrId && !(await db.sdrAgent.count({ where: { id: sdrId } }))) throw new Error("SDR não encontrada.");
+  await db.pipeline.update({ where: { id: pipelineId }, data: { whatsappNumberId, sdrId } });
+  revalidatePath(`/funis/${pipelineId}`);
+  revalidatePath("/integracoes");
+}
+
 export async function setDefaultPipelineAction(pipelineId: string) {
   await requireManager();
   await db.$transaction([
@@ -569,7 +586,7 @@ export async function testIntegrationAction(_: TestState, form: FormData): Promi
   }[kind];
   if (!run) return { kind, ok: false, message: "Teste desconhecido." };
   const res = await run();
-  if (kind.startsWith("webhook_copy") || kind.startsWith("meta_")) revalidatePath("/integracoes");
+  if (kind === "whatsapp" || kind.startsWith("webhook_copy") || kind.startsWith("meta_")) revalidatePath("/integracoes");
   if (kind.startsWith("templates")) {
     revalidatePath("/configuracoes");
     revalidatePath("/integracoes");

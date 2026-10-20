@@ -28,6 +28,14 @@ vi.mock("@/lib/sdr", async (orig) => ({
 }));
 // The webhook hands the copy for the old CRM to after(), which only exists inside a request
 vi.mock("next/server", async (orig) => ({ ...(await orig<typeof import("next/server")>()), after: vi.fn() }));
+const sentEmails = vi.hoisted(() => [] as { to: string; body: string; html?: string }[]);
+vi.mock("@/lib/email", async (orig) => ({
+  ...(await orig<typeof import("@/lib/email")>()),
+  sendEmail: vi.fn(async (to: string, _subject: string, body: string, _a: unknown, html?: string) => {
+    sentEmails.push({ to, body, html });
+    return "id";
+  }),
+}));
 
 const reply = (text: string): SdrDecision => ({
   reply: text,
@@ -75,6 +83,8 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
   const calls: { url: string; method: string; body: Record<string, unknown> | null }[] = [];
   const sentFrom = () => calls.filter((c) => c.url.endsWith("/messages")).map((c) => c.url.split("/").at(-2));
   const sends = () => calls.filter((c) => c.url.endsWith("/messages"));
+  // Meta's answers to reads (the account's numbers, a number's name), set by each test
+  let metaGet: (url: string) => Response | undefined = () => undefined;
 
   const drain = async () => {
     for (let i = 0; i < 5; i++) if ((await jobs.runDueJobs()).length === 0) break;
@@ -117,12 +127,17 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
       calls.push({ url, method: init?.method ?? "GET", body });
       if (url.endsWith("/media")) return Response.json({ id: `up-${calls.length}` });
       if (url.endsWith("/messages")) return Response.json({ messages: [{ id: `wamid.${calls.length}.${Date.now()}` }] });
+      const got = metaGet(url);
+      if (got) return got;
       throw new Error(`unexpected ${url}`);
     });
   });
 
   beforeEach(async () => {
     calls.length = 0;
+    sentEmails.length = 0;
+    metaGet = () => undefined;
+    delete process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
     await db.$executeRawUnsafe(
       'TRUNCATE "Job","LeadEvent","Message","Meeting","Task","Lead","SdrAgent","AutomationRule","Stage","Pipeline","Goal","User","Session","WhatsAppTemplate","EmailTemplate","Setting" CASCADE',
     );
@@ -403,5 +418,109 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     await db.job.update({ where: { id: job.id }, data: { runAt: new Date() } });
     await drain();
     expect((await db.job.findUniqueOrThrow({ where: { id: job.id } })).result).toBe("WhatsApp enviado.");
+  });
+
+  it("keeps the account's numbers for the screens, never failing when Meta or the settings are missing", async () => {
+    const { refreshWhatsAppNumbers, savedWhatsAppNumbers } = whatsapp;
+    // Without the account id nothing is asked and nothing breaks
+    expect(await refreshWhatsAppNumbers()).toBeNull();
+    expect(calls).toHaveLength(0);
+
+    process.env.WHATSAPP_BUSINESS_ACCOUNT_ID = "waba-1";
+    let metaDown = false;
+    metaGet = (url) =>
+      url.includes("waba-1/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating")
+        ? metaDown
+          ? Response.json({ error: { message: "Serviço indisponível" } }, { status: 503 })
+          : Response.json({
+              data: [
+                { id: "123", display_phone_number: "+55 11 92013-8123", verified_name: "Banneg", quality_rating: "GREEN" },
+                { id: ALICE_NUMBER, display_phone_number: "+55 17 99679-0187", verified_name: "Alice Banneg", quality_rating: "GREEN" },
+              ],
+            })
+        : undefined;
+    const first = await refreshWhatsAppNumbers();
+    expect(first?.numbers).toEqual([
+      { id: "123", display: "+55 11 92013-8123", name: "Banneg", quality: "GREEN" },
+      { id: ALICE_NUMBER, display: "+55 17 99679-0187", name: "Alice Banneg", quality: "GREEN" },
+    ]);
+    expect((await savedWhatsAppNumbers())?.numbers).toHaveLength(2);
+
+    // Read less than an hour ago: Meta is not asked again
+    calls.length = 0;
+    expect((await refreshWhatsAppNumbers({ ifOlderThanMs: 3600_000 }))?.at).toBe(first?.at);
+    expect(calls).toHaveLength(0);
+
+    // Meta down: the last list stays, with the error to show
+    metaDown = true;
+    const failed = await refreshWhatsAppNumbers();
+    expect(failed).toMatchObject({ error: "Serviço indisponível", numbers: first?.numbers });
+    expect((await savedWhatsAppNumbers())?.numbers).toHaveLength(2);
+    // Even a network failure only leaves the list as it was
+    metaGet = () => {
+      throw new Error("fetch failed");
+    };
+    expect((await refreshWhatsAppNumbers())?.numbers).toHaveLength(2);
+  });
+
+  it("Verificar número lists each number with the funnels that use it, and whether the funnel's number can send", async () => {
+    const { checkWhatsApp } = await import("@/lib/integrations");
+    await referralFunnel();
+    process.env.WHATSAPP_BUSINESS_ACCOUNT_ID = "waba-1";
+    process.env.WHATSAPP_FORWARD_URL = "";
+    try {
+      metaGet = (url) => {
+        if (url.includes("/123?fields=display_phone_number")) return Response.json({ display_phone_number: "+55 11 92013-8123", verified_name: "Banneg" });
+        if (url.includes("/123?fields=health_status")) return Response.json({ health_status: { can_send_message: "AVAILABLE" } });
+        if (url.includes(`/${ALICE_NUMBER}?fields=health_status`))
+          return Response.json({
+            health_status: { can_send_message: "BLOCKED", entities: [{ entity_type: "PHONE_NUMBER", can_send_message: "BLOCKED", errors: [{ error_code: 141010, error_description: "Nome de exibição em análise." }] }] },
+          });
+        if (url.includes("/message_templates") || url.includes("/subscribed_apps")) return Response.json({ data: [] });
+        if (url.includes("/phone_numbers"))
+          return Response.json({
+            data: [
+              { id: "123", display_phone_number: "+55 11 92013-8123", verified_name: "Banneg", quality_rating: "GREEN" },
+              { id: ALICE_NUMBER, display_phone_number: "+55 17 99679-0187", verified_name: "Alice Banneg", quality_rating: "UNKNOWN" },
+            ],
+          });
+      };
+      const check = await checkWhatsApp();
+      expect(check.ok).toBe(true);
+      expect(check.details).toEqual(
+        expect.arrayContaining([
+          "+55 11 92013-8123 (Banneg), principal: funil Expansão.",
+          "+55 17 99679-0187 (Alice Banneg): funil Cotações/ Seguros e Consórcios.",
+          "+55 17 99679-0187: envio bloqueado pela Meta: Nome de exibição em análise.",
+        ]),
+      );
+    } finally {
+      delete process.env.WHATSAPP_FORWARD_URL;
+    }
+  });
+
+  it("the e-mail for a lead WhatsApp did not reach points to the number its conversation is on", async () => {
+    await db.setting.create({ data: { key: "whatsapp_number", value: { number: "+55 11 92013-8123" } } });
+    await db.emailTemplate.create({ data: { key: "whatsapp_nao_chegou", name: "n", subject: "s", body: "Chame: {{link_whatsapp}} ou salve {{numero_whatsapp}}" } });
+    const integrations = await import("@/lib/integrations");
+    const { enqueue } = await import("@/lib/queue");
+    const onMain = await newLead({ email: "maria@x.com" });
+    const onAlice = await newLead({ phone: "5541999997777", email: "rui@x.com", whatsappNumberId: ALICE_NUMBER });
+    expect(await integrations.whatsappNumberFor(onMain)).toBe("+55 11 92013-8123");
+
+    // Not in the saved list yet: Meta is asked for that number's name; if it does not answer, the main number
+    metaGet = (url) => (url.includes(`/${ALICE_NUMBER}?fields=display_phone_number`) ? Response.json({ display_phone_number: "+55 17 99679-0187" }) : undefined);
+    expect(await integrations.whatsappNumberFor(onAlice)).toBe("+55 17 99679-0187");
+    metaGet = () => Response.json({ error: { message: "x" } }, { status: 400 });
+    expect(await integrations.whatsappNumberFor(onAlice)).toBe("+55 11 92013-8123");
+
+    await db.setting.create({
+      data: { key: "whatsapp_numbers", value: { at: new Date().toISOString(), numbers: [{ id: ALICE_NUMBER, display: "+55 17 99679-0187", name: "Alice Banneg", quality: "GREEN" }] } },
+    });
+    for (const lead of [onMain, onAlice]) await enqueue("whatsapp.undelivered_emails", { leadId: lead.id });
+    await drain();
+    expect(sentEmails.find((e) => e.to === "maria@x.com")?.body).toContain("https://wa.me/5511920138123?text=");
+    expect(sentEmails.find((e) => e.to === "rui@x.com")?.body).toContain("https://wa.me/5517996790187?text=");
+    expect(sentEmails.find((e) => e.to === "rui@x.com")?.body).toContain("salve +55 17 99679-0187");
   });
 });

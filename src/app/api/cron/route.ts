@@ -1,6 +1,6 @@
 import { runDueJobs } from "@/lib/jobs";
 import { db } from "@/lib/db";
-import { getHealth, setHealth, submitTemplates, syncTemplateStatus } from "@/lib/whatsapp";
+import { getHealth, refreshWhatsAppNumbers, setHealth, submitTemplates, syncTemplateStatus } from "@/lib/whatsapp";
 import { checkCalendar, checkTranscription, checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
 import { googleConfigured } from "@/lib/google";
 import { runDailyBatches } from "@/lib/batches";
@@ -51,6 +51,8 @@ export async function GET(request: Request) {
     if (sending) meta.sending = sending;
     // Where copies of the WhatsApp messages go (the old CRM); asked from Meta at most once an hour
     meta.copyTo = await forwardTarget().catch((e: Error) => ({ error: e.message }));
+    // The account's numbers, for each funnel's "Número do WhatsApp"; read from Meta at most once an hour, never throws
+    meta.numbers = await refreshWhatsAppNumbers({ ifOlderThanMs: 3600_000 }).then((n) => n && { count: n.numbers.length, error: n.error ?? null });
     // Lead audios are transcribed for the AI: proven once a day (and an hour after a failure)
     const last = (await db.setting.findUnique({ where: { key: "audio_check" } }))?.value as { ok?: boolean; at?: string } | undefined;
     const age = last?.at ? Date.now() - new Date(last.at).getTime() : Infinity;

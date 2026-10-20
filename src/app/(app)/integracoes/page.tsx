@@ -12,6 +12,7 @@ import { FormFunnelSelect } from "./FormFunnelSelect";
 import { funnelForForm, type MetaLeadsAudit } from "@/lib/meta-leads";
 import type { MetaAdsState } from "@/lib/meta-ads";
 import { daysAgo } from "@/lib/time";
+import { savedWhatsAppNumbers } from "@/lib/whatsapp";
 
 export default function IntegracoesPage({ searchParams }: PageProps<"/integracoes">) {
   return (
@@ -120,7 +121,7 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
   const sp = await searchParams;
   const h = await headers();
   const origin = `${h.get("x-forwarded-proto") ?? "https"}://${h.get("host")}`;
-  const [settings, lastInbound, users, templates, drafts, pending, formsRow, pipelines, adsRow, spend30, copyRow, forwardRow, auditRow] = await Promise.all([
+  const [settings, lastInbound, users, templates, drafts, pending, formsRow, pipelines, adsRow, spend30, copyRow, forwardRow, auditRow, numbers] = await Promise.all([
     getSettings(),
     db.message.findFirst({ where: { direction: "IN", channel: "WHATSAPP" }, orderBy: { createdAt: "desc" } }),
     db.user.findMany({ where: { role: { in: ["OWNER", "MANAGER"] } }, orderBy: { name: "asc" } }),
@@ -128,13 +129,17 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
     db.whatsAppTemplate.count({ where: { status: "draft" } }),
     db.whatsAppTemplate.count({ where: { status: "PENDING" } }),
     db.setting.findUnique({ where: { key: "meta_leads" } }),
-    db.pipeline.findMany({ select: { slug: true, name: true, isDefault: true }, orderBy: { position: "asc" } }),
+    db.pipeline.findMany({ select: { slug: true, name: true, isDefault: true, whatsappNumberId: true }, orderBy: { position: "asc" } }),
     db.setting.findUnique({ where: { key: "meta_ads" } }),
     db.adSpend.aggregate({ where: { date: { gte: daysAgo(30) } }, _sum: { spend: true } }),
     db.setting.findUnique({ where: { key: "whatsapp_copy" } }),
     db.setting.findUnique({ where: { key: "whatsapp_forward" } }),
     db.setting.findUnique({ where: { key: "meta_leads_audit" } }),
+    savedWhatsAppNumbers(),
   ]);
+  const mainNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  // Funnels on a number the account no longer lists (or not read yet)
+  const strayFunnels = pipelines.filter((p) => p.whatsappNumberId && !numbers?.numbers.some((n) => n.id === p.whatsappNumberId));
   const copy = copyRow?.value as { off?: boolean; by?: string; at?: string } | undefined;
   const oldCrm = (forwardRow?.value as { url?: string | null } | undefined)?.url;
   const audit = auditRow?.value as MetaLeadsAudit | undefined;
@@ -243,6 +248,46 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
         <TestButton kind="whatsapp_send" label="Enviar mensagem de teste">
           <input name="phone" required placeholder="Seu celular com DDD" className={`${inputCls} w-56!`} />
         </TestButton>
+        <div className="space-y-2 border-t border-slate-100 pt-3 text-sm">
+          <p className="text-slate-600">
+            <span className="font-medium text-slate-800">Números da conta:</span> cada funil começa as conversas pelo número escolhido na tela do funil;
+            os modelos aprovados valem para todos os números da conta.
+          </p>
+          {numbers?.numbers.length ? (
+            <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+              {numbers.numbers.map((n) => {
+                const using = pipelines.filter((p) => (p.whatsappNumberId ?? mainNumberId) === n.id);
+                return (
+                  <li key={n.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-1.5">
+                    <span className="text-slate-700">
+                      <span className="font-medium">{n.display}</span>
+                      {n.name && ` · ${n.name}`}
+                      {n.id === mainNumberId && (
+                        <span className="ml-2 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">principal</span>
+                      )}
+                    </span>
+                    <span className="text-xs text-slate-500">
+                      {n.quality && `Qualidade ${n.quality} · `}
+                      {using.length ? using.map((p) => p.name).join(", ") : "nenhum funil"}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="text-slate-500">Clique em Verificar número para listar os números da conta do WhatsApp.</p>
+          )}
+          {strayFunnels.map((p) => (
+            <p key={p.slug ?? p.name} className="text-xs text-amber-700">
+              O funil {p.name} usa o número de ID {p.whatsappNumberId}, que não está na lista da Meta.
+            </p>
+          ))}
+          {numbers?.at && (
+            <p className={`text-xs ${numbers.error ? "text-amber-700" : "text-slate-500"}`}>
+              {numbers.error ? `Última tentativa de ler a lista ${relTime(new Date(numbers.at))}: ${numbers.error}` : `Lista lida da Meta ${relTime(new Date(numbers.at))}.`}
+            </p>
+          )}
+        </div>
       </Block>
 
       <Block icon={Webhook} color="#0f766e" title="Recebimento de mensagens (webhook)" missing={has("WHATSAPP_VERIFY_TOKEN")}>

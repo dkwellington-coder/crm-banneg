@@ -1,11 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
+import type { Lead } from "@prisma/client";
 import { db } from "./db";
 import { SDR_MODEL } from "./sdr";
 import { sendEmail } from "./email";
 import { formatSlot, freeSlotsFor, googleBusy } from "./calendar";
 import { googleAgendaFor, googleConfigured } from "./google";
 import { getSettings } from "./settings";
-import { normalizePhone, sendTemplate, sendText, submitTemplates, syncTemplateStatus } from "./whatsapp";
+import { normalizePhone, refreshWhatsAppNumbers, savedWhatsAppNumbers, sendTemplate, sendText, submitTemplates, syncTemplateStatus } from "./whatsapp";
 import { auditMetaLeads, bringMissingMetaLeads, funnelForForm, leadForms, retryMetaLeadsNow } from "./meta-leads";
 import { adAccounts, syncAdSpend } from "./meta-ads";
 import { forwardTarget, setWhatsAppCopy } from "./whatsapp-forward";
@@ -131,11 +132,12 @@ export async function giveWhatsAppBack(): Promise<CheckResult> {
 type HealthEntity = { entity_type: string; can_send_message: string; errors?: { error_code: number; error_description: string }[] };
 
 /**
- * Whether Meta lets this number send right now, without sending anything. A pending payment on
- * the WhatsApp account (error 131042 on sends) shows up here as BLOCKED with the reason.
+ * Whether Meta lets this number (the main one unless another is given) send right now, without sending anything.
+ * A pending payment on the WhatsApp account (error 131042 on sends) shows up here as BLOCKED with the reason.
  */
-export async function whatsappSendStatus(): Promise<{ canSend: boolean; problem: { code?: number; message: string } | null } | null> {
-  const id = process.env.WHATSAPP_PHONE_NUMBER_ID;
+export async function whatsappSendStatus(
+  id = process.env.WHATSAPP_PHONE_NUMBER_ID,
+): Promise<{ canSend: boolean; problem: { code?: number; message: string } | null } | null> {
   if (!id || !process.env.WHATSAPP_TOKEN) return null;
   const res = await graphGet<{ health_status?: { can_send_message: string; entities?: HealthEntity[] } }>(`${id}?fields=health_status`);
   const health = res.health_status;
@@ -156,6 +158,36 @@ export async function whatsappNumber(): Promise<string | null> {
   const value = { number: n.display_phone_number };
   await db.setting.upsert({ where: { key: "whatsapp_number" }, create: { key: "whatsapp_number", value }, update: { value } });
   return n.display_phone_number;
+}
+
+/** The number this lead talks to us on, as people dial it: its funnel's own number, or the main one. */
+export async function whatsappNumberFor(lead: Pick<Lead, "whatsappNumberId">): Promise<string | null> {
+  const id = lead.whatsappNumberId;
+  if (!id || id === process.env.WHATSAPP_PHONE_NUMBER_ID) return whatsappNumber();
+  const saved = (await savedWhatsAppNumbers().catch(() => null))?.numbers.find((n) => n.id === id)?.display;
+  if (saved) return saved;
+  const n = process.env.WHATSAPP_TOKEN ? await graphGet<{ display_phone_number?: string }>(`${id}?fields=display_phone_number`).catch(() => null) : null;
+  return n?.display_phone_number ?? (await whatsappNumber());
+}
+
+/** Each number of the account with the funnels that start conversations on it, read again from Meta. */
+async function numberDetails() {
+  const main = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const list = await refreshWhatsAppNumbers();
+  const funnels = await db.pipeline.findMany({ select: { name: true, whatsappNumberId: true }, orderBy: { position: "asc" } });
+  const details = (list?.numbers ?? []).map((n) => {
+    const using = funnels.filter((f) => (f.whatsappNumberId ?? main) === n.id).map((f) => f.name);
+    return `${n.display}${n.name ? ` (${n.name})` : ""}${n.id === main ? ", principal" : ""}: ${using.length ? `${using.length > 1 ? "funis" : "funil"} ${using.join(", ")}` : "nenhum funil"}.`;
+  });
+  // A funnel's own number may not be able to send yet (new number, name still in review at Meta)
+  const own = new Set(funnels.flatMap((f) => (f.whatsappNumberId && f.whatsappNumberId !== main ? [f.whatsappNumberId] : [])));
+  for (const id of own) {
+    const display = list?.numbers.find((n) => n.id === id)?.display ?? id;
+    const sending = await whatsappSendStatus(id).catch((e: Error) => ({ canSend: false, problem: { message: e.message } }));
+    if (sending) details.push(sending.canSend ? `${display}: envio liberado pela Meta.` : `${display}: envio bloqueado pela Meta: ${sending.problem?.message}`);
+  }
+  if (list?.error) details.push(`Lista de números da Meta: ${list.error}`);
+  return details;
 }
 
 /** Reads the number's profile from Meta without sending anything. */
@@ -185,6 +217,7 @@ export async function checkWhatsApp(): Promise<CheckResult> {
           `${target?.here ? "Uma cópia de cada mensagem continua indo" : "Quando as mensagens vierem para cá, uma cópia continua indo"} para o CRM antigo (${new URL(copy).host}).`,
         );
     }
+    details.push(...(await numberDetails().catch(() => [])));
     return { ok: true, message: `Conectado ao número ${n.display_phone_number} (${n.verified_name}).`, details };
   } catch (e) {
     return fail(e);
