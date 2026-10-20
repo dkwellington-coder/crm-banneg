@@ -4,7 +4,7 @@ import { cancelGreetings } from "@/lib/automations";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { REFERRAL_FUNNEL } from "@/lib/plan";
-import { normalizePhone, phoneVariants } from "@/lib/whatsapp";
+import { isWindowOpen, normalizePhone, phoneVariants } from "@/lib/whatsapp";
 
 const text = (max: number) => z.union([z.string(), z.number(), z.boolean()]).transform((v) => String(v).trim().slice(0, max)).optional();
 
@@ -118,8 +118,9 @@ export async function POST(request: Request) {
   let task = false;
   if (!created && b.parceiro) {
     ({ moved } = await referExisting(lead.id, pipeline?.id, b.parceiro, b.produto, actor));
-    // The client already wrote this referral's message (and may have been answered since): no greeting waits for her
-    if (wrote) await cancelGreetings(lead.id);
+    // The client already wrote this referral's message and is still in Meta's window (maybe answered since): no greeting
+    // waits for her. Written more than 24 h ago, the greeting is the only way back to her and goes
+    if (wrote && isWindowOpen(wrote.lead.lastInboundAt)) await cancelGreetings(lead.id);
     task = true;
   }
   if (b.observacao || b.ref) await logEvent(lead.id, "lead.form", source, b.observacao || "Indicação recebida.", b.ref ? { ref: b.ref } : undefined);

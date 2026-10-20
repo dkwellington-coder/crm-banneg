@@ -599,6 +599,77 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     expect(sends().filter((c) => c.body?.to === "5541999998888")).toEqual([]);
   });
 
+  it("the store's own phone, left closed as a duplicate, never takes another client's referral", async () => {
+    const { cot, perdido } = await referralFunnel({ delayMinutes: 15 }).then(async (f) => ({
+      ...f,
+      perdido: await db.stage.create({ data: { pipelineId: f.cot.id, key: "perdido", name: "Perdido", kind: "LOST", position: 9 } }),
+    }));
+    // The store typed its own phone for Maria Souza; she wrote from her own phone, a lead the CRM had, and the referral went there
+    const souza = await newLead({ name: "Maria Souza", phone: "5541988887777" });
+    const dup = (await (await post({ ...quote, name: "Maria Souza", phone: "5541933334444", ref: "portal:cm9x7k2abc123" })).json()).id as string;
+    await inbound(ALICE_NUMBER, "5541988887777", ready("Maria"), "wamid.in1", "Maria");
+    await drain();
+    expect(await db.lead.findUniqueOrThrow({ where: { id: dup } })).toMatchObject({ stageId: perdido.id, status: "LOST" });
+    const { runSdrTurn } = await import("@/lib/sdr");
+    vi.mocked(runSdrTurn).mockClear();
+    calls.length = 0;
+
+    // Then Maria Lima, with her own phone, and the store's phone sends her ready message: a person sorts it out
+    const lima = (await (await post({ ...quote, name: "Maria Lima", phone: "5541977776666", ref: "portal:cm9x7k2zzz999" })).json()).id as string;
+    await inbound(ALICE_NUMBER, "5541933334444", ready("Maria", "ZZZ999"), "wamid.in2", "Loja");
+    await drain();
+    expect(vi.mocked(runSdrTurn)).not.toHaveBeenCalled();
+    expect(await db.task.count({ where: { leadId: dup, title: "Conferir quem escreveu: veio o pedido ZZZ999, da indicação de Maria Lima" } })).toBe(1);
+    expect(await db.lead.findUniqueOrThrow({ where: { id: lima } })).toMatchObject({ phone: "5541977776666", pipelineId: cot.id, status: "NEW", lastInboundAt: null });
+    await db.job.updateMany({ where: { leadId: lima, type: "rule.run", status: "PENDING" }, data: { runAt: new Date() } });
+    await drain();
+    expect(sends().map((c) => [c.body?.to, c.body?.type])).toEqual([["5541977776666", "template"]]);
+
+    // The same before the referral got here: Maria Lima still gets her own lead, on the phone the store typed
+    calls.length = 0;
+    await inbound(ALICE_NUMBER, "5541933334444", ready("Maria", "YYY888"), "wamid.in3", "Loja");
+    const lima2 = await post({ ...quote, name: "Maria Lima", phone: "5541966665555", ref: "portal:cm9x7k2yyy888" });
+    expect(await lima2.json()).toMatchObject({ created: true });
+    expect(await db.lead.findFirstOrThrow({ where: { externalId: "portal:cm9x7k2yyy888" } })).toMatchObject({ phone: "5541966665555" });
+
+    // And the store typing its phone again for another Maria never carries her quote to Maria Souza
+    await post({ ...quote, produto: "consórcio", name: "Maria Lima", phone: "5541933334444", ref: "portal:cm9x7k2xxx777" });
+    expect(await db.task.count({ where: { leadId: souza.id, title: { contains: "consórcio" } } })).toBe(0);
+    expect(await db.leadEvent.count({ where: { leadId: souza.id, type: "lead.form", data: { path: ["ref"], equals: "portal:cm9x7k2xxx777" } } })).toBe(0);
+  });
+
+  it("a client who wrote the code more than a day before the referral arrived, with nobody answering, is still greeted", async () => {
+    await referralFunnel({ delayMinutes: 15 });
+    const perdido = await db.stage.findFirstOrThrow({ where: { pipeline: { isDefault: true }, key: "perdido" } });
+    const ana = await newLead({ name: "Ana Lima", phone: "5511966665555", stageId: perdido.id, status: "LOST" });
+    await inbound(ALICE_NUMBER, "5511966665555", ready("Ana"), "wamid.in1", "Ana", new Date(Date.now() - 2 * DAY));
+    await drain();
+    calls.length = 0;
+    const res = await post({ ...quote, name: "Ana Lima", phone: "5511900001111", ref: "portal:cm9x7k2abc123" });
+    expect(await res.json()).toMatchObject({ id: ana.id, created: false, moved: true, task: true });
+    // Meta's window closed long ago: the greeting is the only way back to her
+    await db.job.updateMany({ where: { leadId: ana.id, type: "rule.run", status: "PENDING" }, data: { runAt: new Date() } });
+    await drain();
+    expect(sends().map((c) => [c.body?.to, c.body?.type])).toEqual([["5511966665555", "template"]]);
+  });
+
+  it("the board finds a referral by its code, and whoever wrote the store's ready message with it, from any phone", async () => {
+    await referralFunnel({ delayMinutes: 15 });
+    // The CRM refused the referral, but the client wrote with the code from another phone
+    await inbound(ALICE_NUMBER, "5541988887777", ready("Eva", "K3X9QZ"), "wamid.in1", "Evinha");
+    const waiting = (await (await post({ ...quote, name: "Maria Souza", phone: "5541999998888", ref: "portal:cm9x7k2abc123" })).json()).id as string;
+    // A phone with the code's digits in it is not a match
+    await newLead({ name: "Pedro", phone: "5511939390000" });
+    const found = async (q: string) => (await db.lead.findMany({ where: leads.leadSearch(q), select: { name: true }, orderBy: { name: "asc" } })).map((l) => l.name);
+    expect(await found("Pedido K3X9QZ")).toEqual(["Evinha"]);
+    expect(await found("k3x9qz")).toEqual(["Evinha"]);
+    expect(await found("ABC123")).toEqual(["Maria Souza"]);
+    expect(await db.lead.findUniqueOrThrow({ where: { id: waiting } })).toMatchObject({ name: "Maria Souza" });
+    // Names and phones as before
+    expect(await found("pedro")).toEqual(["Pedro"]);
+    expect(await found("3939")).toEqual(["Pedro"]);
+  });
+
   it("a phone that already holds a referral writing another referral's code goes to the team, and that referral still greets its client", async () => {
     await referralFunnel({ delayMinutes: 15 });
     // The store's own phone sent Maria's ready message, so Maria's referral is on the store's phone now

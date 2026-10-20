@@ -292,12 +292,40 @@ export function referralCode(body: string) {
   return body.match(/\bpedido:?\s*([a-z0-9]{6})\b/i)?.[1].toUpperCase() ?? null;
 }
 
+/**
+ * The board's search: name, phone, e-mail or city. A store referral's code ("Pedido ABC123", or just ABC123, as the portal
+ * shows it) also finds the referral and whoever wrote the store's ready message with it, from any phone.
+ */
+export function leadSearch(q: string): Prisma.LeadWhereInput {
+  const code = referralCode(q) ?? (/^[a-z0-9]{6}$/i.test(q) ? q.toUpperCase() : null);
+  return {
+    OR: [
+      { name: { contains: q, mode: "insensitive" } },
+      // A code's digits are no phone
+      ...(code && /[a-z]/i.test(q) ? [] : [{ phone: { contains: q.replace(/\D/g, "") || q } }]),
+      { email: { contains: q, mode: "insensitive" } },
+      { city: { contains: q, mode: "insensitive" } },
+      ...(code
+        ? [
+            { externalId: { startsWith: "portal:", endsWith: code, mode: "insensitive" as const } },
+            { messages: { some: { direction: "IN" as const, body: { contains: `pedido ${code}`, mode: "insensitive" as const } } } },
+          ]
+        : []),
+    ],
+  };
+}
+
 const codeOf = (ref: string | null) => ref?.slice(-6).toUpperCase() ?? "";
 
 /** The same person as far as a name tells: the first names match, accents and case aside. */
 function sameFirstName(a: string | null | undefined, b: string | null | undefined) {
   const first = (s: string | null | undefined) => slugify(s ?? "").split("-")[0];
   return !!first(a) && first(a) === first(b);
+}
+
+/** The same full name, accents and case aside: the store typing (or reading off the CNH) the same client again. */
+function sameName(a: string | null | undefined, b: string | null | undefined) {
+  return !!slugify(a ?? "") && slugify(a ?? "") === slugify(b ?? "");
 }
 
 /** The store's referral whose code the message carries, while its client has not written yet. */
@@ -354,13 +382,14 @@ async function joinReferral(referral: Lead, into: Lead) {
 }
 
 /**
- * A lead that turned out to be another one's: closed as a duplicate, and nothing scheduled for it goes. It gives up the
- * referral's ref (kept on its timeline), so its code waits for nobody and the store sending the referral again finds the
- * lead it went on in, by the store's file there.
+ * A lead that turned out to be another one's: closed as a duplicate, and nothing scheduled for it goes. Its ref gets a
+ * mark (the plain ref stays on its timeline), so its code waits for nobody and the store sending the referral again finds
+ * the lead it went on in, by the store's file there; the phone the store typed (often the store's own) still reads as a
+ * referral's phone, never as a client who may take another referral.
  */
 async function closeDuplicate(dup: Lead, into: Lead) {
   const reason = `Duplicado: o cliente escreveu de ${into.phone ?? "outro número"}, que já é de outro lead.`;
-  const closed = { lostReason: reason, aiPaused: true, externalId: null };
+  const closed = { lostReason: reason, aiPaused: true, externalId: dup.externalId && `${dup.externalId}#duplicado` };
   const lost = await db.stage.findMany({ where: { pipelineId: dup.pipelineId, kind: "LOST" }, orderBy: { position: "asc" } });
   const to = lost.find((s) => s.key === STAGE_KEYS.LOST) ?? lost.find((s) => s.key !== SEND_ERROR_STAGE.key);
   if (to) await moveLead(dup.id, to.id, "WhatsApp", closed);
@@ -379,10 +408,11 @@ async function closeDuplicate(dup: Lead, into: Lead) {
 
 /**
  * The lead a store's referral went on in, for the duplicate it left closed (closeDuplicate): the store referring the same
- * client again with the phone it typed then goes on there too, instead of reopening the duplicate. null for any other lead.
+ * client again with the phone it typed then goes on there too, instead of reopening the duplicate. Only for the same full
+ * name: a phone the store types for several clients (its own) must not carry one client's quote to another. null otherwise.
  */
 export async function joinedInto(dup: Lead, name: string | null | undefined) {
-  if (dup.status !== "LOST" || !sameFirstName(dup.name, name)) return null;
+  if (dup.status !== "LOST" || !sameName(dup.name, name)) return null;
   const events = await db.leadEvent.findMany({ where: { leadId: dup.id, type: "lead.duplicate" }, orderBy: { createdAt: "desc" }, select: { data: true } });
   const into = events.map((e) => (e.data as { leadId?: unknown } | null)?.leadId).find((id): id is string => typeof id === "string");
   return into ? db.lead.findUnique({ where: { id: into } }) : null;
