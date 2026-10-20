@@ -85,12 +85,12 @@ async function post(body: Record<string, unknown>, from?: string | null): Promis
     error?: { code?: number; message?: string };
   };
   if (res.ok && json.messages?.[0]?.id) {
-    await setHealth(null);
+    await clearHealth(from);
     return { ok: true, id: json.messages[0].id };
   }
   const code = json.error?.code;
   const { accountLevel, friendly } = classifyError(code, json.error?.message ?? `HTTP ${res.status}`);
-  if (accountLevel) await setHealth({ code, message: friendly });
+  if (accountLevel) await setHealth({ code, message: friendly }, problemNumber(code, from));
   return { ok: false, code, error: friendly, accountLevel };
 }
 
@@ -146,15 +146,42 @@ export function sendTemplate(to: string, name: string, language: string, params:
   return post({ to, type: "template", template: { name, language: { code: language }, components } }, from);
 }
 
-export type WhatsAppHealth = { code?: number; message: string; at: string } | null;
+// numberId: the problem is only on that one of the account's other numbers; without it, on the main number or the whole account
+export type WhatsAppHealth = { code?: number; message: string; at: string; numberId?: string } | null;
 
-export async function setHealth(problem: { code?: number; message: string } | null) {
-  const value = problem ? { ...problem, at: new Date().toISOString() } : null;
+// Meta's limits on one number (its throughput, the same person too often): the account's other numbers still send
+const NUMBER_ERRORS = new Set([131056, 130429]);
+
+/** The id of one of the account's other numbers; undefined for the main one (or when not known). */
+const otherNumber = (id?: string | null) => (id && id !== process.env.WHATSAPP_PHONE_NUMBER_ID ? id : undefined);
+
+/** The number a send error is limited to (a funnel's own number hitting its own limit); undefined when it stops the account. */
+export function problemNumber(code: number | undefined, from?: string | null) {
+  return code !== undefined && NUMBER_ERRORS.has(code) ? otherNumber(from) : undefined;
+}
+
+/**
+ * Records a WhatsApp problem for the banner and the daily queues (null clears it). A problem of one of the other
+ * numbers (numberId) never takes the place of one of the main number or of the whole account.
+ */
+export async function setHealth(problem: { code?: number; message: string } | null, numberId?: string | null) {
+  const own = problem ? otherNumber(numberId) : undefined;
+  if (own) {
+    const current = await getHealth();
+    if (current && !current.numberId) return;
+  }
+  const value = problem ? { ...problem, at: new Date().toISOString(), ...(own && { numberId: own }) } : null;
   await db.setting.upsert({
     where: { key: "whatsapp_health" },
     create: { key: "whatsapp_health", value: value ?? {} },
     update: { value: value ?? {} },
   });
+}
+
+/** A message went out (or arrived) from this number, null = the main one: the problem recorded for that number is over. */
+export async function clearHealth(from?: string | null) {
+  const current = await getHealth();
+  if (current && current.numberId === otherNumber(from)) await setHealth(null);
 }
 
 export async function getHealth(): Promise<WhatsAppHealth> {
@@ -261,11 +288,16 @@ export async function refreshWhatsAppNumbers(opts: { ifOlderThanMs?: number } = 
   }
 }
 
+/** "+55 17 99679-0187" as the account's saved list has it; the id when the number is not in it. */
+export async function numberDisplay(id: string) {
+  const n = (await savedWhatsAppNumbers().catch(() => null))?.numbers.find((x) => x.id === id);
+  return n?.display ?? id;
+}
+
 /** "o número principal" or "o número +55 17 99679-0187", for the lead's history. */
 export async function numberName(id: string | null) {
   if (!id || id === process.env.WHATSAPP_PHONE_NUMBER_ID) return "o número principal";
-  const n = (await savedWhatsAppNumbers().catch(() => null))?.numbers.find((x) => x.id === id);
-  return `o número ${n?.display ?? id}`;
+  return `o número ${await numberDisplay(id)}`;
 }
 
 // ---------- Templates at Meta ----------

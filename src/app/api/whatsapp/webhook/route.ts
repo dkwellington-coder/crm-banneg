@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { handleInbound } from "@/lib/leads";
 import { afterUndelivered } from "@/lib/messaging";
-import { classifyError, messageText, setHealth, verifySignature, type WebhookPayload } from "@/lib/whatsapp";
+import { classifyError, clearHealth, messageText, problemNumber, setHealth, verifySignature, type WebhookPayload } from "@/lib/whatsapp";
 import { forwardCopy } from "@/lib/whatsapp-forward";
 
 // Meta calls this once to confirm the webhook URL
@@ -45,15 +45,15 @@ export async function POST(request: Request) {
         if (st.status === "failed") {
           const err = st.errors?.[0];
           const { accountLevel, friendly } = classifyError(err?.code, err?.message ?? err?.title ?? "Falha no envio");
-          if (accountLevel) await setHealth({ code: err?.code, message: friendly });
+          if (accountLevel) await setHealth({ code: err?.code, message: friendly }, problemNumber(err?.code, value.metadata?.phone_number_id));
           await db.message.update({ where: { id: msg.id }, data: { status: "FAILED", error: friendly, errorCode: err?.code } });
           await logEvent(msg.leadId, "whatsapp.failed", "WhatsApp", `Mensagem não entregue: ${friendly}`, { code: err?.code ?? null });
           await afterUndelivered(msg.leadId, friendly);
         } else {
           const status = st.status === "read" ? "READ" : st.status === "delivered" ? "DELIVERED" : "SENT";
           await db.message.update({ where: { id: msg.id }, data: { status } });
-          // A delivered message proves the account is healthy again
-          await setHealth(null);
+          // A delivered message proves the number it went from (and, for the main one, the account) is healthy again
+          await clearHealth(value.metadata?.phone_number_id);
         }
       }
     }

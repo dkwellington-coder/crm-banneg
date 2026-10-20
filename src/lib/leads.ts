@@ -80,6 +80,8 @@ export type NewLeadInput = {
   seen?: boolean;
   // The number the lead wrote to (null = the main one); left out = the funnel's number
   whatsappNumberId?: string | null;
+  // A person on the team takes it: no stage automations and the AI off
+  byTeam?: boolean;
 };
 
 /** The lead with this number, or else the oldest one with it written with or without the 9. */
@@ -127,6 +129,7 @@ export async function createLead(input: NewLeadInput, actor: string) {
         ...(input.qualification && { qualification: input.qualification }),
         ...(input.createdAt && { createdAt: input.createdAt, stageEnteredAt: input.createdAt }),
         ...(input.seen && { seenAt: new Date() }),
+        ...(input.byTeam && { aiPaused: true }),
       },
     });
   } catch (e) {
@@ -137,7 +140,7 @@ export async function createLead(input: NewLeadInput, actor: string) {
   }
   await logEvent(lead.id, "lead.created", actor, `Lead criado (origem: ${input.source}).`);
   await queueCapi(db, lead, stage).catch(() => console.error("Meta CAPI: falha ao registrar evento na fila."));
-  if (!input.reactivation) await startAutomations(lead);
+  if (!input.reactivation && !input.byTeam) await startAutomations(lead);
   return { lead, created: true };
 }
 
@@ -182,20 +185,34 @@ export async function handleInbound(input: {
   // null = the main number; undefined = not known, the lead keeps the number it is on
   const numberId =
     input.phoneNumberId === undefined ? undefined : input.phoneNumberId && input.phoneNumberId !== process.env.WHATSAPP_PHONE_NUMBER_ID ? input.phoneNumberId : null;
-  let lead = (await leadByPhone(phone)) ?? (await leadByEmailCode(input.body, phone));
+  let lead = (await leadByPhone(phone)) ?? (await leadByEmailCode(input.body, phone)) ?? (await leadByReferralCode(input.body, phone));
   if (!lead) {
     // Someone writing to a funnel's own number starts in that funnel, with its SDR
-    const funnel = numberId
-      ? await db.pipeline.findFirst({ where: { whatsappNumberId: numberId }, orderBy: [{ isDefault: "desc" }, { position: "asc" }], select: { id: true } })
-      : null;
-    lead = (await createLead({ phone, name: input.profileName, source: "whatsapp", pipelineId: funnel?.id, whatsappNumberId: numberId }, "WhatsApp")).lead;
+    const funnel = numberId ? await numberFunnel(numberId) : null;
+    // A number of the account that no funnel uses yet (still being set up): the team answers, not the default funnel's AI
+    const unassigned = !!numberId && !funnel && !!process.env.WHATSAPP_PHONE_NUMBER_ID;
+    const created = await createLead(
+      { phone, name: input.profileName, source: "whatsapp", pipelineId: funnel?.id, whatsappNumberId: numberId, byTeam: unassigned },
+      "WhatsApp",
+    );
+    lead = created.lead;
+    if (unassigned && created.created)
+      await logEvent(lead.id, "whatsapp.unassigned_number", "WhatsApp", `Escreveu para ${await numberName(numberId)}, que nenhum funil usa: a IA não responde, a equipe atende. Escolha o número do funil em Funis.`);
     // The lead wrote first, so the SDR answers the message instead of sending a cold opening (or the stage's greeting)
     await cancelJobs(lead.id, ["sdr.first_contact"]);
-    await cancelGreetings(lead.id);
   } else if (numberId !== undefined && numberId !== lead.whatsappNumberId) {
-    // We answer where the person writes: the conversation goes on from the number the lead wrote to
-    lead = await db.lead.update({ where: { id: lead.id }, data: { whatsappNumberId: numberId } });
-    await logEvent(lead.id, "whatsapp.number_changed", "WhatsApp", `O lead escreveu para ${await numberName(numberId)}: a conversa segue por ele.`, { whatsappNumberId: numberId });
+    // We answer where the person writes: the conversation goes on from the number the lead wrote to, with the SDR of
+    // the funnel that talks from it (who wrote "Oi, Alice!" to Alice's number gets Alice, not the SDR of the other number)
+    const sdr = numberId ? (await numberFunnel(numberId, lead.pipelineId))?.sdr : null;
+    const takes = sdr?.active && sdr.id !== lead.sdrId ? sdr : null;
+    lead = await db.lead.update({ where: { id: lead.id }, data: { whatsappNumberId: numberId, ...(takes && { sdrId: takes.id }) } });
+    await logEvent(
+      lead.id,
+      "whatsapp.number_changed",
+      "WhatsApp",
+      `O lead escreveu para ${await numberName(numberId)}: a conversa segue por ele${takes ? `, com a ${takes.name}` : ""}.`,
+      { whatsappNumberId: numberId, ...(takes && { sdrId: takes.id }) },
+    );
   }
   lead = await backFromSendError(lead);
   const msg = await db.message.create({
@@ -215,6 +232,9 @@ export async function handleInbound(input: {
     where: { id: lead.id },
     data: { lastInboundAt: input.at, name: lead.name ?? input.profileName ?? null },
   });
+  // A greeting still waiting for the lead does not go: it wrote. Also when Meta's time of the message is older than the
+  // greeting (the store's referral got here a moment after the client pressed send)
+  await cancelGreetings(lead.id);
   const said = input.audio ? await receiveAudio(msg.id, input.audio.id) : input.body;
   if (said !== null && isStopRequest(said)) return optOut(lead);
   // The lead answered: the "sem resposta" clock starts over
@@ -247,6 +267,33 @@ async function leadByEmailCode(body: string, phone: string) {
   if (!lead) return null;
   await logEvent(lead.id, "lead.phone_changed", "WhatsApp", `Chamou no WhatsApp pelo botão do e-mail, de outro número: ${lead.phone ?? "sem número"} → ${phone}.`);
   return db.lead.update({ where: { id: lead.id }, data: { phone } });
+}
+
+/**
+ * The portal's ready message carries the referral's code ("Pedido ABC123", the end of the portal's id in the lead's ref).
+ * A client who writes from a number other than the one the store typed is that referral's lead, while it has not written
+ * yet: the number is fixed and the conversation goes on with the referral's store, product and greeting.
+ */
+async function leadByReferralCode(body: string, phone: string) {
+  const code = body.match(/\bpedido:?\s*([a-z0-9]{6})\b/i)?.[1];
+  if (!code) return null;
+  const lead = await db.lead.findFirst({
+    where: { externalId: { startsWith: "portal:", endsWith: code, mode: "insensitive" }, lastInboundAt: null },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!lead) return null;
+  await logEvent(lead.id, "lead.phone_changed", "WhatsApp", `Escreveu com o código da indicação (pedido ${code.toUpperCase()}), de outro número: ${lead.phone ?? "sem número"} → ${phone}.`);
+  return db.lead.update({ where: { id: lead.id }, data: { phone } });
+}
+
+/** The funnel that starts its conversations on this number (the lead's own funnel first), with its SDR; null when none does. */
+async function numberFunnel(numberId: string, preferPipelineId?: string) {
+  const funnels = await db.pipeline.findMany({
+    where: { whatsappNumberId: numberId },
+    orderBy: [{ isDefault: "desc" }, { position: "asc" }],
+    select: { id: true, sdr: true },
+  });
+  return funnels.find((f) => f.id === preferPipelineId) ?? funnels[0] ?? null;
 }
 
 /** A lead in "Erro no WhatsApp" wrote: the number works, so it goes back to the conversation. */

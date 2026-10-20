@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { createLead, ensureTask, funnelStart, moveLead, pickSdr, pipelineByRef, stageByKey } from "@/lib/leads";
+import { cancelGreetings } from "@/lib/automations";
+import { enqueueDebounced } from "@/lib/queue";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { SEND_ERROR_STAGE } from "@/lib/messaging";
@@ -153,7 +155,7 @@ async function referAgain(leadId: string, pipelineId: string | undefined, parcei
     // wrote in the last 24 h stays on the number (and with the SDR) it is talking to
     const funnel = await funnelStart(entry.pipelineId);
     const talking = isWindowOpen(lead.lastInboundAt);
-    await moveLead(leadId, entry.id, `Formulário (${source})`, {
+    const restarted = await moveLead(leadId, entry.id, `Formulário (${source})`, {
       qualification: { ...rest, parceiro, ...(produto && { produto }) },
       status: "NEW",
       lostReason: null,
@@ -161,6 +163,12 @@ async function referAgain(leadId: string, pipelineId: string | undefined, parcei
       whatsappNumberId: talking ? lead.whatsappNumberId : funnel.whatsappNumberId,
       sdrId: (talking ? (lead.sdrId ?? funnel.sdr?.id) : (funnel.sdr?.id ?? lead.sdrId)) ?? (await pickSdr())?.id ?? null,
     });
+    // The client wrote before the referral got here (the store's QR code, a referral sent again later) and nobody has
+    // answered yet: the AI answers that message now, with this store and product, instead of the greeting that waits
+    if (talking && restarted.sdrId) {
+      const last = await db.message.findFirst({ where: { leadId, channel: "WHATSAPP" }, orderBy: { createdAt: "desc" }, select: { direction: true } });
+      if (last?.direction === "IN" && (await cancelGreetings(leadId))) await enqueueDebounced("sdr.reply", leadId, Number(process.env.SDR_DEBOUNCE_MS ?? 15_000));
+    }
     return { moved: true };
   }
   // Only fills what is missing: the lead's current conversation keeps the store and product it already has

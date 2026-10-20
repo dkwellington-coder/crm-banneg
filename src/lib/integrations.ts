@@ -170,6 +170,13 @@ export async function whatsappNumberFor(lead: Pick<Lead, "whatsappNumberId">): P
   return n?.display_phone_number ?? (await whatsappNumber());
 }
 
+/** The funnels' own numbers (not the main one), each once. */
+export async function funnelNumberIds() {
+  const main = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const funnels = await db.pipeline.findMany({ where: { whatsappNumberId: { not: null } }, select: { whatsappNumberId: true }, orderBy: { position: "asc" } });
+  return [...new Set(funnels.flatMap((f) => (f.whatsappNumberId && f.whatsappNumberId !== main ? [f.whatsappNumberId] : [])))];
+}
+
 /** Each number of the account with the funnels that start conversations on it, read again from Meta. */
 async function numberDetails() {
   const main = process.env.WHATSAPP_PHONE_NUMBER_ID;
@@ -180,8 +187,7 @@ async function numberDetails() {
     return `${n.display}${n.name ? ` (${n.name})` : ""}${n.id === main ? ", principal" : ""}: ${using.length ? `${using.length > 1 ? "funis" : "funil"} ${using.join(", ")}` : "nenhum funil"}.`;
   });
   // A funnel's own number may not be able to send yet (new number, name still in review at Meta)
-  const own = new Set(funnels.flatMap((f) => (f.whatsappNumberId && f.whatsappNumberId !== main ? [f.whatsappNumberId] : [])));
-  for (const id of own) {
+  for (const id of await funnelNumberIds()) {
     const display = list?.numbers.find((n) => n.id === id)?.display ?? id;
     const sending = await whatsappSendStatus(id).catch((e: Error) => ({ canSend: false, problem: { message: e.message } }));
     if (sending) details.push(sending.canSend ? `${display}: envio liberado pela Meta.` : `${display}: envio bloqueado pela Meta: ${sending.problem?.message}`);

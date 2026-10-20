@@ -43,18 +43,28 @@ async function nextInQueue(stageId: string, take: number) {
  * queue, so thousands of old leads are not used up by simulated messages.
  */
 export async function runDailyBatches(now = new Date()) {
-  const rules = await db.automationRule.findMany({ where: { trigger: "daily", active: true, action: "move" } });
+  const rules = await db.automationRule.findMany({
+    where: { trigger: "daily", active: true, action: "move" },
+    include: { stage: { select: { pipeline: { select: { whatsappNumberId: true } } } } },
+  });
   if (!rules.length || !isSendingWindow(now)) return { released: 0 };
   // Account blocked at Meta (payment pending, banned, expired token): keep everyone in the queue.
   // After 2 hours a few leads go out again as a probe; a success clears the block, a failure renews it.
   const health = await getHealth();
-  if (health && now.getTime() - Date.parse(health.at) < 2 * 3600_000) return { released: 0, paused: health.message };
+  const blocked = health && now.getTime() - Date.parse(health.at) < 2 * 3600_000 ? health : null;
+  if (blocked && !blocked.numberId) return { released: 0, paused: blocked.message };
+  let held = false;
   const settings = await getSettings();
   const { day } = localClock(now);
   let released = 0;
   for (const rule of rules) {
     const config = rule.config as RuleConfig;
     if (!config.toStageId) continue;
+    // A problem of one of the funnels' own numbers holds only the queues of the funnels that talk from it
+    if (blocked?.numberId && rule.stage.pipeline.whatsappNumberId === blocked.numberId) {
+      held = true;
+      continue;
+    }
     const key = `batch:${rule.id}:${day}`;
     const row = await db.setting.findUnique({ where: { key } });
     const done = (row?.value as { count?: number } | undefined)?.count ?? 0;
@@ -78,5 +88,5 @@ export async function runDailyBatches(now = new Date()) {
       released += leads.length;
     }
   }
-  return { released };
+  return { released, ...(held && { paused: blocked!.message }) };
 }
