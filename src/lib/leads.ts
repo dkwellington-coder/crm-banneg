@@ -192,9 +192,9 @@ export async function handleInbound(input: {
   let forTeam: string | null = null;
   let lead = known;
   if (known && referral && referral.id !== known.id) {
-    // A phone the CRM knows takes the referral only when it is plainly its client: not another referral's phone (the
-    // store's own), and the same name. Else a person sorts it out and the referral keeps the phone the store typed
-    if (!known.externalId?.startsWith("portal:") && sameFirstName(known.name, referral.name)) lead = await joinReferral(referral, known);
+    // A phone the CRM knows takes the referral only when it is plainly its client. Else a person sorts it out and the
+    // referral keeps the phone the store typed
+    if (plainlyClient(known, referral.name)) lead = await joinReferral(referral, known);
     else forTeam = await otherReferralCode(known, referral);
   }
   lead ??= (await leadByEmailCode(input.body, phone)) ?? (referral && (await takeReferral(referral, phone)));
@@ -308,7 +308,12 @@ export function leadSearch(q: string): Prisma.LeadWhereInput {
       ...(code
         ? [
             { externalId: { startsWith: "portal:", endsWith: code, mode: "insensitive" as const } },
-            { messages: { some: { direction: "IN" as const, body: { contains: `pedido ${code}`, mode: "insensitive" as const } } } },
+            // The store's file, on a contact the CRM had or the lead a referral went on in (portal ids are lower case)
+            { events: { some: { type: "lead.form", data: { path: ["ref"], string_ends_with: code.toLowerCase() } } } },
+            // Whoever wrote the ready message: a code of letters and digits is no word, a code of letters only goes with "pedido"
+            ...(/\d/.test(code) && /[a-z]/i.test(code) ? [code] : [`pedido ${code}`, `pedido:${code}`, `pedido: ${code}`, `pedido${code}`]).map((text) => ({
+              messages: { some: { direction: "IN" as const, body: { contains: text, mode: "insensitive" as const } } },
+            })),
           ]
         : []),
     ],
@@ -326,6 +331,19 @@ function sameFirstName(a: string | null | undefined, b: string | null | undefine
 /** The same full name, accents and case aside: the store typing (or reading off the CNH) the same client again. */
 function sameName(a: string | null | undefined, b: string | null | undefined) {
   return !!slugify(a ?? "") && slugify(a ?? "") === slugify(b ?? "");
+}
+
+/** Marks the ref of a referral's lead closed as a duplicate: never waiting for a code, still a referral's phone. */
+const DUPLICATE_MARK = "#duplicado";
+
+/**
+ * A lead the CRM already had that wrote a referral's code is plainly that referral's client: a contact with the same first
+ * name, or the client of an earlier referral with the same full name. Another referral's phone (the store's own, typed for
+ * a client) is not, nor a duplicate a referral left closed.
+ */
+function plainlyClient(known: Lead, name: string | null | undefined) {
+  if (!known.externalId?.startsWith("portal:")) return sameFirstName(known.name, name);
+  return !known.externalId.endsWith(DUPLICATE_MARK) && sameName(known.name, name);
 }
 
 /** The store's referral whose code the message carries, while its client has not written yet. */
@@ -389,7 +407,7 @@ async function joinReferral(referral: Lead, into: Lead) {
  */
 async function closeDuplicate(dup: Lead, into: Lead) {
   const reason = `Duplicado: o cliente escreveu de ${into.phone ?? "outro número"}, que já é de outro lead.`;
-  const closed = { lostReason: reason, aiPaused: true, externalId: dup.externalId && `${dup.externalId}#duplicado` };
+  const closed = { lostReason: reason, aiPaused: true, externalId: dup.externalId && `${dup.externalId}${DUPLICATE_MARK}` };
   const lost = await db.stage.findMany({ where: { pipelineId: dup.pipelineId, kind: "LOST" }, orderBy: { position: "asc" } });
   const to = lost.find((s) => s.key === STAGE_KEYS.LOST) ?? lost.find((s) => s.key !== SEND_ERROR_STAGE.key);
   if (to) await moveLead(dup.id, to.id, "WhatsApp", closed);
@@ -407,20 +425,26 @@ async function closeDuplicate(dup: Lead, into: Lead) {
 }
 
 /**
- * The lead a store's referral went on in, for the duplicate it left closed (closeDuplicate): the store referring the same
- * client again with the phone it typed then goes on there too, instead of reopening the duplicate. Only for the same full
- * name: a phone the store types for several clients (its own) must not carry one client's quote to another. null otherwise.
+ * The phone the store typed for a new referral belongs to a duplicate an earlier referral left closed (closeDuplicate). The
+ * same client (same full name) goes on in the lead that referral went on in. Anyone else gets a lead of her own: the phone
+ * moves to it, so her code links and the greeting carries her name. null when the lead is no such duplicate.
  */
-export async function joinedInto(dup: Lead, name: string | null | undefined) {
-  if (dup.status !== "LOST" || !sameName(dup.name, name)) return null;
-  const events = await db.leadEvent.findMany({ where: { leadId: dup.id, type: "lead.duplicate" }, orderBy: { createdAt: "desc" }, select: { data: true } });
-  const into = events.map((e) => (e.data as { leadId?: unknown } | null)?.leadId).find((id): id is string => typeof id === "string");
-  return into ? db.lead.findUnique({ where: { id: into } }) : null;
+export async function referralOnDuplicate(dup: Lead, input: NewLeadInput, actor: string) {
+  if (dup.status !== "LOST" || !dup.externalId?.endsWith(DUPLICATE_MARK)) return null;
+  if (sameName(dup.name, input.name)) {
+    const events = await db.leadEvent.findMany({ where: { leadId: dup.id, type: "lead.duplicate" }, orderBy: { createdAt: "desc" }, select: { data: true } });
+    const into = events.map((e) => (e.data as { leadId?: unknown } | null)?.leadId).find((id): id is string => typeof id === "string");
+    const lead = into ? await db.lead.findUnique({ where: { id: into } }) : null;
+    if (lead) return { lead, created: false };
+  }
+  await db.lead.update({ where: { id: dup.id }, data: { phone: null } });
+  await logEvent(dup.id, "lead.phone_changed", actor, `A loja fez a indicação de ${input.name ?? "outro cliente"} com o número ${dup.phone ?? ""}, que passou para ela.`);
+  return createLead(input, actor);
 }
 
 /**
  * A phone the CRM has for someone who is not plainly the referral's client wrote with the code of a referral still waiting
- * for it (the store's own phone sending the next client's message, or the client referred again with another phone typed):
+ * for it (the store's own phone sending the next client's message, or a contact with another name):
  * a person sorts out who it is, and the waiting referral's greeting still goes to the phone the store typed.
  */
 async function otherReferralCode(known: Lead, referral: Lead) {
@@ -525,10 +549,10 @@ export async function leadThatQuoted(ref: string, name: string | null | undefine
   // A conversation that began with the message is the referral's own; else a contact the CRM had with the referral's name
   let named: { lead: Lead; own: false } | null = null;
   for (const hit of quoting) {
-    if (referralCode(hit.body) !== code || hit.lead.externalId?.startsWith("portal:")) continue;
+    if (referralCode(hit.body) !== code) continue;
     const before = await db.message.count({ where: { leadId: hit.leadId, createdAt: { lt: hit.createdAt } } });
     if (hit.lead.source === "whatsapp" && !hit.lead.externalId && before === 0) return { lead: hit.lead, own: true };
-    if (!named && sameFirstName(hit.lead.name, name)) named = { lead: hit.lead, own: false };
+    if (!named && plainlyClient(hit.lead, name)) named = { lead: hit.lead, own: false };
   }
   return named;
 }
@@ -561,17 +585,22 @@ export async function adoptReferral(lead: Lead, input: NewLeadInput, actor: stri
     const funnel = await funnelStart(entry.pipelineId);
     // Nobody answered it yet: the funnel's SDR takes it (the ready message greets her by name)
     const answered = await db.message.count({ where: { leadId: lead.id, channel: "WHATSAPP", direction: "OUT" } });
+    // Meta's window is open: the conversation goes on where she wrote. Written more than a day ago, the funnel's greeting
+    // from its own number is the way back to her, as for a contact the CRM had
+    const talking = isWindowOpen(lead.lastInboundAt);
     await moveLead(lead.id, entry.id, actor, {
       status: "NEW",
       lostReason: null,
       aiPaused: lead.whatsappOptOut,
-      whatsappNumberId: lead.whatsappNumberId,
-      sdrId: (answered ? (lead.sdrId ?? funnel.sdr?.id) : (funnel.sdr?.id ?? lead.sdrId)) ?? (await pickSdr())?.id ?? null,
+      whatsappNumberId: talking ? lead.whatsappNumberId : funnel.whatsappNumberId,
+      sdrId: (talking && answered ? (lead.sdrId ?? funnel.sdr?.id) : (funnel.sdr?.id ?? lead.sdrId)) ?? (await pickSdr())?.id ?? null,
     });
-    // It wrote first: no greeting. A message nobody answered (a number no funnel used left it to the team) gets the AI's answer
-    await cancelGreetings(lead.id);
-    const last = await db.message.findFirst({ where: { leadId: lead.id, channel: "WHATSAPP" }, orderBy: { createdAt: "desc" }, select: { direction: true } });
-    if (!lead.whatsappOptOut && last?.direction === "IN") await enqueueDebounced("sdr.reply", lead.id, Number(process.env.SDR_DEBOUNCE_MS ?? 15_000));
+    if (talking) {
+      // It wrote first: no greeting. A message nobody answered (a number no funnel used left it to the team) gets the AI's answer
+      await cancelGreetings(lead.id);
+      const last = await db.message.findFirst({ where: { leadId: lead.id, channel: "WHATSAPP" }, orderBy: { createdAt: "desc" }, select: { direction: true } });
+      if (!lead.whatsappOptOut && last?.direction === "IN") await enqueueDebounced("sdr.reply", lead.id, Number(process.env.SDR_DEBOUNCE_MS ?? 15_000));
+    }
   }
   return db.lead.findUniqueOrThrow({ where: { id: lead.id } });
 }

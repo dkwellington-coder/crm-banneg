@@ -632,10 +632,46 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     expect(await lima2.json()).toMatchObject({ created: true });
     expect(await db.lead.findFirstOrThrow({ where: { externalId: "portal:cm9x7k2yyy888" } })).toMatchObject({ phone: "5541966665555" });
 
-    // And the store typing its phone again for another Maria never carries her quote to Maria Souza
-    await post({ ...quote, produto: "consórcio", name: "Maria Lima", phone: "5541933334444", ref: "portal:cm9x7k2xxx777" });
+    // And the store typing its phone again for another Maria never carries her quote to Maria Souza: she gets a lead of
+    // her own, the phone moving off the duplicate, and her code from her own phone links to it
+    const third = await (await post({ ...quote, produto: "consórcio", name: "Maria Lima", phone: "5541933334444", ref: "portal:cm9x7k2xxx777" })).json();
+    expect(third).toMatchObject({ created: true, task: false });
     expect(await db.task.count({ where: { leadId: souza.id, title: { contains: "consórcio" } } })).toBe(0);
     expect(await db.leadEvent.count({ where: { leadId: souza.id, type: "lead.form", data: { path: ["ref"], equals: "portal:cm9x7k2xxx777" } } })).toBe(0);
+    expect(await db.lead.findUniqueOrThrow({ where: { id: dup } })).toMatchObject({ phone: null, status: "LOST" });
+    expect(await db.lead.findUniqueOrThrow({ where: { id: third.id } })).toMatchObject({ name: "Maria Lima", phone: "5541933334444", externalId: "portal:cm9x7k2xxx777" });
+    calls.length = 0;
+    await inbound(ALICE_NUMBER, "5541955550000", ready("Maria", "XXX777"), "wamid.in4", "Maria");
+    await db.job.updateMany({ where: { leadId: third.id, status: "PENDING" }, data: { runAt: new Date() } });
+    await drain();
+    expect(await db.lead.findUniqueOrThrow({ where: { id: third.id } })).toMatchObject({ phone: "5541955550000" });
+    expect(sends().map((c) => [c.body?.to, c.body?.type])).toEqual([["5541955550000", "text"]]);
+  });
+
+  it("a client who took her first referral from her own phone takes the store's next one there too", async () => {
+    const { alice, cot } = await referralFunnel({ delayMinutes: 15 });
+    const perdido = await db.stage.create({ data: { pipelineId: cot.id, key: "perdido", name: "Perdido", kind: "LOST", position: 9 } });
+    // The store typed its own phone; Maria wrote the code from hers, which the CRM did not have
+    const first = (await (await post({ ...quote, name: "Maria Souza", phone: "5541933334444", ref: "portal:cm9x7k2abc123" })).json()).id as string;
+    await inbound(ALICE_NUMBER, "5541988887777", ready("Maria"), "wamid.in1", "Maria");
+    await drain();
+    expect(await db.lead.findUniqueOrThrow({ where: { id: first } })).toMatchObject({ phone: "5541988887777" });
+    await leads.moveLead(first, perdido.id, "Gerente", { lostReason: "Fechou em outro lugar", aiPaused: true });
+    calls.length = 0;
+    const { runSdrTurn } = await import("@/lib/sdr");
+    vi.mocked(runSdrTurn).mockClear();
+
+    // A year later the store refers her again, with its phone; she writes the new code from her phone
+    const second = (await (await post({ ...quote, produto: "consórcio", name: "Maria Souza", phone: "5541933334444", ref: "portal:cm9x7k2new456" })).json()).id as string;
+    await inbound(ALICE_NUMBER, "5541988887777", ready("Maria", "NEW456"), "wamid.in2", "Maria");
+    await db.job.updateMany({ where: { status: "PENDING" }, data: { runAt: new Date() } });
+    await drain();
+    // The referral goes on in her lead, back in Cotações with Alice, and the store's phone gets nothing
+    expect(await db.lead.findUniqueOrThrow({ where: { id: first } })).toMatchObject({ pipelineId: cot.id, status: "AI_QUALIFYING", sdrId: alice.id });
+    expect(await db.lead.findUniqueOrThrow({ where: { id: second } })).toMatchObject({ stageId: perdido.id, status: "LOST" });
+    expect(vi.mocked(runSdrTurn)).toHaveBeenCalledTimes(1);
+    expect(sends().map((c) => [c.body?.to, c.body?.type])).toEqual([["5541988887777", "text"]]);
+    expect(await db.task.count({ where: { title: { startsWith: "Conferir quem escreveu" } } })).toBe(0);
   });
 
   it("a client who wrote the code more than a day before the referral arrived, with nobody answering, is still greeted", async () => {
@@ -668,6 +704,28 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     // Names and phones as before
     expect(await found("pedro")).toEqual(["Pedro"]);
     expect(await found("3939")).toEqual(["Pedro"]);
+    // A contact the CRM had, referred by the store: the code is on the store's file
+    await newLead({ name: "Ana Lima", phone: "5511966665555" });
+    await post({ ...quote, name: "Ana Lima", phone: "5511966665555", ref: "portal:cm9x7k2def456" });
+    expect(await found("DEF456")).toEqual(["Ana Lima"]);
+    // The code written as the CRM still links it ("Pedido:QQ7RTY")
+    await inbound(ALICE_NUMBER, "5541977770000", "Oi, Alice! Pedido:QQ7RTY", "wamid.in2", "Bia");
+    expect(await found("QQ7RTY")).toEqual(["Bia"]);
+  });
+
+  it("a client whose own conversation began with the code more than a day before the referral arrived is greeted from the funnel's number", async () => {
+    const { alice } = await referralFunnel({ delayMinutes: 15 });
+    // She wrote the ready message to the main number two days ago, and nobody followed up
+    await inbound("123", "5511944443333", ready("Ana"), "wamid.in1", "Ana", new Date(Date.now() - 2 * DAY));
+    const ana = await db.lead.findFirstOrThrow({ where: { phone: "5511944443333" } });
+    await db.job.updateMany({ where: { leadId: ana.id, status: "PENDING" }, data: { status: "CANCELLED" } });
+    calls.length = 0;
+    const res = await post({ ...quote, name: "Ana Lima", phone: "5511944443333", ref: "portal:cm9x7k2abc123" });
+    expect(await res.json()).toMatchObject({ id: ana.id, created: true });
+    expect(await db.lead.findUniqueOrThrow({ where: { id: ana.id } })).toMatchObject({ whatsappNumberId: ALICE_NUMBER, sdrId: alice.id });
+    await db.job.updateMany({ where: { leadId: ana.id, type: "rule.run", status: "PENDING" }, data: { runAt: new Date() } });
+    await drain();
+    expect(sends().map((c) => [c.url.split("/").at(-2), c.body?.to, c.body?.type])).toEqual([[ALICE_NUMBER, "5511944443333", "template"]]);
   });
 
   it("a phone that already holds a referral writing another referral's code goes to the team, and that referral still greets its client", async () => {

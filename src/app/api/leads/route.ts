@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { adoptReferral, createLead, joinedInto, leadThatQuoted, pipelineByRef, referExisting, type NewLeadInput } from "@/lib/leads";
+import { adoptReferral, createLead, leadThatQuoted, pipelineByRef, referExisting, referralOnDuplicate, type NewLeadInput } from "@/lib/leads";
 import { cancelGreetings } from "@/lib/automations";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
@@ -100,14 +100,15 @@ export async function POST(request: Request) {
   // The client sent the store's ready message ("Pedido ABC123") before the referral got here, maybe from another phone:
   // a conversation that began with it is this referral's new lead; a contact the CRM had is referred again
   const wrote = b.ref ? await leadThatQuoted(b.ref, input.name) : null;
-  const found = !wrote
+  let found = !wrote
     ? await createLead(input, actor)
     : wrote.own
       ? { lead: await adoptReferral(wrote.lead, input, actor), created: true }
       : { lead: wrote.lead, created: false };
-  const created = found.created;
-  // The phone the store typed for a client whose referral went on in the lead she wrote from: referred again, she goes there
-  const lead = (!wrote && !created && b.parceiro ? await joinedInto(found.lead, input.name) : null) ?? found.lead;
+  // The phone the store typed is on a duplicate an earlier referral left closed: the same client goes on in the lead she
+  // wrote from, anyone else gets a lead of her own
+  if (!wrote && !found.created && b.parceiro) found = (await referralOnDuplicate(found.lead, input, actor)) ?? found;
+  const { lead, created } = found;
   if (wrote && !wrote.own) {
     const typed = phone ? normalizePhone(phone) : null;
     const elsewhere = typed && lead.phone && !phoneVariants(lead.phone).includes(typed) ? `; a loja informou o número ${typed}` : "";
