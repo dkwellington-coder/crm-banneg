@@ -200,7 +200,12 @@ export async function handleInbound(input: {
     if (plainlyClient(known, referral.name)) lead = await joinReferral(referral, known);
     else forTeam = await otherReferralCode(known, referral);
   }
-  lead ??= (await leadByEmailCode(input.body, phone)) ?? (referral && (await takeReferral(referral, phone)));
+  // A referral's phone sending another client's ready message under another name (the store's phone scanning her QR code)
+  // is not its client back: a referral WhatsApp did not reach stays closed, for a person and for that code's referral
+  const sent = referralCode(input.body);
+  const stray =
+    lead === known && !!known?.externalId?.startsWith("portal:") && !!sent && sent !== codeOf(known.externalId) && !sameFirstName(known.name, input.profileName);
+  lead ??=(await leadByEmailCode(input.body, phone)) ?? (referral && (await takeReferral(referral, phone)));
   if (!lead) {
     // Someone writing to a funnel's own number starts in that funnel, with its SDR
     const funnel = numberId ? await numberFunnel(numberId) : null;
@@ -229,7 +234,7 @@ export async function handleInbound(input: {
       { whatsappNumberId: numberId, ...(takes && { sdrId: takes.id }) },
     );
   }
-  lead = await backFromSendError(lead);
+  if (!stray) lead = await backFromSendError(lead);
   const msg = await db.message.create({
     data: {
       leadId: lead.id,

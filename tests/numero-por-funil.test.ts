@@ -814,6 +814,29 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     expect(await db.lead.findUniqueOrThrow({ where: { id: ana } })).toMatchObject({ name: "Ana Rocha", phone: null });
   });
 
+  it("the store's phone in Erro no WhatsApp scanning the next client's QR code stays closed until her referral takes it", async () => {
+    await referralFunnel({ delayMinutes: 15 });
+    const ana = (await (await post({ ...quote, name: "Ana Rocha", phone: "5541933334444", ref: "portal:cm9x7k2ana222" })).json()).id as string;
+    const { moveToSendError } = await import("@/lib/messaging");
+    await moveToSendError(ana, "a Meta segurou o modelo");
+    const { runSdrTurn } = await import("@/lib/sdr");
+    vi.mocked(runSdrTurn).mockClear();
+    calls.length = 0;
+    await inbound(ALICE_NUMBER, "5541933334444", ready("Bia", "BIA111"), "wamid.in1", "Lotus Veículos");
+    await drain();
+    // Not Ana writing back: no AI as Ana, a person sees it
+    expect(await db.lead.findUniqueOrThrow({ where: { id: ana }, include: { stage: true } })).toMatchObject({ stage: { key: "erro_envio" }, aiPaused: true });
+    expect(vi.mocked(runSdrTurn)).not.toHaveBeenCalled();
+    expect(await db.task.count({ where: { leadId: ana, title: "Responder mensagem do lead no WhatsApp", doneAt: null } })).toBe(1);
+    const bia = await (await post({ ...quote, produto: "consórcio", name: "Bia Costa", phone: "5541933334444", ref: "portal:cm9x7k2bia111" })).json();
+    expect(bia).toMatchObject({ created: true });
+    expect(await db.message.count({ where: { leadId: bia.id, body: { contains: "Pedido BIA111" } } })).toBe(1);
+    await db.job.updateMany({ where: { leadId: bia.id, status: "PENDING" }, data: { runAt: new Date() } });
+    await drain();
+    expect(vi.mocked(runSdrTurn).mock.calls.map((c) => c[0].lead.name)).toEqual(["Bia Costa"]);
+    expect(sends().map((c) => [c.body?.to, c.body?.type])).toEqual([["5541933334444", "text"]]);
+  });
+
   it("a referral typed with a phone two leads have, with and without the 9, leaves the phone and its messages together", async () => {
     const { cot } = await referralFunnel({ delayMinutes: 15 });
     const perdido = await db.stage.create({ data: { pipelineId: cot.id, key: "perdido", name: "Perdido", kind: "LOST", position: 9 } });
