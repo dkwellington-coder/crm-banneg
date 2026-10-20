@@ -546,6 +546,59 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     expect(buildUserTurn(ctx)).toContain("O Banneg é a corretora oficial dessa loja");
   });
 
+  // Maria's referral (typed phone 5541999998888) went on in her own lead (5541988887777): the referral's lead closed as a duplicate
+  async function joinedReferral() {
+    const { cot } = await referralFunnel({ delayMinutes: 15 });
+    const perdido = await db.stage.create({ data: { pipelineId: cot.id, key: "perdido", name: "Perdido", kind: "LOST", position: 9 } });
+    const franchise = await db.pipeline.findFirstOrThrow({ where: { isDefault: true } });
+    const fila = await db.stage.create({ data: { pipelineId: franchise.id, key: "fila", name: "Na fila", position: 50 } });
+    const maria = await newLead({ name: "Maria S.", phone: "5541988887777", stageId: fila.id });
+    const first = { ...quote, name: "Maria Souza", phone: "5541999998888", ref: "portal:cm9x7k2abc123" };
+    const dup = (await (await post(first)).json()).id as string;
+    await inbound(ALICE_NUMBER, "5541988887777", ready("Maria"), "wamid.in1", "Maria");
+    await drain();
+    expect(await db.lead.findUniqueOrThrow({ where: { id: dup } })).toMatchObject({ stageId: perdido.id, status: "LOST" });
+    calls.length = 0;
+    return { cot, perdido, maria, dup, first };
+  }
+
+  it("a referral closed as a duplicate waits for nobody: its code again is a message of the lead it went on in", async () => {
+    const { perdido, maria, dup } = await joinedReferral();
+    await db.task.updateMany({ where: { leadId: maria.id }, data: { doneAt: new Date() } });
+    // She scans the QR code again: no second join, and the task the team finished stays finished
+    await inbound(ALICE_NUMBER, "5541988887777", ready("Maria"), "wamid.in2", "Maria");
+    expect(await db.leadEvent.count({ where: { leadId: maria.id, type: "lead.referral_joined" } })).toBe(1);
+    expect(await db.leadEvent.count({ where: { leadId: dup, type: "lead.duplicate" } })).toBe(1);
+    expect(await db.task.count({ where: { leadId: maria.id, doneAt: null, title: { startsWith: "Nova indicação" } } })).toBe(0);
+
+    // The team closed her: the old code does not reopen her as if the store had referred her again
+    await leads.moveLead(maria.id, perdido.id, "Gerente", { lostReason: "Desistiu", aiPaused: true });
+    await inbound(ALICE_NUMBER, "5541988887777", ready("Maria"), "wamid.in3", "Maria");
+    expect(await db.lead.findUniqueOrThrow({ where: { id: maria.id } })).toMatchObject({ stageId: perdido.id, status: "LOST", aiPaused: true, lostReason: "Desistiu" });
+
+    // A phone the CRM does not know sending that code does not take the closed duplicate: it is someone new
+    await inbound(ALICE_NUMBER, "5541977776666", "Oi! Pedido ABC123", "wamid.in4", "Outro");
+    expect((await db.lead.findUniqueOrThrow({ where: { id: dup } })).phone).toBe("5541999998888");
+    expect(await db.lead.count({ where: { phone: "5541977776666" } })).toBe(1);
+  });
+
+  it("the store sending a joined referral again, or referring the client again with the phone it typed, goes on in the lead she wrote from", async () => {
+    const { perdido, maria, dup, first } = await joinedReferral();
+    // The portal sends the same referral again: it is told where the client is, not the closed duplicate
+    expect(await (await post(first)).json()).toMatchObject({ id: maria.id, repeated: true, pipeline: "Cotações/ Seguros e Consórcios", stage: "Novo" });
+
+    // A year later the store refers her for a consórcio, with the phone it has on file
+    const again = await post({ ...quote, produto: "consórcio", name: "Maria Souza", phone: "5541999998888", ref: "portal:cm9x7k2new456" });
+    expect(await again.json()).toMatchObject({ id: maria.id, created: false, task: true });
+    expect(await db.task.count({ where: { leadId: maria.id, title: "Nova indicação da Lotus Veículos: cotar consórcio" } })).toBe(1);
+    expect(await db.lead.findUniqueOrThrow({ where: { id: dup } })).toMatchObject({ stageId: perdido.id, status: "LOST", aiPaused: true });
+    expect(await db.task.count({ where: { leadId: dup } })).toBe(0);
+    // Nothing goes to the phone the store typed
+    await db.job.updateMany({ where: { status: "PENDING" }, data: { runAt: new Date() } });
+    await drain();
+    expect(sends().filter((c) => c.body?.to === "5541999998888")).toEqual([]);
+  });
+
   it("a phone that already holds a referral writing another referral's code goes to the team, and that referral still greets its client", async () => {
     await referralFunnel({ delayMinutes: 15 });
     // The store's own phone sent Maria's ready message, so Maria's referral is on the store's phone now
@@ -557,6 +610,8 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     calls.length = 0;
     const { runSdrTurn } = await import("@/lib/sdr");
     vi.mocked(runSdrTurn).mockClear();
+    // A line just before it, whose answer is still waiting, is not answered with João's code in the talk either
+    await inbound(ALICE_NUMBER, "5541933334444", "Mais um cliente:", "wamid.in2a", "Loja");
     await inbound(ALICE_NUMBER, "5541933334444", ready("João", "ZZZ999"), "wamid.in2", "Loja");
     await drain();
     // Nobody answers it as Maria's conversation: a person sorts out who is writing
@@ -663,6 +718,26 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     expect(sends()).toHaveLength(0);
   });
 
+  it("a client who wrote the code after someone else's phone sent it is still the one the referral goes to", async () => {
+    await referralFunnel({ delayMinutes: 15 });
+    // The store's phone already holds João's referral
+    const joao = await (await post({ ...quote, name: "João Lima", phone: "5541933334444", ref: "portal:cm9x7k2zzz999" })).json();
+    // The CRM was slow with Maria's: the store's phone sent her ready message, then Maria from her own phone
+    await inbound(ALICE_NUMBER, "5541933334444", ready("Maria"), "wamid.in1", "Loja", new Date(Date.now() - 120_000));
+    await inbound(ALICE_NUMBER, "5541988887777", ready("Maria"), "wamid.in2", "Maria", new Date(Date.now() - 60_000));
+    const maria = await db.lead.findUniqueOrThrow({ where: { phone: "5541988887777" } });
+    await drain();
+    calls.length = 0;
+    const res = await post({ ...quote, name: "Maria Souza", phone: "5541999998888", ref: "portal:cm9x7k2abc123" });
+    expect(await res.json()).toMatchObject({ id: maria.id, created: true });
+    expect(await db.lead.findUniqueOrThrow({ where: { id: maria.id } })).toMatchObject({ externalId: "portal:cm9x7k2abc123" });
+    expect(await db.lead.findUniqueOrThrow({ where: { id: joao.id } })).toMatchObject({ externalId: "portal:cm9x7k2zzz999" });
+    expect(await db.lead.count({ where: { phone: "5541999998888" } })).toBe(0);
+    await db.job.updateMany({ where: { status: "PENDING" }, data: { runAt: new Date() } });
+    await drain();
+    expect(sends().filter((c) => c.body?.type === "template")).toEqual([]);
+  });
+
   it("a client who wrote first to a number no funnel used yet goes to the referral's funnel when it arrives, and the AI answers", async () => {
     const { alice, cot } = await referralFunnel({ delayMinutes: 15 });
     // Cotações still on the main number while Alice's number is being set up: the team answers there
@@ -701,6 +776,25 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     expect((await db.leadEvent.findFirstOrThrow({ where: { leadId: ana.id, type: "lead.duplicate" } })).summary).toContain("a loja informou o número 5511900001111");
   });
 
+  it("a lost client who wrote the code and was answered by a person is not greeted when the referral arrives later", async () => {
+    await referralFunnel({ delayMinutes: 15 });
+    const perdido = await db.stage.findFirstOrThrow({ where: { pipeline: { isDefault: true }, key: "perdido" } });
+    const ana = await newLead({ name: "Ana Lima", phone: "5511966665555", stageId: perdido.id, status: "LOST" });
+    await inbound(ALICE_NUMBER, "5511966665555", ready("Ana"), "wamid.in1", "Ana");
+    await drain();
+    expect(sends()).toHaveLength(0);
+    // Lost, so a person answers her
+    await messaging.sendWhatsApp(await db.lead.findUniqueOrThrow({ where: { id: ana.id } }), "Oi, Ana! Já vejo sua cotação.", "Gerente");
+    calls.length = 0;
+    const res = await post({ ...quote, name: "Ana Lima", phone: "5511900001111", ref: "portal:cm9x7k2abc123" });
+    expect(await res.json()).toMatchObject({ id: ana.id, created: false, moved: true, task: true, stage: "Novo" });
+    // She already wrote this referral's message: the greeting does not go in the middle of the conversation
+    expect(await db.job.count({ where: { leadId: ana.id, type: "rule.run", status: "PENDING" } })).toBe(0);
+    await db.job.updateMany({ where: { status: "PENDING" }, data: { runAt: new Date() } });
+    await drain();
+    expect(sends()).toHaveLength(0);
+  });
+
   it("a client someone is working in another funnel keeps that funnel's talk; moved to the referral's funnel, the AI speaks for the store", async () => {
     const { duda, cot, novo } = await referralFunnel();
     const franchise = await db.pipeline.findFirstOrThrow({ where: { isDefault: true } });
@@ -736,7 +830,7 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     const refused = () => Response.json({ error: { code: 100, message: "Unsupported get request. Object with ID '456' does not exist" } }, { status: 400 });
     const blocked = () =>
       Response.json({
-        health_status: { can_send_message: "BLOCKED", entities: [{ entity_type: "PHONE_NUMBER", can_send_message: "BLOCKED", errors: [{ error_code: 141010, error_description: "Nome em análise." }] }] },
+        health_status: { can_send_message: "BLOCKED", entities: [{ entity_type: "PHONE_NUMBER", can_send_message: "BLOCKED", errors: [{ error_code: 141010, error_description: "Número bloqueado." }] }] },
       });
 
     // Meta does not know the funnel's number (or the token has no access to it): the banner says so, for that number
@@ -763,7 +857,7 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     expect(await whatsapp.getHealth()).toBeNull();
 
     // A number no funnel uses that Meta no longer knows: nothing left to wait for
-    await whatsapp.setHealth({ code: 141010, message: "Nome em análise." }, ALICE_NUMBER);
+    await whatsapp.setHealth({ code: 141010, message: "Número bloqueado." }, ALICE_NUMBER);
     alice = refused;
     await checkFunnelNumbers();
     expect(await whatsapp.getHealth()).toBeNull();
@@ -771,6 +865,47 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     await whatsapp.setHealth({ code: 131042, message: "Pagamento pendente." });
     await checkFunnelNumbers();
     expect(await whatsapp.getHealth()).toMatchObject({ code: 131042 });
+  });
+
+  // Meta's answer for a new number whose display name is not approved yet: it sends, with a limit Meta explains
+  const LIMITED_INFO = "Your display name has not been approved yet. Your message limit will increase after the display name is approved.";
+  const limitedHealth = () =>
+    Response.json({
+      health_status: {
+        can_send_message: "LIMITED",
+        entities: [
+          { entity_type: "PHONE_NUMBER", can_send_message: "LIMITED", additional_info: [LIMITED_INFO] },
+          { entity_type: "WABA", can_send_message: "AVAILABLE" },
+          { entity_type: "BUSINESS", can_send_message: "AVAILABLE" },
+          { entity_type: "APP", can_send_message: "AVAILABLE" },
+        ],
+      },
+    });
+
+  it("Alice's new number sending with a limit while Meta reviews its name raises no banner and holds no queue", async () => {
+    const { cot } = await referralFunnel();
+    const { checkFunnelNumbers } = await import("@/lib/integrations");
+    metaGet = (url) => (url.includes(`/${ALICE_NUMBER}?fields=health_status`) ? limitedHealth() : undefined);
+    await checkFunnelNumbers();
+    expect(await whatsapp.getHealth()).toBeNull();
+    // A message from her number goes, and the next check still says nothing: the banner does not come and go
+    const onAlice = await newLead({ phone: "5541999997777", whatsappNumberId: ALICE_NUMBER, lastInboundAt: new Date() });
+    expect((await messaging.sendWhatsApp(onAlice, "Oi!", "Alice")).ok).toBe(true);
+    await checkFunnelNumbers();
+    expect(await whatsapp.getHealth()).toBeNull();
+    // A stop recorded for her number goes once Meta says she sends
+    await whatsapp.setHealth({ code: 130429, message: "Limite" }, ALICE_NUMBER);
+    await checkFunnelNumbers();
+    expect(await whatsapp.getHealth()).toBeNull();
+
+    // The queue of her funnel goes on
+    const novo = await db.stage.findFirstOrThrow({ where: { pipelineId: cot.id, key: "novo" } });
+    const fila = await db.stage.create({ data: { pipelineId: cot.id, key: "fila-teste", name: "Na fila", position: 50 } });
+    await db.automationRule.create({ data: { stageId: fila.id, trigger: "daily", action: "move", config: { toStageId: novo.id, perDay: 10 } } });
+    const waiting = await newLead({ phone: "5511900000012", pipelineId: cot.id, stageId: fila.id });
+    const { runDailyBatches } = await import("@/lib/batches");
+    expect(await runDailyBatches(new Date("2026-10-14T15:00:00Z"))).toMatchObject({ released: 1 });
+    expect((await db.lead.findUniqueOrThrow({ where: { id: waiting.id } })).stageId).toBe(novo.id);
   });
 
   it("someone new writing to a number no funnel uses yet is left to the team, not to the default funnel's AI", async () => {
@@ -796,6 +931,21 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     await db.job.update({ where: { id: job.id }, data: { runAt: new Date() } });
     await drain();
     expect((await db.job.findUniqueOrThrow({ where: { id: job.id } })).result).toBe("WhatsApp enviado.");
+
+    // A funnel on the main number keeps its delayed messages after the lead writes, as it always did: only a store's
+    // referral, or a funnel on its own number, waits for the lead to write first
+    const novo = await db.stage.findFirstOrThrow({ where: { pipeline: { isDefault: true }, key: "novo" } });
+    const video = await db.automationRule.create({
+      data: { stageId: novo.id, action: "whatsapp", delayMinutes: 10, runAfterLeaving: true, config: { text: "Oi {{nome}}! Segue o vídeo de 1 minuto da franquia." } },
+    });
+    const { lead: site } = await leads.createLead({ name: "Rui", phone: "11955554444", source: "site" }, "teste");
+    await leads.handleInbound({ phone: "5511955554444", body: "Oi, quero saber da franquia", externalId: "wamid.in2", at: new Date(Date.now() + 5000) });
+    await drain();
+    const sent = await db.job.findFirstOrThrow({ where: { leadId: site.id, payload: { path: ["ruleId"], equals: video.id } } });
+    expect(sent.status).toBe("PENDING");
+    await db.job.update({ where: { id: sent.id }, data: { runAt: new Date() } });
+    await drain();
+    expect((await db.job.findUniqueOrThrow({ where: { id: sent.id } })).result).toBe("WhatsApp enviado.");
   });
 
   it("a Meta limit on Alice's number stays on it: the main number's queues go on and only her number clears it", async () => {
@@ -906,14 +1056,12 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     await referralFunnel();
     process.env.WHATSAPP_BUSINESS_ACCOUNT_ID = "waba-1";
     process.env.WHATSAPP_FORWARD_URL = "";
+    let alice = limitedHealth;
     try {
       metaGet = (url) => {
         if (url.includes("/123?fields=display_phone_number")) return Response.json({ display_phone_number: "+55 11 92013-8123", verified_name: "Banneg" });
         if (url.includes("/123?fields=health_status")) return Response.json({ health_status: { can_send_message: "AVAILABLE" } });
-        if (url.includes(`/${ALICE_NUMBER}?fields=health_status`))
-          return Response.json({
-            health_status: { can_send_message: "BLOCKED", entities: [{ entity_type: "PHONE_NUMBER", can_send_message: "BLOCKED", errors: [{ error_code: 141010, error_description: "Nome de exibição em análise." }] }] },
-          });
+        if (url.includes(`/${ALICE_NUMBER}?fields=health_status`)) return alice();
         if (url.includes("/message_templates") || url.includes("/subscribed_apps")) return Response.json({ data: [] });
         if (url.includes("/phone_numbers"))
           return Response.json({
@@ -929,9 +1077,15 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
         expect.arrayContaining([
           "+55 11 92013-8123 (Banneg), principal: funil Expansão.",
           "+55 17 99679-0187 (Alice Banneg): funil Cotações/ Seguros e Consórcios.",
-          "+55 17 99679-0187: envio bloqueado pela Meta: Nome de exibição em análise.",
+          `+55 17 99679-0187: envio liberado pela Meta, com limite: ${LIMITED_INFO}`,
         ]),
       );
+      // Blocked by Meta, it says why
+      alice = () =>
+        Response.json({
+          health_status: { can_send_message: "BLOCKED", entities: [{ entity_type: "PHONE_NUMBER", can_send_message: "BLOCKED", errors: [{ error_code: 141010, error_description: "Número bloqueado." }] }] },
+        });
+      expect((await checkWhatsApp()).details).toContain("+55 17 99679-0187: envio bloqueado pela Meta: Número bloqueado.");
     } finally {
       delete process.env.WHATSAPP_FORWARD_URL;
     }

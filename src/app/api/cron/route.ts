@@ -49,7 +49,8 @@ export async function GET(request: Request) {
     if (sending?.problem) await setHealth(sending.problem);
     else if (sending?.canSend) await clearHealth();
     if (sending) meta.sending = sending;
-    // The funnels' own numbers too (a new number whose name is still in review): the banner says which one is stopped
+    // The funnels' own numbers too (one Meta blocks or refuses; a new number in name review only sends with a limit): the
+    // banner says which one is stopped
     await checkFunnelNumbers().catch(() => console.error("WhatsApp: falha ao conferir os números dos funis."));
     // Where copies of the WhatsApp messages go (the old CRM); asked from Meta at most once an hour
     meta.copyTo = await forwardTarget().catch((e: Error) => ({ error: e.message }));

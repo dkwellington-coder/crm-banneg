@@ -136,7 +136,7 @@ const handlers: Record<string, Handler> = {
     if (!p.keep && !stillThere) return "Ignorado: o lead já saiu da etapa.";
     if (p.idle && lead.lastInboundAt && lead.lastInboundAt > new Date(p.since)) return "Ignorado: o lead respondeu.";
     // The greeting waits a few minutes for the lead to write first: it did, so the AI is already answering
-    if (lead.lastInboundAt && lead.lastInboundAt > new Date(p.since) && (await isGreeting(rule))) return "Ignorado: o lead já escreveu.";
+    if (lead.lastInboundAt && lead.lastInboundAt > new Date(p.since) && (await isGreeting(rule, lead))) return "Ignorado: o lead já escreveu.";
     const result = await runAction(lead, rule.action, rule.config as RuleConfig);
     await logEvent(lead.id, "automation.ran", "Automação", `${rule.stage.name}: ${result}`, { ruleId: rule.id });
     return result;

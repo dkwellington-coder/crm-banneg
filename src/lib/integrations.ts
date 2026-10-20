@@ -72,7 +72,7 @@ const NUMBER_REFUSED = new Set([100, 10, 200]);
  */
 async function numberStatus(id: string) {
   try {
-    return await whatsappSendStatus(id);
+    return await whatsappSendStatus(id, { limitedSends: true });
   } catch (e) {
     const code = (e as { code?: number }).code;
     return code !== undefined && NUMBER_REFUSED.has(code) ? ({ refused: code } as const) : null;
@@ -157,21 +157,31 @@ export async function giveWhatsAppBack(): Promise<CheckResult> {
   }
 }
 
-type HealthEntity = { entity_type: string; can_send_message: string; errors?: { error_code: number; error_description: string }[] };
+type HealthEntity = {
+  entity_type: string;
+  can_send_message: string;
+  errors?: { error_code: number; error_description: string }[];
+  additional_info?: string[];
+};
 
 /**
  * Whether Meta lets this number (the main one unless another is given) send right now, without sending anything.
  * A pending payment on the WhatsApp account (error 131042 on sends) shows up here as BLOCKED with the reason.
+ * limitedSends, for a funnel's own number: LIMITED (Meta's word for a new number whose display name is still in review)
+ * sends, with a limit Meta explains, so it is no problem. The main number reads it as before.
  */
 export async function whatsappSendStatus(
   id = process.env.WHATSAPP_PHONE_NUMBER_ID,
-): Promise<{ canSend: boolean; problem: { code?: number; message: string } | null } | null> {
+  opts: { limitedSends?: boolean } = {},
+): Promise<{ canSend: boolean; problem: { code?: number; message: string } | null; limit?: string } | null> {
   if (!id || !process.env.WHATSAPP_TOKEN) return null;
   const res = await graphGet<{ health_status?: { can_send_message: string; entities?: HealthEntity[] } }>(`${id}?fields=health_status`);
   const health = res.health_status;
   if (!health) return null;
   const error = health.entities?.flatMap((e) => e.errors ?? [])[0];
   if (health.can_send_message === "AVAILABLE") return { canSend: true, problem: null };
+  if (health.can_send_message === "LIMITED" && opts.limitedSends)
+    return { canSend: true, problem: null, limit: health.entities?.flatMap((e) => e.additional_info ?? []).join(" ") || "sem detalhe da Meta." };
   return { canSend: false, problem: { code: error?.error_code, message: error?.error_description ?? `Meta: envio ${health.can_send_message}` } };
 }
 
@@ -206,9 +216,10 @@ export async function funnelNumberIds() {
 }
 
 /**
- * Meta's word on the funnels' own numbers (a new number whose name is still in review), for the banner, which says which
- * one is stopped. Also on the number the banner names after no funnel uses it anymore: its leads still talk there, so it
- * is checked until Meta releases it, or until Meta no longer knows it (nothing left to wait for).
+ * Meta's word on the funnels' own numbers (one Meta blocks, or no longer lets the CRM use; a new number whose name is still
+ * in review sends with a limit, which stops nothing), for the banner, which says which one is stopped. Also on the number
+ * the banner names after no funnel uses it anymore: its leads still talk there, so it is checked until Meta releases it,
+ * or until Meta no longer knows it (nothing left to wait for).
  */
 export async function checkFunnelNumbers() {
   const ids = await funnelNumberIds();
@@ -241,11 +252,18 @@ async function numberDetails() {
     const using = funnels.filter((f) => (f.whatsappNumberId ?? main) === n.id).map((f) => f.name);
     return `${n.display}${n.name ? ` (${n.name})` : ""}${n.id === main ? ", principal" : ""}: ${using.length ? `${using.length > 1 ? "funis" : "funil"} ${using.join(", ")}` : "nenhum funil"}.`;
   });
-  // A funnel's own number may not be able to send yet (new number, name still in review at Meta)
+  // A funnel's own number may be blocked, or send with a limit (new number, name still in review at Meta)
   for (const id of await funnelNumberIds()) {
     const display = list?.numbers.find((n) => n.id === id)?.display ?? id;
-    const sending = await whatsappSendStatus(id).catch((e: Error) => ({ canSend: false, problem: { message: e.message } }));
-    if (sending) details.push(sending.canSend ? `${display}: envio liberado pela Meta.` : `${display}: envio bloqueado pela Meta: ${sending.problem?.message}`);
+    const sending = await whatsappSendStatus(id, { limitedSends: true }).catch((e: Error) => ({ canSend: false, problem: { message: e.message }, limit: undefined }));
+    if (sending)
+      details.push(
+        !sending.canSend
+          ? `${display}: envio bloqueado pela Meta: ${sending.problem?.message}`
+          : sending.limit
+            ? `${display}: envio liberado pela Meta, com limite: ${sending.limit}`
+            : `${display}: envio liberado pela Meta.`,
+      );
   }
   if (list?.error) details.push(`Lista de números da Meta: ${list.error}`);
   return details;

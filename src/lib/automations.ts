@@ -2,7 +2,7 @@ import type { AutomationRule, Lead, Prisma, Stage } from "@prisma/client";
 import { db } from "./db";
 import { enqueue } from "./queue";
 import { matchesAnswer, ruleRunAt, type RuleConfig } from "./rules";
-import { STAGE_KEYS } from "./plan";
+import { REFERRAL_FUNNEL, STAGE_KEYS } from "./plan";
 
 export type RuleJobPayload = {
   ruleId: string;
@@ -104,13 +104,22 @@ export async function cancelRuleJobs(leadId: string, which: "idle" | "stage" | "
 }
 
 /**
- * A greeting that waits for the lead: a WhatsApp some minutes after the lead lands in its funnel's first stage.
- * A lead who writes first (the store's QR code) is answered by the AI instead, for free inside Meta's window.
+ * A greeting that waits for the lead: a WhatsApp some minutes after the lead lands in its funnel's first stage, for a
+ * store's referral to that funnel or in a funnel that talks from its own number (Alice's). A lead who writes first (the
+ * store's QR code) is answered by the AI instead, for free inside Meta's window. Elsewhere such a message goes as always.
  */
-export async function isGreeting(rule: Pick<AutomationRule, "trigger" | "action" | "delayMinutes"> & { stage: Pick<Stage, "id" | "pipelineId"> }) {
+export async function isGreeting(
+  rule: Pick<AutomationRule, "trigger" | "action" | "delayMinutes"> & { stage: Pick<Stage, "id" | "pipelineId"> },
+  lead: Pick<Lead, "qualification">,
+) {
   if (rule.trigger !== "enter" || rule.action !== "whatsapp" || rule.delayMinutes <= 0) return false;
-  // Where createLead puts new leads: the "novo" stage, else the first one
   const pipelineId = rule.stage.pipelineId;
+  const referred = (lead.qualification as Record<string, unknown> | null)?.[REFERRAL_FUNNEL] === pipelineId;
+  if (!referred) {
+    const funnel = await db.pipeline.findUnique({ where: { id: pipelineId }, select: { whatsappNumberId: true } });
+    if (!funnel?.whatsappNumberId || funnel.whatsappNumberId === process.env.WHATSAPP_PHONE_NUMBER_ID) return false;
+  }
+  // Where createLead puts new leads: the "novo" stage, else the first one
   const entry =
     (await db.stage.findUnique({ where: { pipelineId_key: { pipelineId, key: STAGE_KEYS.NEW } } })) ??
     (await db.stage.findFirst({ where: { pipelineId }, orderBy: { position: "asc" } }));
@@ -120,10 +129,13 @@ export async function isGreeting(rule: Pick<AutomationRule, "trigger" | "action"
 /** The lead wrote first: the greetings waiting for it are cancelled, the AI answers the message. */
 export async function cancelGreetings(leadId: string) {
   const pending = await db.job.findMany({ where: { leadId, type: "rule.run", status: "PENDING" }, select: { id: true, payload: true } });
+  if (!pending.length) return 0;
   const ruleOf = (j: { payload: Prisma.JsonValue }) => (j.payload as RuleJobPayload).ruleId;
   const rules = await db.automationRule.findMany({ where: { id: { in: pending.map(ruleOf) } }, include: { stage: true } });
+  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { qualification: true } });
+  if (!lead) return 0;
   const greetings = new Set<string>();
-  for (const rule of rules) if (await isGreeting(rule)) greetings.add(rule.id);
+  for (const rule of rules) if (await isGreeting(rule, lead)) greetings.add(rule.id);
   const ids = pending.filter((j) => greetings.has(ruleOf(j))).map((j) => j.id);
   if (!ids.length) return 0;
   await db.job.updateMany({
