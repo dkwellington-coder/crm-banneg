@@ -232,13 +232,13 @@ export async function downloadWhatsAppMedia(mediaId: string) {
   return { data: new Uint8Array(await file.arrayBuffer()), mimeType: baseMime(meta.mime_type ?? file.headers.get("content-type") ?? "audio/ogg") };
 }
 
-/** Puts a file at Meta and returns its id, to send it without a public link. */
-export async function uploadWhatsAppMedia(data: Uint8Array, mimeType: string, filename: string) {
+/** Puts a file at Meta and returns its id, to send it without a public link. It goes up on the number that will send it. */
+export async function uploadWhatsAppMedia(data: Uint8Array, mimeType: string, filename: string, from?: string | null) {
   const form = new FormData();
   form.append("messaging_product", "whatsapp");
   form.append("type", mimeType);
   form.append("file", new Blob([new Uint8Array(data)], { type: mimeType }), filename);
-  const res = await fetch(`${GRAPH}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/media`, {
+  const res = await fetch(`${GRAPH}/${from || process.env.WHATSAPP_PHONE_NUMBER_ID}/media`, {
     method: "POST",
     headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}` },
     body: form,

@@ -66,8 +66,13 @@ export function classifyError(code: number | undefined, message: string) {
   return { accountLevel: !!accountMessage, friendly: accountMessage ?? message };
 }
 
-async function post(body: Record<string, unknown>): Promise<SendResult> {
-  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+/** The number a message goes out from: the lead's own (a funnel's number) or, when null, the main one. */
+export function senderId(from?: string | null) {
+  return from || process.env.WHATSAPP_PHONE_NUMBER_ID;
+}
+
+async function post(body: Record<string, unknown>, from?: string | null): Promise<SendResult> {
+  const phoneId = senderId(from);
   const token = process.env.WHATSAPP_TOKEN;
   if (!phoneId || !token) return { ok: false, error: "WhatsApp não configurado (WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_TOKEN).", accountLevel: true };
   const res = await fetch(`${GRAPH}/${phoneId}/messages`, {
@@ -89,8 +94,8 @@ async function post(body: Record<string, unknown>): Promise<SendResult> {
   return { ok: false, code, error: friendly, accountLevel };
 }
 
-export function sendText(to: string, body: string) {
-  return post({ to, type: "text", text: { body, preview_url: true } });
+export function sendText(to: string, body: string, from?: string | null) {
+  return post({ to, type: "text", text: { body, preview_url: true } }, from);
 }
 
 export type MediaKind = "video" | "document" | "image";
@@ -105,7 +110,7 @@ export function mediaKind(url: string): MediaKind | null {
  * Text with up to 3 tap-to-answer buttons (only inside the 24 h window), optionally with a video,
  * PDF or photo on top. Titles are cut to Meta's 20 characters.
  */
-export function sendButtons(to: string, body: string, buttons: string[], header?: { kind: MediaKind; link: string; filename?: string }) {
+export function sendButtons(to: string, body: string, buttons: string[], header?: { kind: MediaKind; link: string; filename?: string }, from?: string | null) {
   return post({
     to,
     type: "interactive",
@@ -117,28 +122,28 @@ export function sendButtons(to: string, body: string, buttons: string[], header?
         buttons: buttons.slice(0, 3).map((title, i) => ({ type: "reply", reply: { id: `b${i}`, title: title.slice(0, 20) } })),
       },
     },
-  });
+  }, from);
 }
 
 /** A video or PDF from a public link, with the message as its caption. */
-export function sendMedia(to: string, kind: "video" | "document" | "image", link: string, caption: string, filename?: string) {
+export function sendMedia(to: string, kind: "video" | "document" | "image", link: string, caption: string, filename?: string, from?: string | null) {
   const media: Record<string, string> = { link };
   if (caption) media.caption = caption.slice(0, 1024);
   if (kind === "document" && filename) media.filename = filename;
-  return post({ to, type: kind, [kind]: media });
+  return post({ to, type: kind, [kind]: media }, from);
 }
 
-/** An audio already uploaded to Meta (uploadWhatsAppMedia). Ogg Opus shows as a voice message. */
-export function sendAudio(to: string, mediaId: string) {
-  return post({ to, type: "audio", audio: { id: mediaId } });
+/** An audio already uploaded to Meta (uploadWhatsAppMedia, from the same number). Ogg Opus shows as a voice message. */
+export function sendAudio(to: string, mediaId: string, from?: string | null) {
+  return post({ to, type: "audio", audio: { id: mediaId } }, from);
 }
 
-export function sendTemplate(to: string, name: string, language: string, params: string[], headerUrl?: string | null) {
+export function sendTemplate(to: string, name: string, language: string, params: string[], headerUrl?: string | null, from?: string | null) {
   const kind = headerUrl ? mediaKind(headerUrl) : null;
   const components: Record<string, unknown>[] = [];
   if (kind && headerUrl) components.push({ type: "header", parameters: [{ type: kind, [kind]: { link: headerUrl } }] });
   if (params.length) components.push({ type: "body", parameters: params.map((text) => ({ type: "text", text })) });
-  return post({ to, type: "template", template: { name, language: { code: language }, components } });
+  return post({ to, type: "template", template: { name, language: { code: language }, components } }, from);
 }
 
 export type WhatsAppHealth = { code?: number; message: string; at: string } | null;
