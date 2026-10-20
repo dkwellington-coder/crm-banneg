@@ -1,12 +1,12 @@
 import type { LeadStatus, Prisma } from "@prisma/client";
 import { db } from "./db";
 import { mapRow, parseCsv } from "./csv";
-import { pipelineByRef, pickSdr, startAutomations } from "./leads";
+import { funnelStart, pipelineByRef, pickSdr, startAutomations } from "./leads";
 import { normalizePhone, phoneVariants } from "./whatsapp";
 
 const CHUNK = 500;
 
-type Target = { pipelineId: string; open: string; optOut: string; lost: string };
+type Target = { pipelineId: string; open: string; optOut: string; lost: string; whatsappNumberId: string | null; sdrId: string | null };
 
 /** Where imported leads land in a funnel: the queue when it has one, Descartado and Perdido for the rest. */
 async function targetFor(pipelineId: string): Promise<Target> {
@@ -16,7 +16,9 @@ async function targetFor(pipelineId: string): Promise<Target> {
   const firstLost = stages.find((s) => s.kind === "LOST")?.id;
   const open = byKey("fila") ?? byKey("novo") ?? stages[0].id;
   const optOut = byKey("descartado") ?? firstLost ?? open;
-  return { pipelineId, open, optOut, lost: byKey("perdido") ?? optOut };
+  // The funnel's own WhatsApp number and SDR, as for a lead created there one by one
+  const funnel = await funnelStart(pipelineId);
+  return { pipelineId, open, optOut, lost: byKey("perdido") ?? optOut, whatsappNumberId: funnel.whatsappNumberId, sdrId: funnel.sdr?.id ?? null };
 }
 
 /**
@@ -102,7 +104,8 @@ export async function importLeads(text: string, opts: { pipelineId: string; star
       lastContactAt: row.lastContactAt,
       // Whoever imported the file knows these leads: they wait in the queue without lighting the "new lead" alert
       seenAt: new Date(),
-      sdrId: sdrs.length ? sdrs[index % sdrs.length].id : null,
+      sdrId: t.sdrId ?? (sdrs.length ? sdrs[index % sdrs.length].id : null),
+      whatsappNumberId: t.whatsappNumberId,
       ...(row.createdAt && { createdAt: row.createdAt }),
     });
   }

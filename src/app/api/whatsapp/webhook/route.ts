@@ -36,6 +36,7 @@ export async function POST(request: Request) {
           externalId: m.id,
           at: new Date(Number(m.timestamp) * 1000),
           audio: m.audio && { id: m.audio.id, mimeType: m.audio.mime_type?.split(";")[0] },
+          phoneNumberId: value.metadata?.phone_number_id,
         });
       }
       for (const st of value.statuses ?? []) {

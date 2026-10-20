@@ -3,7 +3,7 @@ import { db } from "./db";
 import { logEvent } from "./events";
 import { cancelJobs, enqueueDebounced } from "./queue";
 import { cancelRuleJobs, scheduleAnswerRules, scheduleStageRules } from "./automations";
-import { normalizePhone, phoneVariants } from "./whatsapp";
+import { normalizePhone, numberName, phoneVariants } from "./whatsapp";
 import { AUDIO_MARK, downloadWhatsAppMedia, transcribe } from "./audio";
 import { SEND_ERROR_STAGE, sendWhatsApp } from "./messaging";
 import { STAGE_KEYS } from "./plan";
@@ -41,10 +41,22 @@ export async function defaultPipeline() {
 export async function pickSdr() {
   const agents = await db.sdrAgent.findMany({
     where: { active: true },
-    include: { _count: { select: { leads: { where: { status: { in: ["NEW", "AI_QUALIFYING"] } } } } } },
+    // Leads of a funnel with its own SDR are not part of the round robin
+    include: { _count: { select: { leads: { where: { status: { in: ["NEW", "AI_QUALIFYING"] }, pipeline: { sdrId: null } } } } } },
   });
   agents.sort((a, b) => a._count.leads - b._count.leads);
   return agents[0] ?? null;
+}
+
+/** What a funnel gives the conversations that start in it: its WhatsApp number (null = the main one) and its own SDR, if active. */
+export async function funnelStart(pipelineId: string) {
+  const p = await db.pipeline.findUnique({ where: { id: pipelineId }, select: { whatsappNumberId: true, sdr: true } });
+  return { whatsappNumberId: p?.whatsappNumberId ?? null, sdr: p?.sdr?.active ? p.sdr : null };
+}
+
+/** The SDR who takes a new lead in this funnel: the funnel's own one, else the round robin. */
+export async function sdrFor(pipelineId: string) {
+  return (await funnelStart(pipelineId)).sdr ?? (await pickSdr());
 }
 
 export type NewLeadInput = {
@@ -66,6 +78,8 @@ export type NewLeadInput = {
   stageId?: string | null;
   // Created by someone on the team: they know it exists, so it does not light the "new lead" alert
   seen?: boolean;
+  // The number the lead wrote to (null = the main one); left out = the funnel's number
+  whatsappNumberId?: string | null;
 };
 
 /** The lead with this number, or else the oldest one with it written with or without the 9. */
@@ -91,7 +105,8 @@ export async function createLead(input: NewLeadInput, actor: string) {
     chosen ??
     (await stageByKey(STAGE_KEYS.NEW, pipelineId)) ??
     (await db.stage.findFirstOrThrow({ where: { pipelineId }, orderBy: { position: "asc" } }));
-  const sdr = await pickSdr();
+  const funnel = await funnelStart(pipelineId);
+  const sdr = funnel.sdr ?? (await pickSdr());
   let lead: Lead;
   try {
     lead = await db.lead.create({
@@ -107,6 +122,8 @@ export async function createLead(input: NewLeadInput, actor: string) {
         pipelineId,
         stageId: stage.id,
         sdrId: sdr?.id,
+        // The conversation starts on the funnel's number; a lead who wrote first stays on the number it wrote to
+        whatsappNumberId: input.whatsappNumberId !== undefined ? input.whatsappNumberId : funnel.whatsappNumberId,
         ...(input.qualification && { qualification: input.qualification }),
         ...(input.createdAt && { createdAt: input.createdAt, stageEnteredAt: input.createdAt }),
         ...(input.seen && { seenAt: new Date() }),
@@ -156,15 +173,28 @@ export async function handleInbound(input: {
   externalId: string;
   at: Date;
   audio?: { id: string; mimeType?: string };
+  // Meta's id of our number the lead wrote to (the webhook's metadata.phone_number_id)
+  phoneNumberId?: string | null;
 }) {
   const phone = normalizePhone(input.phone);
   const dup = await db.message.findUnique({ where: { externalId: input.externalId } });
   if (dup) return null;
+  // null = the main number; undefined = not known, the lead keeps the number it is on
+  const numberId =
+    input.phoneNumberId === undefined ? undefined : input.phoneNumberId && input.phoneNumberId !== process.env.WHATSAPP_PHONE_NUMBER_ID ? input.phoneNumberId : null;
   let lead = (await leadByPhone(phone)) ?? (await leadByEmailCode(input.body, phone));
   if (!lead) {
-    lead = (await createLead({ phone, name: input.profileName, source: "whatsapp" }, "WhatsApp")).lead;
+    // Someone writing to a funnel's own number starts in that funnel, with its SDR
+    const funnel = numberId
+      ? await db.pipeline.findFirst({ where: { whatsappNumberId: numberId }, orderBy: [{ isDefault: "desc" }, { position: "asc" }], select: { id: true } })
+      : null;
+    lead = (await createLead({ phone, name: input.profileName, source: "whatsapp", pipelineId: funnel?.id, whatsappNumberId: numberId }, "WhatsApp")).lead;
     // The lead wrote first, so the SDR answers the message instead of sending a cold opening
     await cancelJobs(lead.id, ["sdr.first_contact"]);
+  } else if (numberId !== undefined && numberId !== lead.whatsappNumberId) {
+    // We answer where the person writes: the conversation goes on from the number the lead wrote to
+    lead = await db.lead.update({ where: { id: lead.id }, data: { whatsappNumberId: numberId } });
+    await logEvent(lead.id, "whatsapp.number_changed", "WhatsApp", `O lead escreveu para ${await numberName(numberId)}: a conversa segue por ele.`, { whatsappNumberId: numberId });
   }
   lead = await backFromSendError(lead);
   const msg = await db.message.create({
@@ -273,6 +303,13 @@ export async function moveLead(leadId: string, stageId: string, actor: string, e
   const entering = lead.stageId !== stageId;
   const status =
     (stage.key && STATUS_BY_STAGE_KEY[stage.key]) || (stage.kind === "WON" ? "WON" : stage.kind === "LOST" ? "LOST" : lead.status);
+  // Into another funnel: a lead with no WhatsApp yet starts on that funnel's number (and SDR, when it has one);
+  // a lead already talking keeps its number, so a conversation never switches number midway
+  let start: Prisma.LeadUncheckedUpdateInput = {};
+  if (stage.pipelineId !== lead.pipelineId && extra.whatsappNumberId === undefined && !(await db.message.count({ where: { leadId, channel: "WHATSAPP" } }))) {
+    const funnel = await funnelStart(stage.pipelineId);
+    start = { whatsappNumberId: funnel.whatsappNumberId, ...(funnel.sdr && extra.sdrId === undefined && { sdrId: funnel.sdr.id }) };
+  }
   const updated = await db.lead.update({
     where: { id: leadId },
     data: {
@@ -282,6 +319,7 @@ export async function moveLead(leadId: string, stageId: string, actor: string, e
       ...(entering && { stageEnteredAt: new Date() }),
       ...(entering && stage.kind === "WON" && { wonAt: new Date() }),
       ...(entering && stage.kind !== "WON" && lead.stage.kind === "WON" && { wonAt: null }),
+      ...start,
       ...extra,
     },
   });

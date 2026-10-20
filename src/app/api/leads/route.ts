@@ -1,9 +1,10 @@
 import { z } from "zod";
-import { createLead, ensureTask, moveLead, pickSdr, pipelineByRef, stageByKey } from "@/lib/leads";
+import { createLead, ensureTask, funnelStart, moveLead, pickSdr, pipelineByRef, stageByKey } from "@/lib/leads";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { SEND_ERROR_STAGE } from "@/lib/messaging";
 import { STAGE_KEYS } from "@/lib/plan";
+import { isWindowOpen } from "@/lib/whatsapp";
 
 const text = (max: number) => z.union([z.string(), z.number(), z.boolean()]).transform((v) => String(v).trim().slice(0, max)).optional();
 
@@ -148,12 +149,17 @@ async function referAgain(leadId: string, pipelineId: string | undefined, parcei
     // Starts over like a new lead: this store and product (never an old product), an SDR and the AI on
     const rest = { ...qualification };
     delete rest.produto;
+    // A new conversation, on the funnel's number with its SDR. Meta's 24 h window is per number: a lead who
+    // wrote in the last 24 h stays on the number (and with the SDR) it is talking to
+    const funnel = await funnelStart(entry.pipelineId);
+    const talking = isWindowOpen(lead.lastInboundAt);
     await moveLead(leadId, entry.id, `Formulário (${source})`, {
       qualification: { ...rest, parceiro, ...(produto && { produto }) },
       status: "NEW",
       lostReason: null,
       aiPaused: false,
-      sdrId: lead.sdrId ?? (await pickSdr())?.id ?? null,
+      whatsappNumberId: talking ? lead.whatsappNumberId : funnel.whatsappNumberId,
+      sdrId: (talking ? (lead.sdrId ?? funnel.sdr?.id) : (funnel.sdr?.id ?? lead.sdrId)) ?? (await pickSdr())?.id ?? null,
     });
     return { moved: true };
   }

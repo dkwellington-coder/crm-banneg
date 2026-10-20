@@ -9,7 +9,7 @@ import { getSettings, isTestContact, messageVars } from "./settings";
 import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
 import { planFromDecision, STAGE_KEYS } from "./plan";
-import { ensureTask, moveLead, pickSdr, stageByKey } from "./leads";
+import { ensureTask, funnelStart, moveLead, sdrFor, stageByKey } from "./leads";
 import { fillVariables, templateSlots, type RuleConfig } from "./rules";
 import type { RuleJobPayload } from "./automations";
 import { attachMaterials, emailHtml, renderTemplate, sendEmail, withButton } from "./email";
@@ -162,7 +162,7 @@ const handlers: Record<string, Handler> = {
       await moveToSendError(lead.id, `não chegou e este funil não tem mensagem de ${label} aprovada para tentar`);
       return `Sem mensagem de ${label} para tentar: lead movido para ${SEND_ERROR_STAGE.name}.`;
     }
-    const sdr = lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null;
+    const sdr = (lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null) ?? (await funnelStart(lead.pipelineId)).sdr;
     const text = template.body.replace("{{1}}", firstName(lead)).replace("{{2}}", sdr?.name ?? "Duda");
     const res = await sendWhatsApp(lead, text, sdr?.name ?? "Automação", { automatic: true, templateName: template.name });
     if (res.skipped) return res.skipped;
@@ -229,8 +229,8 @@ async function sendTemplateEmail(lead: Lead, templateKey: string, opts: EmailOpt
   if (await db.message.count({ where: { leadId: lead.id, channel: "EMAIL", template: templateKey, status: { not: "FAILED" } } }))
     return `Ignorado: o e-mail "${t.name}" já foi enviado para este lead.`;
   const settings = await getSettings();
-  // "A {{sdr}}, do nosso time de expansão": the e-mail names the SDR who is talking to this lead
-  const sdr = lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null;
+  // "A {{sdr}}, do nosso time de expansão": the e-mail names the SDR who is talking to this lead (or the funnel's own)
+  const sdr = (lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null) ?? (await funnelStart(lead.pipelineId)).sdr;
   const vars = { ...messageVars(settings, lead, sdr?.name ?? "Duda"), ...opts.vars };
   const subject = renderTemplate(t.subject, vars);
   const { text: body, attachments } = attachMaterials(renderTemplate(t.body, vars).replace("Olá, !", "Olá!"), Object.values(settings.materials));
@@ -325,7 +325,7 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig):
         const chosen = config.templateParams!.slice(0, slots);
         // Meta refuses a variable with a line break, a tab or a run of spaces
         // The name and the SDR have stand-ins, as in the rest of the CRM; the store and the product do not
-        const sdrName = vars.sdr || (await pickSdr())?.name || "";
+        const sdrName = vars.sdr || (await sdrFor(lead.pipelineId))?.name || "";
         params = chosen.map((v) => (v === "nome" ? vars.nome || "tudo bem" : v === "sdr" ? sdrName : String(vars[v as keyof typeof vars] ?? "")).replace(/\s+/g, " ").trim());
         if (!open && chosen.length < slots)
           return `Ignorado: o modelo ${config.templateName} pede ${slots} variáveis e a automação preenche ${chosen.length}. Abra a automação e salve de novo.`;
@@ -358,7 +358,7 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig):
       return `Movido para ${to.name}.`;
     }
     case "ai_on": {
-      const sdrId = config.sdrId || lead.sdrId || (await pickSdr())?.id;
+      const sdrId = config.sdrId || lead.sdrId || (await sdrFor(lead.pipelineId))?.id;
       if (!sdrId) return "Ignorado: nenhuma SDR de IA ativa.";
       await db.lead.update({ where: { id: lead.id }, data: { aiPaused: false, sdrId } });
       if (!lead.lastInboundAt && !lead.lastContactAt && lead.phone) {

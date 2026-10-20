@@ -190,6 +190,8 @@ export type WebhookPayload = {
   entry?: {
     changes?: {
       value?: {
+        // Which of our numbers got the message
+        metadata?: { phone_number_id?: string; display_phone_number?: string };
         contacts?: { profile?: { name?: string }; wa_id?: string }[];
         messages?: InboundMessage[];
         statuses?: {
@@ -210,6 +212,60 @@ export function messageText(m: InboundMessage) {
     m.interactive?.list_reply?.title ??
     `[${m.type} recebido]`
   );
+}
+
+// ---------- Numbers of the WhatsApp account ----------
+// Templates belong to the account, so an approved template goes from any of its numbers.
+
+export type WhatsAppNumber = { id: string; display: string; name: string | null; quality: string | null };
+export type WhatsAppNumbers = { at: string; numbers: WhatsAppNumber[]; error?: string | null };
+const NUMBERS_KEY = "whatsapp_numbers";
+
+/** Every number of the WhatsApp Business account, as Meta lists them; empty without the account id or the token. */
+export async function listWhatsAppNumbers(): Promise<WhatsAppNumber[]> {
+  const waba = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+  if (!waba || !process.env.WHATSAPP_TOKEN) return [];
+  const res = await graph<{ data: { id: string; display_phone_number?: string; verified_name?: string; quality_rating?: string }[] }>(
+    `${waba}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating`,
+  );
+  return res.data.map((n) => ({ id: n.id, display: n.display_phone_number ?? n.id, name: n.verified_name ?? null, quality: n.quality_rating ?? null }));
+}
+
+/** The account's numbers as last read from Meta; null before the first read. */
+export async function savedWhatsAppNumbers(): Promise<WhatsAppNumbers | null> {
+  const row = await db.setting.findUnique({ where: { key: NUMBERS_KEY } });
+  const v = row?.value as Partial<WhatsAppNumbers> | undefined;
+  return v?.at ? { at: v.at, numbers: v.numbers ?? [], error: v.error ?? null } : null;
+}
+
+/**
+ * Reads the account's numbers from Meta again and keeps them for the funnel and Integrações screens. Never throws:
+ * without the account id or the token nothing changes, and when Meta fails the last list stays.
+ */
+export async function refreshWhatsAppNumbers(opts: { ifOlderThanMs?: number } = {}): Promise<WhatsAppNumbers | null> {
+  try {
+    const saved = await savedWhatsAppNumbers();
+    if (saved && opts.ifOlderThanMs !== undefined && Date.now() - Date.parse(saved.at) < opts.ifOlderThanMs) return saved;
+    if (!process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || !process.env.WHATSAPP_TOKEN) return saved;
+    let value: WhatsAppNumbers;
+    try {
+      value = { at: new Date().toISOString(), numbers: await listWhatsAppNumbers(), error: null };
+    } catch (e) {
+      value = { at: new Date().toISOString(), numbers: saved?.numbers ?? [], error: (e as Error).message };
+    }
+    await db.setting.upsert({ where: { key: NUMBERS_KEY }, create: { key: NUMBERS_KEY, value }, update: { value } });
+    return value;
+  } catch (e) {
+    console.error(`Números do WhatsApp: falha ao atualizar a lista (${(e as Error).message}).`);
+    return null;
+  }
+}
+
+/** "o número principal" or "o número +55 17 99679-0187", for the lead's history. */
+export async function numberName(id: string | null) {
+  if (!id || id === process.env.WHATSAPP_PHONE_NUMBER_ID) return "o número principal";
+  const n = (await savedWhatsAppNumbers().catch(() => null))?.numbers.find((x) => x.id === id);
+  return `o número ${n?.display ?? id}`;
 }
 
 // ---------- Templates at Meta ----------
