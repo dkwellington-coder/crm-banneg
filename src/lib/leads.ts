@@ -311,7 +311,7 @@ export function leadSearch(q: string): Prisma.LeadWhereInput {
             // The store's file, on a contact the CRM had or the lead a referral went on in (portal ids are lower case)
             { events: { some: { type: "lead.form", data: { path: ["ref"], string_ends_with: code.toLowerCase() } } } },
             // Whoever wrote the ready message: a code of letters and digits is no word, a code of letters only goes with "pedido"
-            ...(/\d/.test(code) && /[a-z]/i.test(code) ? [code] : [`pedido ${code}`, `pedido:${code}`, `pedido: ${code}`, `pedido${code}`]).map((text) => ({
+            ...(/\d/.test(code) && /[a-z]/i.test(code) ? [code] : [`pedido ${code}`, `pedido:${code}`, `pedido: ${code}`, `pedido${code}`, `pedido  ${code}`, `pedido\n${code}`]).map((text) => ({
               messages: { some: { direction: "IN" as const, body: { contains: text, mode: "insensitive" as const } } },
             })),
           ]
@@ -425,21 +425,43 @@ async function closeDuplicate(dup: Lead, into: Lead) {
 }
 
 /**
- * The phone the store typed for a new referral belongs to a duplicate an earlier referral left closed (closeDuplicate). The
- * same client (same full name) goes on in the lead that referral went on in. Anyone else gets a lead of her own: the phone
- * moves to it, so her code links and the greeting carries her name. null when the lead is no such duplicate.
+ * The phone the store typed for a new referral is on a closed referral's lead its client never wrote from: a duplicate an
+ * earlier referral left (closeDuplicate), or a referral nobody answered. The same client (same full name) goes on as
+ * before: in the lead the duplicate's referral went on in, or referred again. Anyone else gets a lead of her own: the phone
+ * moves to it (asking to stop included), so her code links and the greeting carries her name, and a ready message the
+ * phone already sent with her code goes along, as if she had written first. null when the lead is no such referral.
  */
-export async function referralOnDuplicate(dup: Lead, input: NewLeadInput, actor: string) {
-  if (dup.status !== "LOST" || !dup.externalId?.endsWith(DUPLICATE_MARK)) return null;
-  if (sameName(dup.name, input.name)) {
-    const events = await db.leadEvent.findMany({ where: { leadId: dup.id, type: "lead.duplicate" }, orderBy: { createdAt: "desc" }, select: { data: true } });
+export async function referralOnClosedReferral(held: Lead, input: NewLeadInput, actor: string) {
+  if (held.status !== "LOST" || !held.externalId?.startsWith("portal:")) return null;
+  const dup = held.externalId.endsWith(DUPLICATE_MARK);
+  if (!dup && held.lastInboundAt) return null;
+  if (sameName(held.name, input.name)) {
+    if (!dup) return null;
+    const events = await db.leadEvent.findMany({ where: { leadId: held.id, type: "lead.duplicate" }, orderBy: { createdAt: "desc" }, select: { data: true } });
     const into = events.map((e) => (e.data as { leadId?: unknown } | null)?.leadId).find((id): id is string => typeof id === "string");
     const lead = into ? await db.lead.findUnique({ where: { id: into } }) : null;
     if (lead) return { lead, created: false };
   }
-  await db.lead.update({ where: { id: dup.id }, data: { phone: null } });
-  await logEvent(dup.id, "lead.phone_changed", actor, `A loja fez a indicação de ${input.name ?? "outro cliente"} com o número ${dup.phone ?? ""}, que passou para ela.`);
-  return createLead(input, actor);
+  const code = input.externalId ? codeOf(input.externalId) : null;
+  const quoting = code
+    ? await db.message.findMany({ where: { leadId: held.id, direction: "IN", body: { contains: code, mode: "insensitive" } }, orderBy: { createdAt: "asc" } })
+    : [];
+  const quoted = quoting.find((m) => referralCode(m.body) === code);
+  await db.lead.update({ where: { id: held.id }, data: { phone: null } });
+  await logEvent(held.id, "lead.phone_changed", actor, `A loja fez a indicação de ${input.name ?? "outro cliente"} com o número ${held.phone ?? ""}, que passou para ela.`);
+  const made = await createLead(input, actor);
+  const optOut = held.whatsappOptOut;
+  if (optOut) await db.lead.update({ where: { id: made.lead.id }, data: { whatsappOptOut: true } });
+  if (!quoted) return made;
+  // The phone wrote her ready message before the referral got here: that conversation is hers
+  await db.message.updateMany({ where: { leadId: held.id, createdAt: { gte: quoted.createdAt } }, data: { leadId: made.lead.id } });
+  await db.lead.update({ where: { id: made.lead.id }, data: { lastInboundAt: held.lastInboundAt } });
+  if (isWindowOpen(held.lastInboundAt)) {
+    await cancelGreetings(made.lead.id);
+    const last = await db.message.findFirst({ where: { leadId: made.lead.id, channel: "WHATSAPP" }, orderBy: { createdAt: "desc" }, select: { direction: true } });
+    if (!optOut && last?.direction === "IN") await enqueueDebounced("sdr.reply", made.lead.id, Number(process.env.SDR_DEBOUNCE_MS ?? 15_000));
+  }
+  return { lead: await db.lead.findUniqueOrThrow({ where: { id: made.lead.id } }), created: made.created };
 }
 
 /**

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { adoptReferral, createLead, leadThatQuoted, pipelineByRef, referExisting, referralOnDuplicate, type NewLeadInput } from "@/lib/leads";
+import { adoptReferral, createLead, leadThatQuoted, pipelineByRef, referExisting, referralOnClosedReferral, type NewLeadInput } from "@/lib/leads";
 import { cancelGreetings } from "@/lib/automations";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
@@ -105,9 +105,9 @@ export async function POST(request: Request) {
     : wrote.own
       ? { lead: await adoptReferral(wrote.lead, input, actor), created: true }
       : { lead: wrote.lead, created: false };
-  // The phone the store typed is on a duplicate an earlier referral left closed: the same client goes on in the lead she
-  // wrote from, anyone else gets a lead of her own
-  if (!wrote && !found.created && b.parceiro) found = (await referralOnDuplicate(found.lead, input, actor)) ?? found;
+  // The phone the store typed is on a closed referral its client never wrote from: the same client goes on as before,
+  // anyone else gets a lead of her own
+  if (!wrote && !found.created && b.parceiro) found = (await referralOnClosedReferral(found.lead, input, actor)) ?? found;
   const { lead, created } = found;
   if (wrote && !wrote.own) {
     const typed = phone ? normalizePhone(phone) : null;
