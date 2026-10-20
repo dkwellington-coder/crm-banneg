@@ -200,12 +200,19 @@ export async function handleInbound(input: {
     if (plainlyClient(known, referral.name)) lead = await joinReferral(referral, known);
     else forTeam = await otherReferralCode(known, referral);
   }
-  // A referral's phone sending another client's ready message (the store's phone scanning her QR code) is not its client
-  // back: a referral WhatsApp did not reach stays closed, for a person and for that code's referral
+  // A referral's phone that never wrote words of its own sending another client's ready message (the store's phone
+  // scanning her QR code) is not its client back: a referral WhatsApp did not reach stays closed, for a person and for
+  // that code's referral
   const sent = referralCode(input.body);
   const who = readyName(input.body);
   const stray =
-    lead === known && !!known?.externalId?.startsWith("portal:") && !!sent && sent !== codeOf(known.externalId) && !!who && !sameFirstName(known.name, who);
+    lead === known &&
+    !!known?.externalId?.startsWith("portal:") &&
+    !!sent &&
+    sent !== codeOf(known.externalId) &&
+    !!who &&
+    !sameFirstName(known.name, who) &&
+    !(await saidOwnWords(known.id));
   lead ??= (await leadByEmailCode(input.body, phone)) ?? (referral && (await takeReferral(referral, phone)));
   if (!lead) {
     // Someone writing to a funnel's own number starts in that funnel, with its SDR
@@ -337,7 +344,16 @@ const codeOf = (ref: string | null) => ref?.slice(-6).toUpperCase() ?? "";
  */
 function readyName(body: string) {
   if (!referralCode(body)) return null;
-  return /\bSou (\p{Lu}[\p{L}'-]*)(?:, vim pela | e quero seguir com a minha cotação pela )/u.exec(body)?.[1] ?? null;
+  return /\bSou (\p{L}[\p{L}'-]*)(?:, vim pela | e quero seguir com a minha cotação pela )/iu.exec(body)?.[1] ?? null;
+}
+
+/**
+ * The phone wrote something of its own to this lead (before a moment, if given). A ready message (this referral's or any
+ * other) is as often the store's phone scanning the QR code as the client.
+ */
+async function saidOwnWords(leadId: string, before?: Date) {
+  const said = await db.message.findMany({ where: { leadId, direction: "IN", ...(before && { createdAt: { lt: before } }) }, select: { body: true } });
+  return said.some((m) => !referralCode(m.body));
 }
 
 /** The same person as far as a name tells: the first names match, accents and case aside. */
@@ -460,13 +476,8 @@ export async function referralOnClosedReferral(held: Lead, input: NewLeadInput, 
     ? await db.message.findMany({ where: { leadId: held.id, direction: "IN", body: { contains: code, mode: "insensitive" } }, orderBy: { createdAt: "asc" } })
     : [];
   const quoted = quoting.find((m) => referralCode(m.body) === code);
-  // Its client wrote when the phone said something of its own before the new client's message. A ready message (this
-  // referral's or any other) is as often the store's phone scanning the QR code as the client
-  const earlier = await db.message.findMany({
-    where: { leadId: held.id, direction: "IN", ...(quoted && { createdAt: { lt: quoted.createdAt } }) },
-    select: { body: true },
-  });
-  if (!dup && earlier.some((m) => !referralCode(m.body))) return null;
+  // Its client wrote when the phone said something of its own before the new client's message
+  if (!dup && (await saidOwnWords(held.id, quoted?.createdAt))) return null;
   if (sameName(held.name, input.name)) {
     if (!dup) return null;
     const events = await db.leadEvent.findMany({ where: { leadId: held.id, type: "lead.duplicate" }, orderBy: { createdAt: "desc" }, select: { data: true } });
