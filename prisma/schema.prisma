@@ -85,22 +85,27 @@ model Session {
 }
 
 model Pipeline {
-  id             String   @id @default(cuid())
-  name           String
-  position       Int      @default(0)
+  id               String    @id @default(cuid())
+  name             String
+  position         Int       @default(0)
   // The funnel new leads land in when nothing else is said
-  isDefault      Boolean  @default(false)
+  isDefault        Boolean   @default(false)
   // Short name forms and landing pages use to drop leads here ("funil": "sindicatos")
-  slug           String?  @unique
+  slug             String?   @unique
   // What the AI SDR is after in this funnel; empty = the franchise sales script
-  aiGoal         String?
+  aiGoal           String?
   // Data the AI collects here; empty = the questions in Ajustes
-  aiQuestions    String[] @default([])
+  aiQuestions      String[]  @default([])
   // Where the AI sends a lead when this funnel lacks the stage (old leads go on to Vendas de Franquias)
-  nextPipelineId String?
-  createdAt      DateTime @default(now())
-  stages         Stage[]
-  leads          Lead[]
+  nextPipelineId   String?
+  // Meta phone-number id new conversations in this funnel start from; null = the main number (env)
+  whatsappNumberId String?
+  // The SDR who takes new leads in this funnel; null = round robin between the active SDRs
+  sdrId            String?
+  sdr              SdrAgent? @relation(fields: [sdrId], references: [id], onDelete: SetNull)
+  createdAt        DateTime  @default(now())
+  stages           Stage[]
+  leads            Lead[]
 }
 
 model Stage {
@@ -152,61 +157,64 @@ model Goal {
 }
 
 model SdrAgent {
-  id        String   @id @default(cuid())
-  name      String   @unique
-  active    Boolean  @default(true)
+  id        String     @id @default(cuid())
+  name      String     @unique
+  active    Boolean    @default(true)
   persona   String
-  createdAt DateTime @default(now())
+  createdAt DateTime   @default(now())
   leads     Lead[]
+  pipelines Pipeline[]
 }
 
 model Lead {
-  id              String        @id @default(cuid())
-  name            String?
-  phone           String?       @unique
-  email           String?
-  city            String?
-  state           String?
-  source          String        @default("manual")
-  campaign        String?
-  externalId      String?
-  pipelineId      String
-  pipeline        Pipeline      @relation(fields: [pipelineId], references: [id])
-  stageId         String
-  stage           Stage         @relation(fields: [stageId], references: [id])
+  id               String        @id @default(cuid())
+  name             String?
+  phone            String?       @unique
+  email            String?
+  city             String?
+  state            String?
+  source           String        @default("manual")
+  campaign         String?
+  externalId       String?
+  pipelineId       String
+  pipeline         Pipeline      @relation(fields: [pipelineId], references: [id])
+  stageId          String
+  stage            Stage         @relation(fields: [stageId], references: [id])
   // Deal value in reais, for the sales goal
-  value           Int?
-  wonAt           DateTime?
-  status          LeadStatus    @default(NEW)
-  ownerId         String?
-  owner           User?         @relation(fields: [ownerId], references: [id])
-  sdrId           String?
-  sdr             SdrAgent?     @relation(fields: [sdrId], references: [id])
-  aiPaused        Boolean       @default(false)
-  emailOptOut     Boolean       @default(false)
+  value            Int?
+  wonAt            DateTime?
+  status           LeadStatus    @default(NEW)
+  ownerId          String?
+  owner            User?         @relation(fields: [ownerId], references: [id])
+  sdrId            String?
+  sdr              SdrAgent?     @relation(fields: [sdrId], references: [id])
+  aiPaused         Boolean       @default(false)
+  emailOptOut      Boolean       @default(false)
   // Lead tapped "Parar mensagens" (or wrote PARAR/SAIR): no more automatic WhatsApp
-  whatsappOptOut  Boolean       @default(false)
-  score           Int?
-  temperature     String?
+  whatsappOptOut   Boolean       @default(false)
+  // Meta phone-number id this lead's WhatsApp conversation is on; null = the main number (env)
+  whatsappNumberId String?
+  score            Int?
+  temperature      String?
   // Answers the SDR collected (capital, region, timeline, decision maker...)
-  qualification   Json          @default("{}")
-  aiSummary       String?
-  lostReason      String?
-  lastInboundAt   DateTime?
-  lastContactAt   DateTime?
+  qualification    Json          @default("{}")
+  aiSummary        String?
+  lostReason       String?
+  lastInboundAt    DateTime?
+  lastContactAt    DateTime?
   // When someone on the team first opened the lead; null = new lead nobody has looked at yet
-  seenAt          DateTime?
+  seenAt           DateTime?
   // Someone answered, moved the lead or marked the alert as seen: what came before stops alerting
-  alertsClearedAt DateTime?
-  stageEnteredAt  DateTime      @default(now())
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  messages        Message[]
-  events          LeadEvent[]
-  tasks           Task[]
-  meetings        Meeting[]
-  cofDeliveries   CofDelivery[]
-  jobs            Job[]
+  alertsClearedAt  DateTime?
+  stageEnteredAt   DateTime      @default(now())
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  messages         Message[]
+  events           LeadEvent[]
+  tasks            Task[]
+  meetings         Meeting[]
+  cofDeliveries    CofDelivery[]
+  jobs             Job[]
 
   @@index([stageId])
   @@index([status])
