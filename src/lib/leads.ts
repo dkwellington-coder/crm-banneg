@@ -432,9 +432,21 @@ async function closeDuplicate(dup: Lead, into: Lead) {
  * phone already sent with her code goes along, as if she had written first. null when the lead is no such referral.
  */
 export async function referralOnClosedReferral(held: Lead, input: NewLeadInput, actor: string) {
-  if (held.status !== "LOST" || !held.externalId?.startsWith("portal:")) return null;
+  if (!held.externalId?.startsWith("portal:")) return null;
+  // Lost or discarded. "Erro no WhatsApp" is no closed referral: WhatsApp never reached that phone, and a person looks at it
+  const stage = await db.stage.findUnique({ where: { id: held.stageId }, select: { kind: true, key: true } });
+  if (stage?.kind !== "LOST" || stage.key === SEND_ERROR_STAGE.key) return null;
   const dup = held.externalId.endsWith(DUPLICATE_MARK);
-  if (!dup && held.lastInboundAt) return null;
+  const code = input.externalId ? codeOf(input.externalId) : null;
+  const quoting = code
+    ? await db.message.findMany({ where: { leadId: held.id, direction: "IN", body: { contains: code, mode: "insensitive" } }, orderBy: { createdAt: "asc" } })
+    : [];
+  const quoted = quoting.find((m) => referralCode(m.body) === code);
+  // The phone sending the new client's ready message (the store's own phone) is her writing, not this referral's client
+  const wrote = quoted
+    ? (await db.message.count({ where: { leadId: held.id, direction: "IN", createdAt: { lt: quoted.createdAt } } })) > 0
+    : !!held.lastInboundAt;
+  if (!dup && wrote) return null;
   if (sameName(held.name, input.name)) {
     if (!dup) return null;
     const events = await db.leadEvent.findMany({ where: { leadId: held.id, type: "lead.duplicate" }, orderBy: { createdAt: "desc" }, select: { data: true } });
@@ -442,21 +454,24 @@ export async function referralOnClosedReferral(held: Lead, input: NewLeadInput, 
     const lead = into ? await db.lead.findUnique({ where: { id: into } }) : null;
     if (lead) return { lead, created: false };
   }
-  const code = input.externalId ? codeOf(input.externalId) : null;
-  const quoting = code
-    ? await db.message.findMany({ where: { leadId: held.id, direction: "IN", body: { contains: code, mode: "insensitive" } }, orderBy: { createdAt: "asc" } })
-    : [];
-  const quoted = quoting.find((m) => referralCode(m.body) === code);
   await db.lead.update({ where: { id: held.id }, data: { phone: null } });
   await logEvent(held.id, "lead.phone_changed", actor, `A loja fez a indicação de ${input.name ?? "outro cliente"} com o número ${held.phone ?? ""}, que passou para ela.`);
   const made = await createLead(input, actor);
   const optOut = held.whatsappOptOut;
   if (optOut) await db.lead.update({ where: { id: made.lead.id }, data: { whatsappOptOut: true } });
-  if (!quoted) return made;
-  // The phone wrote her ready message before the referral got here: that conversation is hers
+  if (!quoted || !made.created) return made;
+  // The phone wrote her ready message before the referral got here: that conversation is hers, and so is the task to answer it
   await db.message.updateMany({ where: { leadId: held.id, createdAt: { gte: quoted.createdAt } }, data: { leadId: made.lead.id } });
-  await db.lead.update({ where: { id: made.lead.id }, data: { lastInboundAt: held.lastInboundAt } });
-  if (isWindowOpen(held.lastInboundAt)) {
+  await db.task.updateMany({ where: { leadId: held.id, doneAt: null, createdAt: { gte: quoted.createdAt } }, data: { leadId: made.lead.id } });
+  // Meta's 24 h window is per number: while it is open she is answered from the number the phone wrote to, by the SDR
+  // talking from it (as handleInbound does when a lead writes to another number)
+  const talking = isWindowOpen(held.lastInboundAt);
+  const elsewhere = talking && held.whatsappNumberId !== made.lead.whatsappNumberId;
+  await db.lead.update({
+    where: { id: made.lead.id },
+    data: { lastInboundAt: held.lastInboundAt, ...(elsewhere && { whatsappNumberId: held.whatsappNumberId, sdrId: held.sdrId ?? made.lead.sdrId }) },
+  });
+  if (talking) {
     await cancelGreetings(made.lead.id);
     const last = await db.message.findFirst({ where: { leadId: made.lead.id, channel: "WHATSAPP" }, orderBy: { createdAt: "desc" }, select: { direction: true } });
     if (!optOut && last?.direction === "IN") await enqueueDebounced("sdr.reply", made.lead.id, Number(process.env.SDR_DEBOUNCE_MS ?? 15_000));

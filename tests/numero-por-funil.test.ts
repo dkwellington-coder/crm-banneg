@@ -691,6 +691,63 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     expect(sends()).toEqual([]);
   });
 
+  it("the store's phone writing to the main number before the next client's referral arrives: she is answered from that number", async () => {
+    const { dup, alice } = await storePhoneOnDuplicate();
+    await inbound("123", "5541933334444", ready("Bia", "BIA111"), "wamid.in2", "Loja");
+    await drain();
+    expect(await db.task.count({ where: { leadId: dup, title: "Responder mensagem do lead no WhatsApp", doneAt: null } })).toBe(1);
+    const res = await (await post({ ...quote, name: "Bia Costa", phone: "5541933334444", ref: "portal:cm9x7k2bia111" })).json();
+    expect(await db.lead.findUniqueOrThrow({ where: { id: res.id } })).toMatchObject({ name: "Bia Costa", whatsappNumberId: null, sdrId: alice.id });
+    // The task to answer her message goes with it
+    expect(await db.task.count({ where: { leadId: dup, doneAt: null } })).toBe(0);
+    expect(await db.task.count({ where: { leadId: res.id, title: "Responder mensagem do lead no WhatsApp" } })).toBe(1);
+    await db.job.updateMany({ where: { leadId: res.id, status: "PENDING" }, data: { runAt: new Date() } });
+    await drain();
+    // Meta's window is open on the main number, not on Alice's
+    expect(sends().map((c) => [c.url.split("/").at(-2), c.body?.to, c.body?.type])).toEqual([["123", "5541933334444", "text"]]);
+  });
+
+  it("the store's phone sending the next client's message after its referral was closed unanswered: the old referral stays closed", async () => {
+    const { cot } = await referralFunnel({ delayMinutes: 15 });
+    const perdido = await db.stage.create({ data: { pipelineId: cot.id, key: "perdido", name: "Perdido", kind: "LOST", position: 9 } });
+    // Maria Lima, typed with the store's phone, never wrote, and the team closed her
+    const lima = (await (await post({ ...quote, name: "Maria Lima", phone: "5541933334444", ref: "portal:cm9x7k2lim111" })).json()).id as string;
+    await leads.moveLead(lima, perdido.id, "Gerente", { lostReason: "Sem resposta", aiPaused: true });
+    // The store's phone sends Bia's ready message before her referral gets here
+    await inbound(ALICE_NUMBER, "5541933334444", ready("Bia", "BIA111"), "wamid.in1", "Loja");
+    await drain();
+    calls.length = 0;
+    const res = await (await post({ ...quote, name: "Bia Costa", phone: "5541933334444", ref: "portal:cm9x7k2bia111" })).json();
+    expect(res).toMatchObject({ created: true });
+    expect(await db.lead.findUniqueOrThrow({ where: { id: lima } })).toMatchObject({ name: "Maria Lima", phone: null, stageId: perdido.id, status: "LOST" });
+    expect(await db.lead.findUniqueOrThrow({ where: { id: res.id } })).toMatchObject({ name: "Bia Costa", phone: "5541933334444", whatsappNumberId: ALICE_NUMBER });
+    expect(await db.message.count({ where: { leadId: res.id, body: { contains: "Pedido BIA111" } } })).toBe(1);
+    expect(await db.task.count({ where: { leadId: lima, doneAt: null } })).toBe(0);
+    await db.job.updateMany({ where: { leadId: res.id, status: "PENDING" }, data: { runAt: new Date() } });
+    await drain();
+    expect(sends().map((c) => [c.body?.to, c.body?.type])).toEqual([["5541933334444", "text"]]);
+  });
+
+  it("a referral the team discarded gives up the store's phone too; one WhatsApp never reached keeps it for a person", async () => {
+    const { cot } = await referralFunnel({ delayMinutes: 15 });
+    const descartado = await db.stage.create({ data: { pipelineId: cot.id, key: "descartado", name: "Descartado", kind: "LOST", position: 9 } });
+    const lima = (await (await post({ ...quote, name: "Maria Lima", phone: "5541933334444", ref: "portal:cm9x7k2lim111" })).json()).id as string;
+    await leads.moveLead(lima, descartado.id, "Gerente", { lostReason: "Agora não", aiPaused: true });
+    expect(await db.lead.findUniqueOrThrow({ where: { id: lima } })).toMatchObject({ status: "DISQUALIFIED" });
+    const bia = await (await post({ ...quote, name: "Bia Costa", phone: "5541933334444", ref: "portal:cm9x7k2bia111" })).json();
+    expect(bia).toMatchObject({ created: true });
+    expect(await db.lead.findUniqueOrThrow({ where: { id: bia.id } })).toMatchObject({ name: "Bia Costa", phone: "5541933334444" });
+    expect(await db.lead.findUniqueOrThrow({ where: { id: lima } })).toMatchObject({ phone: null, stageId: descartado.id });
+
+    // "Erro no WhatsApp": the phone stays where it is and a person decides
+    const ana = (await (await post({ ...quote, name: "Ana Rocha", phone: "5541922221111", ref: "portal:cm9x7k2ana222" })).json()).id as string;
+    const { moveToSendError } = await import("@/lib/messaging");
+    await moveToSendError(ana, "número sem WhatsApp");
+    const eva = await (await post({ ...quote, name: "Eva Prado", phone: "5541922221111", ref: "portal:cm9x7k2eva333" })).json();
+    expect(eva).toMatchObject({ id: ana, created: false });
+    expect(await db.lead.findUniqueOrThrow({ where: { id: ana } })).toMatchObject({ name: "Ana Rocha", phone: "5541922221111" });
+  });
+
   it("the store's phone typed again after it went to a client who never wrote: the next client gets a lead of her own", async () => {
     const { perdido, souza } = await storePhoneOnDuplicate();
     // Maria Lima, typed with the store's phone, never wrote, and the team closed her
