@@ -14,6 +14,9 @@ export const STAGE_KEYS = {
   LOST: "perdido",
 } as const satisfies Partial<Record<LeadStatus, string>>;
 
+// In the lead's qualification next to "parceiro": the id of the funnel the store referred the lead to
+export const REFERRAL_FUNNEL = "parceiroFunil";
+
 export type Plan = {
   status: LeadStatus;
   stageKey: string;

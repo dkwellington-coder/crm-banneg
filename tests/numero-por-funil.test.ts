@@ -49,11 +49,13 @@ const reply = (text: string): SdrDecision => ({
 });
 
 describe("the AI with a referral", () => {
-  const turn = (qualification: Record<string, unknown>) =>
+  const COTACOES = "pipeline-cotacoes";
+  const turn = (qualification: Record<string, unknown>, funnelId = COTACOES) =>
     buildUserTurn({
       agentName: "Alice",
       persona: "x",
       settings: DEFAULT_SETTINGS,
+      funnel: { id: funnelId, name: funnelId === COTACOES ? "Cotações" : "Expansão", goal: null, questions: [] },
       knowledge: [],
       lead: { name: "Maria", phone: null, email: null, city: null, state: null, source: "Portal", qualification, summary: null },
       transcript: [],
@@ -62,12 +64,23 @@ describe("the AI with a referral", () => {
     } satisfies SdrContext);
 
   it("knows the store that referred the client and the quote it came for", () => {
-    expect(turn({ parceiro: "Lotus Veículos", produto: "seguro auto" })).toContain(
+    const referred = turn({ parceiro: "Lotus Veículos", produto: "seguro auto", parceiroFunil: COTACOES });
+    expect(referred).toContain(
       'Indicação: o lead veio pela loja parceira "Lotus Veículos" para uma cotação de seguro auto. O Banneg é a corretora oficial dessa loja',
     );
-    expect(turn({ parceiro: "Lotus Veículos" })).toContain("diga que você é do Banneg, a corretora oficial da Lotus Veículos");
+    // The funnel's id is the CRM's business, not the conversation's
+    expect(referred).not.toContain(COTACOES);
+    expect(turn({ parceiro: "Lotus Veículos", parceiroFunil: COTACOES })).toContain("diga que você é do Banneg, a corretora oficial da Lotus Veículos");
     // Other funnels' leads (a franchise form with a product) get nothing new
     expect(turn({ produto: "franquia" })).not.toContain("Indicação");
+  });
+
+  it("speaks for the store only in the funnel the store referred the lead to", () => {
+    // Caio was qualifying for a franchise when a store referred him: he stays in Expansão and a person decides,
+    // so the franchise SDR does not turn the conversation into the store's quote
+    expect(turn({ parceiro: "Lotus Veículos", produto: "seguro auto", parceiroFunil: COTACOES }, "pipeline-expansao")).not.toContain("Indicação");
+    // A store's referral from before the CRM kept the funnel: as before, only data
+    expect(turn({ parceiro: "Lotus Veículos", produto: "seguro auto" })).not.toContain("Indicação");
   });
 });
 
@@ -494,6 +507,270 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     await inbound(ALICE_NUMBER, "5541977776666", "Oi! Pedido abc123", "wamid.in2", "Outro");
     expect((await db.lead.findUniqueOrThrow({ where: { id: maria.id } })).phone).toBe("5541988887777");
     expect(await db.lead.count({ where: { phone: "5541977776666" } })).toBe(1);
+  });
+
+  // The ready message the store's QR code fills in, with the referral's code (the end of the portal's id)
+  const ready = (name: string, code = "ABC123") => `Oi, Alice! Sou ${name}, vim pela Lotus Veículos para a cotação de seguro auto. Pedido ${code}`;
+  const quote = { funil: "parceiro-veiculos", produto: "seguro auto", parceiro: "Lotus Veículos" };
+
+  it("a client who writes with the code from a phone the CRM already had takes the referral there, and the typed phone gets nothing", async () => {
+    const { alice, duda, cot } = await referralFunnel({ delayMinutes: 15 });
+    const perdido = await db.stage.create({ data: { pipelineId: cot.id, key: "perdido", name: "Perdido", kind: "LOST", position: 9 } });
+    // Maria's own phone is an old lead waiting in the franchise queue, with Duda; the store typed another phone
+    const franchise = await db.pipeline.findFirstOrThrow({ where: { isDefault: true } });
+    const fila = await db.stage.create({ data: { pipelineId: franchise.id, key: "fila", name: "Na fila", position: 50 } });
+    const old = await newLead({ name: "Maria S.", phone: "5541988887777", stageId: fila.id, sdrId: duda.id });
+    const ref = await (
+      await post({ ...quote, name: "Maria Souza", phone: "5541999998888", email: "maria@x.com", observacao: "Ficha da Maria", ref: "portal:cm9x7k2abc123" })
+    ).json();
+    const { runSdrTurn } = await import("@/lib/sdr");
+    vi.mocked(runSdrTurn).mockClear();
+
+    await inbound(ALICE_NUMBER, "5541988887777", ready("Maria"), "wamid.in1", "Maria");
+    // The referral goes on in her lead: back in Cotações with the store and product, on Alice's number with Alice
+    const maria = await db.lead.findUniqueOrThrow({ where: { id: old.id } });
+    expect(maria).toMatchObject({ pipelineId: cot.id, whatsappNumberId: ALICE_NUMBER, sdrId: alice.id, email: "maria@x.com" });
+    expect(maria.qualification).toMatchObject({ parceiro: "Lotus Veículos", produto: "seguro auto", parceiroFunil: cot.id });
+    expect(await db.leadEvent.count({ where: { leadId: old.id, type: "lead.form", summary: "Ficha da Maria" } })).toBe(1);
+    expect(await db.task.count({ where: { leadId: old.id, title: "Nova indicação da Lotus Veículos: cotar seguro auto" } })).toBe(1);
+    // The lead the referral made with the typed phone closes as a duplicate: nothing waits for it
+    expect(await db.lead.findUniqueOrThrow({ where: { id: ref.id } })).toMatchObject({ phone: "5541999998888", stageId: perdido.id, aiPaused: true });
+    expect(await db.job.count({ where: { leadId: ref.id, status: "PENDING" } })).toBe(0);
+    expect(await db.job.count({ where: { leadId: old.id, type: "rule.run", status: "PENDING" } })).toBe(0);
+
+    // Alice answers her on the phone she wrote from, knowing the store
+    await drain();
+    expect(sends().map((c) => [c.url.split("/").at(-2), c.body?.to, c.body?.type])).toEqual([[ALICE_NUMBER, "5541988887777", "text"]]);
+    const ctx = vi.mocked(runSdrTurn).mock.calls[0][0];
+    expect(ctx).toMatchObject({ agentName: "Alice", funnel: { name: "Cotações/ Seguros e Consórcios" } });
+    expect(buildUserTurn(ctx)).toContain("O Banneg é a corretora oficial dessa loja");
+  });
+
+  it("a phone that already holds a referral writing another referral's code goes to the team, and that referral still greets its client", async () => {
+    await referralFunnel({ delayMinutes: 15 });
+    // The store's own phone sent Maria's ready message, so Maria's referral is on the store's phone now
+    const maria = await (await post({ ...quote, name: "Maria Souza", phone: "5541999998888", ref: "portal:cm9x7k2abc123" })).json();
+    await inbound(ALICE_NUMBER, "5541933334444", ready("Maria"), "wamid.in1", "Loja");
+    await drain();
+    // Then it sends the next client's
+    const joao = await (await post({ ...quote, name: "João Lima", phone: "5541977776666", ref: "portal:cm9x7k2zzz999" })).json();
+    calls.length = 0;
+    const { runSdrTurn } = await import("@/lib/sdr");
+    vi.mocked(runSdrTurn).mockClear();
+    await inbound(ALICE_NUMBER, "5541933334444", ready("João", "ZZZ999"), "wamid.in2", "Loja");
+    await drain();
+    // Nobody answers it as Maria's conversation: a person sorts out who is writing
+    expect(sends()).toHaveLength(0);
+    expect(vi.mocked(runSdrTurn)).not.toHaveBeenCalled();
+    expect(await db.task.count({ where: { leadId: maria.id, title: "Conferir quem escreveu: veio o pedido ZZZ999, da indicação de João Lima" } })).toBe(1);
+    // João's referral still waits for him on the phone the store typed, and greets him there
+    expect(await db.lead.findUniqueOrThrow({ where: { id: joao.id } })).toMatchObject({ phone: "5541977776666", lastInboundAt: null });
+    await db.job.updateMany({ where: { leadId: joao.id, type: "rule.run", status: "PENDING" }, data: { runAt: new Date() } });
+    await drain();
+    expect(sends().map((c) => [c.url.split("/").at(-2), c.body?.to, c.body?.type])).toEqual([[ALICE_NUMBER, "5541977776666", "template"]]);
+  });
+
+  it("someone else the CRM knows sending a client's code never takes that client's referral", async () => {
+    const { cot } = await referralFunnel({ delayMinutes: 15 });
+    const duda = await db.sdrAgent.findUniqueOrThrow({ where: { name: "Duda" } });
+    // The store's owner was a franchise lead once; he scans Maria's QR code himself
+    const carlos = await newLead({ name: "Carlos Lotus", phone: "5541955554444", sdrId: duda.id, status: "AI_QUALIFYING" });
+    const maria = await (await post({ ...quote, name: "Maria Souza", phone: "5541999998888", ref: "portal:cm9x7k2abc123" })).json();
+    const { runSdrTurn } = await import("@/lib/sdr");
+    vi.mocked(runSdrTurn).mockClear();
+    await inbound(ALICE_NUMBER, "5541955554444", ready("Maria"), "wamid.in1", "Carlos");
+    await drain();
+    // His lead stays his, a person sorts it out, and Maria's referral still greets her on the phone the store typed
+    expect(vi.mocked(runSdrTurn)).not.toHaveBeenCalled();
+    expect(await db.lead.findUniqueOrThrow({ where: { id: carlos.id } })).toMatchObject({ qualification: {}, stageId: carlos.stageId });
+    expect(await db.task.count({ where: { leadId: carlos.id, title: "Conferir quem escreveu: veio o pedido ABC123, da indicação de Maria Souza" } })).toBe(1);
+    expect(await db.lead.findUniqueOrThrow({ where: { id: maria.id } })).toMatchObject({ phone: "5541999998888", pipelineId: cot.id, aiPaused: false });
+    await db.job.updateMany({ where: { leadId: maria.id, type: "rule.run", status: "PENDING" }, data: { runAt: new Date() } });
+    calls.length = 0;
+    await drain();
+    expect(sends().map((c) => [c.body?.to, c.body?.type])).toEqual([["5541999998888", "template"]]);
+
+    // The same before the referral got here: it makes its own lead with the phone the store typed
+    await inbound(ALICE_NUMBER, "5541955554444", ready("João", "ZZZ999"), "wamid.in2", "Carlos");
+    const joao = await post({ ...quote, name: "João Lima", phone: "5541977776666", ref: "portal:cm9x7k2zzz999" });
+    expect(await joao.json()).toMatchObject({ created: true });
+    expect(await db.lead.findFirstOrThrow({ where: { externalId: "portal:cm9x7k2zzz999" } })).toMatchObject({ phone: "5541977776666" });
+    expect(await db.lead.findUniqueOrThrow({ where: { id: carlos.id } })).toMatchObject({ qualification: {} });
+  });
+
+  it("a referral that arrives after its client wrote with the code is that conversation: no task, and its data is kept", async () => {
+    const { alice, cot } = await referralFunnel({ delayMinutes: 15 });
+    // The CRM was slow: the store showed the QR code and Maria wrote before the referral got here
+    await inbound(ALICE_NUMBER, "5541999998888", ready("Maria"), "wamid.in1", "Mah");
+    await drain();
+    const referral = {
+      ...quote,
+      name: "Maria Souza",
+      phone: "5541999998888",
+      email: "maria@x.com",
+      cidade: "Curitiba",
+      estado: "PR",
+      source: "Parceiro Lotus Veículos",
+      campaign: "Portal de indicações",
+      observacao: "Ficha da Maria",
+      ref: "portal:cm9x7k2abc123",
+    };
+    const res = await post(referral);
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ created: true, moved: false, task: false, pipeline: "Cotações/ Seguros e Consórcios", stage: "Novo" });
+    expect(await db.lead.count()).toBe(1);
+    const maria = await db.lead.findFirstOrThrow({ include: { tasks: true } });
+    expect(maria).toMatchObject({
+      name: "Maria Souza",
+      email: "maria@x.com",
+      city: "Curitiba",
+      state: "PR",
+      source: "Parceiro Lotus Veículos",
+      campaign: "Portal de indicações",
+      externalId: "portal:cm9x7k2abc123",
+      pipelineId: cot.id,
+      sdrId: alice.id,
+      whatsappNumberId: ALICE_NUMBER,
+    });
+    expect(maria.qualification).toMatchObject({ parceiro: "Lotus Veículos", produto: "seguro auto", parceiroFunil: cot.id });
+    expect(maria.tasks).toEqual([]);
+    expect(await db.leadEvent.count({ where: { leadId: maria.id, type: "lead.duplicate" } })).toBe(0);
+    expect(await db.leadEvent.count({ where: { leadId: maria.id, type: "lead.form", summary: "Ficha da Maria" } })).toBe(1);
+    // Nothing else goes out: Alice already answered her, and no greeting waits
+    calls.length = 0;
+    await db.job.updateMany({ where: { status: "PENDING" }, data: { runAt: new Date() } });
+    await drain();
+    expect(sends()).toHaveLength(0);
+    // The portal sending it again finds the same lead
+    expect(await (await post(referral)).json()).toMatchObject({ id: maria.id, repeated: true });
+  });
+
+  it("a client who wrote from another phone before the referral arrived stays one lead, and the typed phone is never greeted", async () => {
+    const { cot } = await referralFunnel({ delayMinutes: 15 });
+    await inbound(ALICE_NUMBER, "5541988887777", ready("Maria"), "wamid.in1", "Maria");
+    await drain();
+    calls.length = 0;
+    const res = await post({ ...quote, name: "Maria Souza", phone: "5541999998888", ref: "portal:cm9x7k2abc123" });
+    expect(await res.json()).toMatchObject({ created: true, task: false });
+    expect(await db.lead.count()).toBe(1);
+    const maria = await db.lead.findFirstOrThrow();
+    expect(maria).toMatchObject({ phone: "5541988887777", externalId: "portal:cm9x7k2abc123", pipelineId: cot.id });
+    expect((await db.leadEvent.findFirstOrThrow({ where: { leadId: maria.id, type: "lead.referral_joined" } })).summary).toContain(
+      "A loja informou o número 5541999998888; o cliente escreveu de 5541988887777.",
+    );
+    await db.job.updateMany({ where: { status: "PENDING" }, data: { runAt: new Date() } });
+    await drain();
+    expect(sends()).toHaveLength(0);
+  });
+
+  it("a client who wrote first to a number no funnel used yet goes to the referral's funnel when it arrives, and the AI answers", async () => {
+    const { alice, cot } = await referralFunnel({ delayMinutes: 15 });
+    // Cotações still on the main number while Alice's number is being set up: the team answers there
+    await db.pipeline.update({ where: { id: cot.id }, data: { whatsappNumberId: null } });
+    await inbound(ALICE_NUMBER, "5541999998888", ready("Maria"), "wamid.in1", "Maria");
+    const maria = await db.lead.findFirstOrThrow();
+    expect(maria).toMatchObject({ aiPaused: true, whatsappNumberId: ALICE_NUMBER });
+    await drain();
+    expect(sends()).toHaveLength(0);
+
+    const { runSdrTurn } = await import("@/lib/sdr");
+    vi.mocked(runSdrTurn).mockClear();
+    expect(await (await post({ ...quote, name: "Maria Souza", phone: "5541999998888", ref: "portal:cm9x7k2abc123" })).json()).toMatchObject({
+      id: maria.id,
+      created: true,
+      pipeline: "Cotações/ Seguros e Consórcios",
+      stage: "Novo",
+    });
+    expect(await db.lead.findUniqueOrThrow({ where: { id: maria.id } })).toMatchObject({ pipelineId: cot.id, aiPaused: false, whatsappNumberId: ALICE_NUMBER, sdrId: alice.id });
+    // Answered from the number she wrote to, with the store; the greeting does not go
+    await drain();
+    expect(sends().map((c) => [c.url.split("/").at(-2), c.body?.type])).toEqual([[ALICE_NUMBER, "text"]]);
+    expect(buildUserTurn(vi.mocked(runSdrTurn).mock.calls[0][0])).toContain("O Banneg é a corretora oficial dessa loja");
+    expect(await db.job.count({ where: { leadId: maria.id, type: "rule.run", status: "PENDING" } })).toBe(0);
+  });
+
+  it("a lead the CRM had that wrote the code before the referral arrived is referred again, with no lead for the typed phone", async () => {
+    const { alice, cot } = await referralFunnel({ delayMinutes: 15 });
+    const perdido = await db.stage.findFirstOrThrow({ where: { pipeline: { isDefault: true }, key: "perdido" } });
+    const ana = await newLead({ name: "Ana Lima", phone: "5511966665555", stageId: perdido.id, status: "LOST" });
+    await inbound(ALICE_NUMBER, "5511966665555", ready("Ana"), "wamid.in1", "Ana");
+    const res = await post({ ...quote, name: "Ana Lima", phone: "5511900001111", ref: "portal:cm9x7k2abc123" });
+    expect(await res.json()).toMatchObject({ id: ana.id, created: false, moved: true, task: true, pipeline: "Cotações/ Seguros e Consórcios" });
+    expect(await db.lead.count()).toBe(1);
+    expect(await db.lead.findUniqueOrThrow({ where: { id: ana.id } })).toMatchObject({ pipelineId: cot.id, sdrId: alice.id, whatsappNumberId: ALICE_NUMBER });
+    expect((await db.leadEvent.findFirstOrThrow({ where: { leadId: ana.id, type: "lead.duplicate" } })).summary).toContain("a loja informou o número 5511900001111");
+  });
+
+  it("a client someone is working in another funnel keeps that funnel's talk; moved to the referral's funnel, the AI speaks for the store", async () => {
+    const { duda, cot, novo } = await referralFunnel();
+    const franchise = await db.pipeline.findFirstOrThrow({ where: { isDefault: true } });
+    const qualificando = await db.stage.findFirstOrThrow({ where: { pipelineId: franchise.id, key: "qualificando" } });
+    const caio = await newLead({ name: "Caio", phone: "5511933332222", stageId: qualificando.id, status: "AI_QUALIFYING", sdrId: duda.id });
+    await post({ ...quote, name: "Caio", phone: "5511933332222", ref: "portal:caio" });
+    // He stays in Expansão and a person decides; the store and product are kept for when they move him
+    expect(await db.lead.findUniqueOrThrow({ where: { id: caio.id } })).toMatchObject({
+      pipelineId: franchise.id,
+      qualification: { parceiro: "Lotus Veículos", produto: "seguro auto", parceiroFunil: cot.id },
+    });
+    const { runSdrTurn } = await import("@/lib/sdr");
+    vi.mocked(runSdrTurn).mockClear();
+    await inbound("123", "5511933332222", "Tenho 100 mil para investir", "wamid.in1", "Caio");
+    await drain();
+    const franchiseTurn = vi.mocked(runSdrTurn).mock.calls[0][0];
+    expect(franchiseTurn).toMatchObject({ agentName: "Duda", funnel: { name: "Expansão" } });
+    expect(buildUserTurn(franchiseTurn)).not.toContain("Indicação:");
+
+    // The team moves him to Cotações: there the AI speaks for the store
+    await leads.moveLead(caio.id, novo.id, "Gerente");
+    vi.mocked(runSdrTurn).mockClear();
+    await inbound("123", "5511933332222", "Pode cotar o seguro do carro", "wamid.in2", "Caio");
+    await drain();
+    expect(buildUserTurn(vi.mocked(runSdrTurn).mock.calls[0][0])).toContain('o lead veio pela loja parceira "Lotus Veículos" para uma cotação de seguro auto');
+  });
+
+  it("the banner names a funnel's number Meta refuses or blocks, and lets it go once it can send or Meta no longer knows it", async () => {
+    const { cot } = await referralFunnel();
+    const { checkFunnelNumbers } = await import("@/lib/integrations");
+    let alice: () => Response = () => Response.json({ health_status: { can_send_message: "AVAILABLE" } });
+    metaGet = (url) => (url.includes(`/${ALICE_NUMBER}?fields=health_status`) ? alice() : undefined);
+    const refused = () => Response.json({ error: { code: 100, message: "Unsupported get request. Object with ID '456' does not exist" } }, { status: 400 });
+    const blocked = () =>
+      Response.json({
+        health_status: { can_send_message: "BLOCKED", entities: [{ entity_type: "PHONE_NUMBER", can_send_message: "BLOCKED", errors: [{ error_code: 141010, error_description: "Nome em análise." }] }] },
+      });
+
+    // Meta does not know the funnel's number (or the token has no access to it): the banner says so, for that number
+    alice = refused;
+    await checkFunnelNumbers();
+    expect(await whatsapp.getHealth()).toMatchObject({ code: 100, numberId: ALICE_NUMBER });
+    // A network failure says nothing either way
+    alice = () => {
+      throw new Error("fetch failed");
+    };
+    await checkFunnelNumbers();
+    expect(await whatsapp.getHealth()).toMatchObject({ code: 100, numberId: ALICE_NUMBER });
+    alice = blocked;
+    await checkFunnelNumbers();
+    expect(await whatsapp.getHealth()).toMatchObject({ code: 141010, numberId: ALICE_NUMBER });
+
+    // The team moves the funnel back to the main number: Alice's leads still talk there, so her number is still checked...
+    await db.pipeline.update({ where: { id: cot.id }, data: { whatsappNumberId: null } });
+    await checkFunnelNumbers();
+    expect(await whatsapp.getHealth()).toMatchObject({ code: 141010, numberId: ALICE_NUMBER });
+    // ...and the banner goes as soon as Meta releases it
+    alice = () => Response.json({ health_status: { can_send_message: "AVAILABLE" } });
+    await checkFunnelNumbers();
+    expect(await whatsapp.getHealth()).toBeNull();
+
+    // A number no funnel uses that Meta no longer knows: nothing left to wait for
+    await whatsapp.setHealth({ code: 141010, message: "Nome em análise." }, ALICE_NUMBER);
+    alice = refused;
+    await checkFunnelNumbers();
+    expect(await whatsapp.getHealth()).toBeNull();
+    // The main number's own problem is never touched here
+    await whatsapp.setHealth({ code: 131042, message: "Pagamento pendente." });
+    await checkFunnelNumbers();
+    expect(await whatsapp.getHealth()).toMatchObject({ code: 131042 });
   });
 
   it("someone new writing to a number no funnel uses yet is left to the team, not to the default funnel's AI", async () => {

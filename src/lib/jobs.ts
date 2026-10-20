@@ -42,7 +42,7 @@ async function sdrContext(lead: Lead) {
       agentName: agent.name,
       persona: agent.persona,
       settings,
-      funnel: pipeline ? { name: pipeline.name, goal: pipeline.aiGoal, questions: pipeline.aiQuestions } : undefined,
+      funnel: pipeline ? { id: pipeline.id, name: pipeline.name, goal: pipeline.aiGoal, questions: pipeline.aiQuestions } : undefined,
       knowledge,
       lead: {
         name: lead.name,

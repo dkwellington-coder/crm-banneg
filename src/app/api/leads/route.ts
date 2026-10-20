@@ -1,12 +1,9 @@
 import { z } from "zod";
-import { createLead, ensureTask, funnelStart, moveLead, pickSdr, pipelineByRef, stageByKey } from "@/lib/leads";
-import { cancelGreetings } from "@/lib/automations";
-import { enqueueDebounced } from "@/lib/queue";
+import { adoptReferral, createLead, leadThatQuoted, pipelineByRef, referExisting, type NewLeadInput } from "@/lib/leads";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
-import { SEND_ERROR_STAGE } from "@/lib/messaging";
-import { STAGE_KEYS } from "@/lib/plan";
-import { isWindowOpen } from "@/lib/whatsapp";
+import { REFERRAL_FUNNEL } from "@/lib/plan";
+import { normalizePhone, phoneVariants } from "@/lib/whatsapp";
 
 const text = (max: number) => z.union([z.string(), z.number(), z.boolean()]).transform((v) => String(v).trim().slice(0, max)).optional();
 
@@ -63,9 +60,14 @@ export async function POST(request: Request) {
   const pipeline = (await pipelineByRef(b.pipeline || b.funil)) ?? (union ? await pipelineByRef("sindicatos") : null);
   const source = b.source || b.origem || "site";
   const qualification = Object.fromEntries(
-    Object.entries({ produto: b.produto, empresa: b.empresa, parceiro: b.parceiro, associado: union ? "associado do sindicato" : undefined }).filter(
-      ([, v]) => !!v,
-    ),
+    Object.entries({
+      produto: b.produto,
+      empresa: b.empresa,
+      parceiro: b.parceiro,
+      // The funnel the store referred the client to: the AI speaks for the store only there
+      [REFERRAL_FUNNEL]: b.parceiro ? pipeline?.id : undefined,
+      associado: union ? "associado do sindicato" : undefined,
+    }).filter(([, v]) => !!v),
   ) as Record<string, string>;
 
   // A referral must land in its own funnel: never in the default one, greeted with another funnel's pitch
@@ -81,31 +83,37 @@ export async function POST(request: Request) {
     if (seen) return Response.json({ id: seen, created: false, moved: false, task: false, repeated: true, ...(await placeOf(seen)) });
   }
 
-  const { lead, created } = await createLead(
-    {
-      name: b.name || b.nome,
-      phone,
-      email,
-      city: b.city || b.cidade,
-      state: b.state || b.estado,
-      source,
-      campaign: b.campaign || b.campanha,
-      externalId: b.ref,
-      pipelineId: pipeline?.id,
-      qualification,
-    },
-    `Formulário (${source})`,
-  );
+  const input: NewLeadInput = {
+    name: b.name || b.nome,
+    phone,
+    email,
+    city: b.city || b.cidade,
+    state: b.state || b.estado,
+    source,
+    campaign: b.campaign || b.campanha,
+    externalId: b.ref,
+    pipelineId: pipeline?.id,
+    qualification,
+  };
+  const actor = `Formulário (${source})`;
+  // The client sent the store's ready message ("Pedido ABC123") before the referral got here, maybe from another phone:
+  // a conversation that began with it is this referral's new lead; a contact the CRM had is referred again
+  const wrote = b.ref ? await leadThatQuoted(b.ref, input.name) : null;
+  const { lead, created } = !wrote
+    ? await createLead(input, actor)
+    : wrote.own
+      ? { lead: await adoptReferral(wrote.lead, input, actor), created: true }
+      : { lead: wrote.lead, created: false };
+  if (wrote && !wrote.own) {
+    const typed = phone ? normalizePhone(phone) : null;
+    const elsewhere = typed && lead.phone && !phoneVariants(lead.phone).includes(typed) ? `; a loja informou o número ${typed}` : "";
+    await logEvent(lead.id, "lead.duplicate", actor, `Entrou de novo pela origem "${source}": já tinha escrito com o código desta indicação${elsewhere}.`);
+  }
   if (!created && b.produto) await logEvent(lead.id, "lead.form", "Formulário", `Pediu informações de ${b.produto} de novo.`);
   let moved = false;
   let task = false;
   if (!created && b.parceiro) {
-    ({ moved } = await referAgain(lead.id, pipeline?.id, b.parceiro, b.produto, source));
-    // A person decides what to do with a contact the CRM already had, and the alert tells them
-    const title = `Nova indicação da ${b.parceiro}${b.produto ? `: cotar ${b.produto}` : ""}`;
-    await ensureTask(lead.id, lead.ownerId, title);
-    // The same store referring again (a renewal next year): the open task rings again
-    await db.task.updateMany({ where: { leadId: lead.id, title, doneAt: null }, data: { dueAt: new Date() } });
+    ({ moved } = await referExisting(lead.id, pipeline?.id, b.parceiro, b.produto, actor));
     task = true;
   }
   if (b.observacao || b.ref) await logEvent(lead.id, "lead.form", source, b.observacao || "Indicação recebida.", b.ref ? { ref: b.ref } : undefined);
@@ -133,50 +141,4 @@ export async function POST(request: Request) {
 async function placeOf(leadId: string) {
   const l = await db.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { name: true } }, stage: { select: { name: true } } } });
   return { pipeline: l?.pipeline.name ?? null, stage: l?.stage.name ?? null };
-}
-
-/**
- * A partner store referred a contact the CRM already had. A closed or queued lead starts over in the referral's funnel,
- * with this store and product, so the greeting goes out; one someone may be working (or a client already) stays where it is.
- */
-async function referAgain(leadId: string, pipelineId: string | undefined, parceiro: string, produto: string | undefined, source: string) {
-  const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId }, include: { stage: true } });
-  const qualification = (lead.qualification ?? {}) as Record<string, unknown>;
-  const closed = lead.stage.kind === "LOST" && lead.stage.key !== SEND_ERROR_STAGE.key;
-  const entry =
-    pipelineId && (closed || lead.stage.key === "fila") && !lead.whatsappOptOut
-      ? ((await stageByKey(STAGE_KEYS.NEW, pipelineId)) ?? (await db.stage.findFirst({ where: { pipelineId, kind: "OPEN" }, orderBy: { position: "asc" } })))
-      : null;
-  if (entry) {
-    // Starts over like a new lead: this store and product (never an old product), an SDR and the AI on
-    const rest = { ...qualification };
-    delete rest.produto;
-    // A new conversation, on the funnel's number with its SDR. Meta's 24 h window is per number: a lead who
-    // wrote in the last 24 h stays on the number (and with the SDR) it is talking to
-    const funnel = await funnelStart(entry.pipelineId);
-    const talking = isWindowOpen(lead.lastInboundAt);
-    const restarted = await moveLead(leadId, entry.id, `Formulário (${source})`, {
-      qualification: { ...rest, parceiro, ...(produto && { produto }) },
-      status: "NEW",
-      lostReason: null,
-      aiPaused: false,
-      whatsappNumberId: talking ? lead.whatsappNumberId : funnel.whatsappNumberId,
-      sdrId: (talking ? (lead.sdrId ?? funnel.sdr?.id) : (funnel.sdr?.id ?? lead.sdrId)) ?? (await pickSdr())?.id ?? null,
-    });
-    // The client wrote before the referral got here (the store's QR code, a referral sent again later) and nobody has
-    // answered yet: the AI answers that message now, with this store and product, instead of the greeting that waits
-    if (talking && restarted.sdrId) {
-      const last = await db.message.findFirst({ where: { leadId, channel: "WHATSAPP" }, orderBy: { createdAt: "desc" }, select: { direction: true } });
-      if (last?.direction === "IN" && (await cancelGreetings(leadId))) await enqueueDebounced("sdr.reply", leadId, Number(process.env.SDR_DEBOUNCE_MS ?? 15_000));
-    }
-    return { moved: true };
-  }
-  // Only fills what is missing: the lead's current conversation keeps the store and product it already has
-  if (!qualification.parceiro || (produto && !qualification.produto)) {
-    await db.lead.update({
-      where: { id: leadId },
-      data: { qualification: { ...qualification, parceiro: qualification.parceiro ?? parceiro, ...(produto && !qualification.produto && { produto }) } },
-    });
-  }
-  return { moved: false };
 }

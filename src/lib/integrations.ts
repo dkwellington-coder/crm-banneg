@@ -6,7 +6,18 @@ import { sendEmail } from "./email";
 import { formatSlot, freeSlotsFor, googleBusy } from "./calendar";
 import { googleAgendaFor, googleConfigured } from "./google";
 import { getSettings } from "./settings";
-import { normalizePhone, refreshWhatsAppNumbers, savedWhatsAppNumbers, sendTemplate, sendText, submitTemplates, syncTemplateStatus } from "./whatsapp";
+import {
+  clearHealth,
+  getHealth,
+  normalizePhone,
+  refreshWhatsAppNumbers,
+  savedWhatsAppNumbers,
+  sendTemplate,
+  sendText,
+  setHealth,
+  submitTemplates,
+  syncTemplateStatus,
+} from "./whatsapp";
 import { auditMetaLeads, bringMissingMetaLeads, funnelForForm, leadForms, retryMetaLeadsNow } from "./meta-leads";
 import { adAccounts, syncAdSpend } from "./meta-ads";
 import { forwardTarget, setWhatsAppCopy } from "./whatsapp-forward";
@@ -45,10 +56,27 @@ async function graphGet<T>(path: string): Promise<T> {
   const json = (await res.json().catch(() => ({}))) as T & { error?: { message?: string; code?: number } };
   if (!res.ok) {
     const code = json.error?.code;
-    if (code === 190) throw new Error("Token do WhatsApp expirado ou inválido. Gere um token permanente (usuário do sistema) no Meta Business.");
-    throw new Error(json.error?.message ?? `HTTP ${res.status}`);
+    // Meta's code goes along, so a caller can tell Meta refusing something from the network failing
+    if (code === 190) throw Object.assign(new Error("Token do WhatsApp expirado ou inválido. Gere um token permanente (usuário do sistema) no Meta Business."), { code });
+    throw Object.assign(new Error(json.error?.message ?? `HTTP ${res.status}`), { code });
   }
   return json;
+}
+
+// Meta will not let the CRM use a number: it does not exist (or left the account), or the token has no access to it
+const NUMBER_REFUSED = new Set([100, 10, 200]);
+
+/**
+ * Whether this number (one of the account's other numbers) can send, as checkFunnelNumbers reads it: "refused" when Meta
+ * will not even read it, null when Meta could not be asked (network, a passing error).
+ */
+async function numberStatus(id: string) {
+  try {
+    return await whatsappSendStatus(id);
+  } catch (e) {
+    const code = (e as { code?: number }).code;
+    return code !== undefined && NUMBER_REFUSED.has(code) ? ({ refused: code } as const) : null;
+  }
 }
 
 const PUBLIC_URL = (process.env.PUBLIC_BASE_URL ?? "https://crm-banneg-banneg.vercel.app").replace(/\/$/, "");
@@ -175,6 +203,33 @@ export async function funnelNumberIds() {
   const main = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const funnels = await db.pipeline.findMany({ where: { whatsappNumberId: { not: null } }, select: { whatsappNumberId: true }, orderBy: { position: "asc" } });
   return [...new Set(funnels.flatMap((f) => (f.whatsappNumberId && f.whatsappNumberId !== main ? [f.whatsappNumberId] : [])))];
+}
+
+/**
+ * Meta's word on the funnels' own numbers (a new number whose name is still in review), for the banner, which says which
+ * one is stopped. Also on the number the banner names after no funnel uses it anymore: its leads still talk there, so it
+ * is checked until Meta releases it, or until Meta no longer knows it (nothing left to wait for).
+ */
+export async function checkFunnelNumbers() {
+  const ids = await funnelNumberIds();
+  for (const id of ids) {
+    const own = await numberStatus(id);
+    // A funnel starting conversations on a number Meta refuses: every send from it fails
+    if (own && "refused" in own)
+      await setHealth(
+        { code: own.refused, message: "A Meta não reconhece este número na conta do WhatsApp, ou o token não tem acesso a ele. Confira em Integrações > Verificar número." },
+        id,
+      );
+    else if (own?.problem) await setHealth(own.problem, id);
+    else if (own?.canSend) await clearHealth(id);
+  }
+  const stopped = (await getHealth())?.numberId;
+  if (stopped && !ids.includes(stopped)) {
+    const left = await numberStatus(stopped);
+    if (left && "refused" in left) await clearHealth(stopped);
+    else if (left?.problem) await setHealth(left.problem, stopped);
+    else if (left?.canSend) await clearHealth(stopped);
+  }
 }
 
 /** Each number of the account with the funnels that start conversations on it, read again from Meta. */

@@ -1,7 +1,7 @@
 import { runDueJobs } from "@/lib/jobs";
 import { db } from "@/lib/db";
 import { clearHealth, refreshWhatsAppNumbers, setHealth, submitTemplates, syncTemplateStatus } from "@/lib/whatsapp";
-import { checkCalendar, checkTranscription, checkWhatsApp, funnelNumberIds, whatsappSendStatus } from "@/lib/integrations";
+import { checkCalendar, checkFunnelNumbers, checkTranscription, checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
 import { googleConfigured } from "@/lib/google";
 import { runDailyBatches } from "@/lib/batches";
 import { auditMetaLeadsIfDue, pullMetaLeads } from "@/lib/meta-leads";
@@ -50,11 +50,7 @@ export async function GET(request: Request) {
     else if (sending?.canSend) await clearHealth();
     if (sending) meta.sending = sending;
     // The funnels' own numbers too (a new number whose name is still in review): the banner says which one is stopped
-    for (const id of await funnelNumberIds().catch(() => [])) {
-      const own = await whatsappSendStatus(id).catch(() => null);
-      if (own?.problem) await setHealth(own.problem, id);
-      else if (own?.canSend) await clearHealth(id);
-    }
+    await checkFunnelNumbers().catch(() => console.error("WhatsApp: falha ao conferir os números dos funis."));
     // Where copies of the WhatsApp messages go (the old CRM); asked from Meta at most once an hour
     meta.copyTo = await forwardTarget().catch((e: Error) => ({ error: e.message }));
     // The account's numbers, for each funnel's "Número do WhatsApp"; read from Meta at most once an hour, never throws
