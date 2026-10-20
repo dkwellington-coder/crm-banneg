@@ -837,6 +837,28 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     expect(sends().map((c) => [c.body?.to, c.body?.type])).toEqual([["5541933334444", "text"]]);
   });
 
+  it("the same client's new QR code, or plain words, from the store's phone still bring her referral back from Erro no WhatsApp", async () => {
+    await referralFunnel({ delayMinutes: 15 });
+    const { moveToSendError } = await import("@/lib/messaging");
+    const { runSdrTurn } = await import("@/lib/sdr");
+    // The store refers Ana again and scans her new QR code with its phone
+    const ana = (await (await post({ ...quote, name: "Ana Rocha", phone: "5541933334444", ref: "portal:cm9x7k2ana222" })).json()).id as string;
+    await moveToSendError(ana, "a Meta segurou o modelo");
+    vi.mocked(runSdrTurn).mockClear();
+    await inbound(ALICE_NUMBER, "5541933334444", ready("Ana", "ANA333"), "wamid.in1", "Lotus Veículos");
+    await drain();
+    expect(await db.lead.findUniqueOrThrow({ where: { id: ana } })).toMatchObject({ status: "AI_QUALIFYING", aiPaused: false });
+    expect(vi.mocked(runSdrTurn).mock.calls.map((c) => c[0].lead.name)).toEqual(["Ana Rocha"]);
+
+    // Words of its own that happen to say "pedido" and six letters
+    const eva = (await (await post({ ...quote, name: "Eva Prado", phone: "5541922221111", ref: "portal:cm9x7k2eva444" })).json()).id as string;
+    await moveToSendError(eva, "a Meta segurou o modelo");
+    vi.mocked(runSdrTurn).mockClear();
+    await inbound(ALICE_NUMBER, "5541922221111", "Bom dia! Sou Carla da loja, e o pedido online dela?", "wamid.in2", "Lotus Veículos");
+    await drain();
+    expect(await db.lead.findUniqueOrThrow({ where: { id: eva } })).toMatchObject({ status: "AI_QUALIFYING", aiPaused: false });
+  });
+
   it("a referral typed with a phone two leads have, with and without the 9, leaves the phone and its messages together", async () => {
     const { cot } = await referralFunnel({ delayMinutes: 15 });
     const perdido = await db.stage.create({ data: { pipelineId: cot.id, key: "perdido", name: "Perdido", kind: "LOST", position: 9 } });

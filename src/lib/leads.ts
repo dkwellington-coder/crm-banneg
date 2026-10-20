@@ -200,12 +200,13 @@ export async function handleInbound(input: {
     if (plainlyClient(known, referral.name)) lead = await joinReferral(referral, known);
     else forTeam = await otherReferralCode(known, referral);
   }
-  // A referral's phone sending another client's ready message under another name (the store's phone scanning her QR code)
-  // is not its client back: a referral WhatsApp did not reach stays closed, for a person and for that code's referral
+  // A referral's phone sending another client's ready message (the store's phone scanning her QR code) is not its client
+  // back: a referral WhatsApp did not reach stays closed, for a person and for that code's referral
   const sent = referralCode(input.body);
+  const who = readyName(input.body);
   const stray =
-    lead === known && !!known?.externalId?.startsWith("portal:") && !!sent && sent !== codeOf(known.externalId) && !sameFirstName(known.name, input.profileName);
-  lead ??=(await leadByEmailCode(input.body, phone)) ?? (referral && (await takeReferral(referral, phone)));
+    lead === known && !!known?.externalId?.startsWith("portal:") && !!sent && sent !== codeOf(known.externalId) && !!who && !sameFirstName(known.name, who);
+  lead ??= (await leadByEmailCode(input.body, phone)) ?? (referral && (await takeReferral(referral, phone)));
   if (!lead) {
     // Someone writing to a funnel's own number starts in that funnel, with its SDR
     const funnel = numberId ? await numberFunnel(numberId) : null;
@@ -329,6 +330,15 @@ export function leadSearch(q: string): Prisma.LeadWhereInput {
 }
 
 const codeOf = (ref: string | null) => ref?.slice(-6).toUpperCase() ?? "";
+
+/**
+ * The first name the portal's ready message gives ("Sou Bia, vim pela ...", or the quote link's "Sou Bia e quero seguir
+ * com a minha cotação pela ..."); null for anything else.
+ */
+function readyName(body: string) {
+  if (!referralCode(body)) return null;
+  return /\bSou (\p{Lu}[\p{L}'-]*)(?:, vim pela | e quero seguir com a minha cotação pela )/u.exec(body)?.[1] ?? null;
+}
 
 /** The same person as far as a name tells: the first names match, accents and case aside. */
 function sameFirstName(a: string | null | undefined, b: string | null | undefined) {
