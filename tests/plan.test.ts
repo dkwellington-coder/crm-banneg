@@ -15,6 +15,7 @@ function decision(over: Partial<SdrDecision>): SdrDecision {
     temperature: "morno",
     decision: "continue",
     slotIndex: null,
+    sendCof: false,
     reason: "faltam dados",
     summary: "",
     ...over,

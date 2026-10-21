@@ -15,6 +15,13 @@ vi.mock("@/lib/email", async (orig) => ({
   }),
 }));
 
+// The AI's answer, set by each test
+const nextDecision = vi.hoisted(() => ({ value: null as unknown }));
+vi.mock("@/lib/sdr", async (orig) => ({
+  ...(await orig<typeof import("@/lib/sdr")>()),
+  runSdrTurn: vi.fn(async () => nextDecision.value),
+}));
+
 describe.skipIf(!dbUrl)("COF", () => {
   let db: typeof import("@/lib/db").db;
   let leads: typeof import("@/lib/leads");
@@ -93,6 +100,42 @@ describe.skipIf(!dbUrl)("COF", () => {
     // A new version of the documents goes again with the automation
     await upload("Balanço 2025.pdf", "%PDF-1.4 balanco");
     expect(await jobs.runAction(fresh, "cof", {})).toBe("COF enviada para rafa@x.com.");
+  });
+
+  it("goes by e-mail when the lead asks the AI for it before the meeting, once for the same files", async () => {
+    const { queue } = { queue: await import("@/lib/queue") };
+    await db.sdrAgent.create({ data: { name: "Duda", persona: "x" } });
+    const { lead } = await leads.createLead({ name: "Rafa Lima", phone: "11955550000", email: "rafa@x.com", source: "site" }, "teste");
+    await upload("COF Banneg.pdf", "%PDF-1.4 circular de oferta");
+    const asked = {
+      reply: "",
+      extracted: { name: null, email: null, city: null, state: null, capital: null, timeline: null, experience: null, decisionMaker: null },
+      score: 60,
+      temperature: "morno",
+      decision: "continue",
+      slotIndex: null,
+      sendCof: true,
+      reason: "pediu a COF",
+      summary: "Rafa pediu a COF antes da reunião.",
+    };
+    const turn = async () => {
+      await queue.enqueue("sdr.reply", { leadId: lead.id });
+      await jobs.runDueJobs();
+    };
+    nextDecision.value = asked;
+    await turn();
+    const d = await db.cofDelivery.findFirstOrThrow({ where: { leadId: lead.id } });
+    expect(d).toMatchObject({ to: "rafa@x.com", sentBy: "Duda" });
+    expect(await db.leadEvent.count({ where: { leadId: lead.id, type: "cof.requested" } })).toBe(1);
+    // Asking again does not send the same files twice
+    await turn();
+    expect(rawSent).toHaveLength(1);
+    // The AI only gets the rule when there is a COF to send
+    const { buildSystemPrompt } = await import("@/lib/sdr");
+    const { DEFAULT_SETTINGS } = await import("@/lib/settings");
+    const base = { agentName: "Duda", persona: "x", settings: DEFAULT_SETTINGS, knowledge: [] };
+    expect(buildSystemPrompt({ ...base, cofReady: true })).toContain("marque sendCof = true");
+    expect(buildSystemPrompt(base)).not.toContain("sendCof");
   });
 
   it("asks for the e-mail and respects the lead who asked for no e-mails", async () => {

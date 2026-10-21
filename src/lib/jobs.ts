@@ -13,7 +13,7 @@ import { ensureTask, funnelStart, moveLead, sdrFor, stageByKey } from "./leads";
 import { fillVariables, templateSlots, type RuleConfig } from "./rules";
 import { isGreeting, type RuleJobPayload } from "./automations";
 import { attachMaterials, emailHtml, renderTemplate, sendEmail, withButton } from "./email";
-import { sendCof } from "./cof";
+import { cofDocuments, sendCof } from "./cof";
 
 type Handler = (job: Job, lead: Lead | null) => Promise<string>;
 
@@ -57,6 +57,7 @@ async function sdrContext(lead: Lead) {
       transcript: messages.reverse().map((m) => ({ direction: m.direction, author: m.author, body: m.body, at: m.createdAt })),
       slots,
       now: new Date(),
+      cofReady: (await cofDocuments()).length > 0,
     },
   };
 }
@@ -117,6 +118,11 @@ const handlers: Record<string, Handler> = {
       const res = await sendWhatsApp(fresh, reply, agent.name);
       if (!res.ok) throw new Error(res.error);
       if (res.skipped) await logEvent(lead.id, "whatsapp.skipped", agent.name, res.skipped);
+    }
+    // The lead asked for the COF before the meeting: it goes by e-mail now, once for the same files
+    if (decision.sendCof) {
+      const result = await sendCof(await db.lead.findUniqueOrThrow({ where: { id: lead.id } }), agent.name, { once: true });
+      await logEvent(lead.id, "cof.requested", agent.name, `O lead pediu a COF: ${result}`);
     }
     // Funnels the team built may not have the AI's stage: try the funnel this one hands leads to
     // (old leads go on to Vendas de Franquias once qualified), else only the status changes

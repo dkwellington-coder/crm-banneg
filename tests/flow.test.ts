@@ -108,6 +108,7 @@ describe.skipIf(!dbUrl)("lead flow", () => {
       temperature: "quente",
       decision: "offer_meeting",
       slotIndex: null,
+      sendCof: false,
       reason: "capital e região ok",
       summary: "Ana, Curitiba, R$ 300 mil.",
     };

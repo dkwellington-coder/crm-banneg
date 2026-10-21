@@ -214,6 +214,7 @@ describe.skipIf(!dbUrl)("funnels", () => {
       temperature: "morno",
       decision: "continue",
       slotIndex: null,
+      sendCof: false,
       reason: "retomou interesse",
       summary: "Bia retomou.",
     };
