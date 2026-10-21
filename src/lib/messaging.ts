@@ -125,7 +125,7 @@ export async function sendWhatsApp(lead: Lead, body: string, author: string, opt
   }
   await db.message.update({ where: { id: msg.id }, data: { status: "FAILED", error: res.error, errorCode: res.code } });
   await logEvent(lead.id, "whatsapp.failed", author, `Mensagem não enviada: ${res.error}`, { code: res.code ?? null });
-  await afterUndelivered(lead.id, res.error);
+  await afterUndelivered(lead.id, res.error, res.code);
   return { ok: false, error: res.error, code: res.code, messageId: msg.id, usedTemplate: !!template, simulated: false };
 }
 
@@ -177,7 +177,7 @@ export async function sendAudioMessage(lead: Lead, audio: Uint8Array, mimeType: 
   }
   await db.message.update({ where: { id: msg.id }, data: { status: "FAILED", error: res.error, errorCode: res.code } });
   await logEvent(lead.id, "whatsapp.failed", author, `Áudio não enviado: ${res.error}`, { code: res.code ?? null });
-  await afterUndelivered(lead.id, res.error);
+  await afterUndelivered(lead.id, res.error, res.code);
   return { ok: false, error: res.error, code: res.code, messageId: msg.id, usedTemplate: false, simulated: false };
 }
 
@@ -200,9 +200,12 @@ export const isClosed = (lead: Pick<Lead, "status">) => ["DISQUALIFIED", "WON", 
  * on WhatsApp) and the message is tried in the other Meta category, marketing or utility. Only when both
  * were denied does the lead stop getting WhatsApp and go to "Erro no WhatsApp", where the team sees it.
  */
-export async function afterUndelivered(leadId: string, lastError: string) {
+export async function afterUndelivered(leadId: string, lastError: string, code: number | null | undefined) {
   const lead = await db.lead.findUnique({ where: { id: leadId }, include: { stage: true } });
   if (!lead || lead.stage.key === SEND_ERROR_STAGE.key || isClosed(lead)) return;
+  // Only a failure of this contact starts it: with the account blocked, every retry failed again and
+  // tried the other category once more, every minute, for as long as the block lasted
+  if (!isUndelivered(code, lead.phone)) return;
   const failed = await db.message.findMany({
     where: { leadId, channel: "WHATSAPP", direction: "OUT", status: "FAILED" },
     select: { template: true, errorCode: true },

@@ -48,7 +48,7 @@ export async function POST(request: Request) {
           if (accountLevel) await setHealth({ code: err?.code, message: friendly }, problemNumber(err?.code, value.metadata?.phone_number_id));
           await db.message.update({ where: { id: msg.id }, data: { status: "FAILED", error: friendly, errorCode: err?.code } });
           await logEvent(msg.leadId, "whatsapp.failed", "WhatsApp", `Mensagem não entregue: ${friendly}`, { code: err?.code ?? null });
-          await afterUndelivered(msg.leadId, friendly);
+          await afterUndelivered(msg.leadId, friendly, err?.code);
         } else {
           const status = st.status === "read" ? "READ" : st.status === "delivered" ? "DELIVERED" : "SENT";
           await db.message.update({ where: { id: msg.id }, data: { status } });

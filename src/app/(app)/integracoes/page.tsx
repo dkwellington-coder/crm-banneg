@@ -1,18 +1,19 @@
 import { Suspense, type ReactNode } from "react";
 import { headers } from "next/headers";
-import { BadgeDollarSign, Bot, CalendarDays, ClipboardList, Copy, FlaskConical, Mail, MessageCircle, ShieldCheck, Webhook, type LucideIcon } from "lucide-react";
+import { BadgeDollarSign, Bot, CalendarDays, ClipboardList, Copy, FlaskConical, Mail, MessageCircle, RotateCcw, ShieldCheck, Webhook, type LucideIcon } from "lucide-react";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { Card, Loading, PageHeader, btnCls, btnGhostCls, inputCls, relTime } from "@/components/ui";
-import { disconnectGoogleAction, saveTestModeAction } from "../../actions";
+import { disconnectGoogleAction, resendBlockedAction, saveTestModeAction } from "../../actions";
 import { googleLinks } from "@/lib/google";
 import { TestButton } from "./TestButton";
 import { FormFunnelSelect } from "./FormFunnelSelect";
 import { funnelForForm, type MetaLeadsAudit } from "@/lib/meta-leads";
 import type { MetaAdsState } from "@/lib/meta-ads";
 import { daysAgo } from "@/lib/time";
-import { savedWhatsAppNumbers } from "@/lib/whatsapp";
+import { getHealth, savedWhatsAppNumbers } from "@/lib/whatsapp";
+import { resendState } from "@/lib/resend";
 
 export default function IntegracoesPage({ searchParams }: PageProps<"/integracoes">) {
   return (
@@ -116,6 +117,53 @@ async function CalendarCheck() {
   );
 }
 
+/** What never went while the WhatsApp account was blocked, with one button to send it again once the account is back. */
+async function ResendBlocked() {
+  const [{ blocked, last }, health] = await Promise.all([resendState(), getHealth()]);
+  if (!blocked.length && !last) return null;
+  const stillBlocked = !!health && !health.numberId;
+  const ai = blocked.filter((b) => b.waitingForAi).length;
+  return (
+    <Card className="space-y-3 ring-2 ring-amber-300 xl:col-span-2">
+      <div className="flex items-center gap-3">
+        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500 text-white">
+          <RotateCcw size={20} />
+        </span>
+        <div className="flex-1">
+          <h2 className="font-semibold">
+            {blocked.length ? `${blocked.length} leads ficaram sem mensagem com a conta do WhatsApp bloqueada` : "Reenvio agendado"}
+          </h2>
+          <p className="text-sm text-slate-500">
+            {last && `${last.by} mandou reenviar para ${last.count} leads ${relTime(new Date(last.at))}; vai um lead a cada 20 segundos. `}
+            {blocked.length > 0 &&
+              `${ai ? `${ai} estavam esperando resposta: a IA responde de novo, com horários atuais. ` : ""}Os demais recebem a mesma mensagem. Leads encerrados e a fila pausada da base antiga ficam de fora.`}
+          </p>
+        </div>
+      </div>
+      {blocked.length > 0 && (
+        <>
+          <p className="flex flex-wrap gap-1.5 text-sm">
+            {blocked.map((b) => (
+              <a key={b.lead.id} href={`/leads/${b.lead.id}`} className="rounded-full bg-slate-100 px-2.5 py-0.5 text-slate-700 hover:bg-slate-200">
+                {b.lead.name ?? b.lead.phone} · {b.lead.stage.name}
+              </a>
+            ))}
+          </p>
+          {stillBlocked ? (
+            <p className="text-sm text-red-700">A conta ainda aparece bloqueada ({health.message}). O botão libera quando o WhatsApp voltar a enviar.</p>
+          ) : (
+            <form action={resendBlockedAction}>
+              <button className={btnCls}>
+                <RotateCcw size={15} /> Reenviar para {blocked.length} leads
+              </button>
+            </form>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
 async function Integrations({ searchParams }: { searchParams: PageProps<"/integracoes">["searchParams"] }) {
   const user = await requireUser();
   const sp = await searchParams;
@@ -162,6 +210,7 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
 
   return (
     <div className="grid gap-4 px-6 pb-10 xl:grid-cols-2">
+      <ResendBlocked />
       <Card className={`space-y-3 xl:col-span-2 ${settings.testMode ? "ring-2 ring-amber-300" : ""}`}>
         <div className="flex items-center gap-3">
           <span className={`flex h-10 w-10 items-center justify-center rounded-xl text-white ${settings.testMode ? "bg-amber-500" : "bg-emerald-600"}`}>

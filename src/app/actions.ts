@@ -16,6 +16,7 @@ import { ACTIONS, UNITS, type RuleConfig } from "@/lib/rules";
 import { METRICS } from "@/lib/goals";
 import { sendCof } from "@/lib/cof";
 import { inviteGuestsToUpcoming } from "@/lib/calendar";
+import { scheduleResends } from "@/lib/resend";
 
 export async function loginAction(_: unknown, form: FormData) {
   const user = await login(String(form.get("email") ?? ""), String(form.get("password") ?? ""));
@@ -618,6 +619,15 @@ export async function setFormFunnelAction(formId: string, form: FormData) {
   const names = state.names?.[formId] ? { ...state.names, [formId]: { ...state.names[formId], funnel: slug || null } } : state.names;
   const value = JSON.parse(JSON.stringify({ ...state, forms, names }));
   await db.setting.upsert({ where: { key: "meta_leads" }, create: { key: "meta_leads", value }, update: { value } });
+  revalidatePath("/integracoes");
+}
+
+/** Sends again what never went while the WhatsApp account was blocked (Integrações). */
+export async function resendBlockedAction() {
+  const user = await requireUser();
+  const count = await scheduleResends();
+  const value = { at: new Date().toISOString(), by: user.name, count };
+  await db.setting.upsert({ where: { key: "whatsapp_resend" }, create: { key: "whatsapp_resend", value }, update: { value } });
   revalidatePath("/integracoes");
 }
 

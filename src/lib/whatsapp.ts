@@ -61,6 +61,11 @@ export function isUndelivered(code: number | null | undefined, phone: string | n
   return isContactError(code, phone) || code === 131049 || code === 130472;
 }
 
+/** The account's (or Meta's) failure, not this contact's: the same message can go again once sending is back. */
+export function isAccountFailure(code: number | null | undefined) {
+  return code != null && (code in ACCOUNT_ERRORS || code === 131000);
+}
+
 export function classifyError(code: number | undefined, message: string) {
   const accountMessage = code !== undefined ? ACCOUNT_ERRORS[code] : undefined;
   return { accountLevel: !!accountMessage, friendly: accountMessage ?? message };

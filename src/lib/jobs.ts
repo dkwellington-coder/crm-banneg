@@ -14,6 +14,7 @@ import { fillVariables, templateSlots, type RuleConfig } from "./rules";
 import { isGreeting, type RuleJobPayload } from "./automations";
 import { attachMaterials, emailHtml, renderTemplate, sendEmail, withButton } from "./email";
 import { cofDocuments, sendCof } from "./cof";
+import { blockedByAccount, resendSame } from "./resend";
 
 type Handler = (job: Job, lead: Lead | null) => Promise<string>;
 
@@ -27,7 +28,8 @@ async function sdrContext(lead: Lead) {
   const [agent, knowledge, messages, pipeline] = await Promise.all([
     lead.sdrId ? db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null,
     db.knowledgeItem.findMany({ orderBy: { title: "asc" } }),
-    db.message.findMany({ where: { leadId: lead.id, channel: "WHATSAPP" }, orderBy: { createdAt: "desc" }, take: 40 }),
+    // What never reached the lead stays out: the AI must not take a message lost to an account block as said
+    db.message.findMany({ where: { leadId: lead.id, channel: "WHATSAPP", NOT: { direction: "OUT", status: "FAILED" } }, orderBy: { createdAt: "desc" }, take: 40 }),
     db.pipeline.findUnique({ where: { id: lead.pipelineId } }),
   ]);
   if (!agent) throw new Error("Lead sem SDR de IA atribuída.");
@@ -176,6 +178,18 @@ const handlers: Record<string, Handler> = {
     if (res.skipped) return res.skipped;
     await logEvent(lead.id, "whatsapp.other_category", "WhatsApp", `Nova tentativa como ${label} (${template.name}): ${res.ok ? "enviada" : res.error}.`);
     return res.ok ? `Tentativa como ${label} ${sentHow(res)}.` : `Tentativa como ${label} não chegou: ${res.error}`;
+  },
+
+  async "whatsapp.resend"(job, l) {
+    const lead = needLead(l);
+    const [blocked] = await blockedByAccount(new Date((job.payload as { since: string }).since), lead.id);
+    if (!blocked) return "Ignorado: nada para reenviar (outra mensagem já chegou ao lead ou ele saiu do atendimento).";
+    const agents = await db.sdrAgent.findMany({ select: { name: true } });
+    const result = blocked.waitingForAi
+      ? `a IA respondeu de novo (${await handlers["sdr.reply"](job, lead)})`
+      : await resendSame(blocked, new Set(agents.map((a) => a.name)));
+    await logEvent(lead.id, "whatsapp.resent", "WhatsApp", `Mensagem que não saiu com a conta bloqueada: ${result}.`);
+    return result;
   },
 
   async "meeting.reminder"(job, l) {
