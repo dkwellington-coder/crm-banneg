@@ -66,8 +66,13 @@ export function classifyError(code: number | undefined, message: string) {
   return { accountLevel: !!accountMessage, friendly: accountMessage ?? message };
 }
 
-async function post(body: Record<string, unknown>): Promise<SendResult> {
-  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+/** The number a message goes out from: the lead's own (a funnel's number) or, when null, the main one. */
+export function senderId(from?: string | null) {
+  return from || process.env.WHATSAPP_PHONE_NUMBER_ID;
+}
+
+async function post(body: Record<string, unknown>, from?: string | null): Promise<SendResult> {
+  const phoneId = senderId(from);
   const token = process.env.WHATSAPP_TOKEN;
   if (!phoneId || !token) return { ok: false, error: "WhatsApp não configurado (WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_TOKEN).", accountLevel: true };
   const res = await fetch(`${GRAPH}/${phoneId}/messages`, {
@@ -80,17 +85,17 @@ async function post(body: Record<string, unknown>): Promise<SendResult> {
     error?: { code?: number; message?: string };
   };
   if (res.ok && json.messages?.[0]?.id) {
-    await setHealth(null);
+    await clearHealth(from);
     return { ok: true, id: json.messages[0].id };
   }
   const code = json.error?.code;
   const { accountLevel, friendly } = classifyError(code, json.error?.message ?? `HTTP ${res.status}`);
-  if (accountLevel) await setHealth({ code, message: friendly });
+  if (accountLevel) await setHealth({ code, message: friendly }, problemNumber(code, from));
   return { ok: false, code, error: friendly, accountLevel };
 }
 
-export function sendText(to: string, body: string) {
-  return post({ to, type: "text", text: { body, preview_url: true } });
+export function sendText(to: string, body: string, from?: string | null) {
+  return post({ to, type: "text", text: { body, preview_url: true } }, from);
 }
 
 export type MediaKind = "video" | "document" | "image";
@@ -105,7 +110,7 @@ export function mediaKind(url: string): MediaKind | null {
  * Text with up to 3 tap-to-answer buttons (only inside the 24 h window), optionally with a video,
  * PDF or photo on top. Titles are cut to Meta's 20 characters.
  */
-export function sendButtons(to: string, body: string, buttons: string[], header?: { kind: MediaKind; link: string; filename?: string }) {
+export function sendButtons(to: string, body: string, buttons: string[], header?: { kind: MediaKind; link: string; filename?: string }, from?: string | null) {
   return post({
     to,
     type: "interactive",
@@ -117,39 +122,66 @@ export function sendButtons(to: string, body: string, buttons: string[], header?
         buttons: buttons.slice(0, 3).map((title, i) => ({ type: "reply", reply: { id: `b${i}`, title: title.slice(0, 20) } })),
       },
     },
-  });
+  }, from);
 }
 
 /** A video or PDF from a public link, with the message as its caption. */
-export function sendMedia(to: string, kind: "video" | "document" | "image", link: string, caption: string, filename?: string) {
+export function sendMedia(to: string, kind: "video" | "document" | "image", link: string, caption: string, filename?: string, from?: string | null) {
   const media: Record<string, string> = { link };
   if (caption) media.caption = caption.slice(0, 1024);
   if (kind === "document" && filename) media.filename = filename;
-  return post({ to, type: kind, [kind]: media });
+  return post({ to, type: kind, [kind]: media }, from);
 }
 
-/** An audio already uploaded to Meta (uploadWhatsAppMedia). Ogg Opus shows as a voice message. */
-export function sendAudio(to: string, mediaId: string) {
-  return post({ to, type: "audio", audio: { id: mediaId } });
+/** An audio already uploaded to Meta (uploadWhatsAppMedia, from the same number). Ogg Opus shows as a voice message. */
+export function sendAudio(to: string, mediaId: string, from?: string | null) {
+  return post({ to, type: "audio", audio: { id: mediaId } }, from);
 }
 
-export function sendTemplate(to: string, name: string, language: string, params: string[], headerUrl?: string | null) {
+export function sendTemplate(to: string, name: string, language: string, params: string[], headerUrl?: string | null, from?: string | null) {
   const kind = headerUrl ? mediaKind(headerUrl) : null;
   const components: Record<string, unknown>[] = [];
   if (kind && headerUrl) components.push({ type: "header", parameters: [{ type: kind, [kind]: { link: headerUrl } }] });
   if (params.length) components.push({ type: "body", parameters: params.map((text) => ({ type: "text", text })) });
-  return post({ to, type: "template", template: { name, language: { code: language }, components } });
+  return post({ to, type: "template", template: { name, language: { code: language }, components } }, from);
 }
 
-export type WhatsAppHealth = { code?: number; message: string; at: string } | null;
+// numberId: the problem is only on that one of the account's other numbers; without it, on the main number or the whole account
+export type WhatsAppHealth = { code?: number; message: string; at: string; numberId?: string } | null;
 
-export async function setHealth(problem: { code?: number; message: string } | null) {
-  const value = problem ? { ...problem, at: new Date().toISOString() } : null;
+// Meta's limits on one number (its throughput, the same person too often): the account's other numbers still send
+const NUMBER_ERRORS = new Set([131056, 130429]);
+
+/** The id of one of the account's other numbers; undefined for the main one (or when not known). */
+const otherNumber = (id?: string | null) => (id && id !== process.env.WHATSAPP_PHONE_NUMBER_ID ? id : undefined);
+
+/** The number a send error is limited to (a funnel's own number hitting its own limit); undefined when it stops the account. */
+export function problemNumber(code: number | undefined, from?: string | null) {
+  return code !== undefined && NUMBER_ERRORS.has(code) ? otherNumber(from) : undefined;
+}
+
+/**
+ * Records a WhatsApp problem for the banner and the daily queues (null clears it). A problem of one of the other
+ * numbers (numberId) never takes the place of one of the main number or of the whole account.
+ */
+export async function setHealth(problem: { code?: number; message: string } | null, numberId?: string | null) {
+  const own = problem ? otherNumber(numberId) : undefined;
+  if (own) {
+    const current = await getHealth();
+    if (current && !current.numberId) return;
+  }
+  const value = problem ? { ...problem, at: new Date().toISOString(), ...(own && { numberId: own }) } : null;
   await db.setting.upsert({
     where: { key: "whatsapp_health" },
     create: { key: "whatsapp_health", value: value ?? {} },
     update: { value: value ?? {} },
   });
+}
+
+/** A message went out (or arrived) from this number, null = the main one: the problem recorded for that number is over. */
+export async function clearHealth(from?: string | null) {
+  const current = await getHealth();
+  if (current && current.numberId === otherNumber(from)) await setHealth(null);
 }
 
 export async function getHealth(): Promise<WhatsAppHealth> {
@@ -185,6 +217,8 @@ export type WebhookPayload = {
   entry?: {
     changes?: {
       value?: {
+        // Which of our numbers got the message
+        metadata?: { phone_number_id?: string; display_phone_number?: string };
         contacts?: { profile?: { name?: string }; wa_id?: string }[];
         messages?: InboundMessage[];
         statuses?: {
@@ -205,6 +239,65 @@ export function messageText(m: InboundMessage) {
     m.interactive?.list_reply?.title ??
     `[${m.type} recebido]`
   );
+}
+
+// ---------- Numbers of the WhatsApp account ----------
+// Templates belong to the account, so an approved template goes from any of its numbers.
+
+export type WhatsAppNumber = { id: string; display: string; name: string | null; quality: string | null };
+export type WhatsAppNumbers = { at: string; numbers: WhatsAppNumber[]; error?: string | null };
+const NUMBERS_KEY = "whatsapp_numbers";
+
+/** Every number of the WhatsApp Business account, as Meta lists them; empty without the account id or the token. */
+export async function listWhatsAppNumbers(): Promise<WhatsAppNumber[]> {
+  const waba = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+  if (!waba || !process.env.WHATSAPP_TOKEN) return [];
+  const res = await graph<{ data: { id: string; display_phone_number?: string; verified_name?: string; quality_rating?: string }[] }>(
+    `${waba}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating`,
+  );
+  return res.data.map((n) => ({ id: n.id, display: n.display_phone_number ?? n.id, name: n.verified_name ?? null, quality: n.quality_rating ?? null }));
+}
+
+/** The account's numbers as last read from Meta; null before the first read. */
+export async function savedWhatsAppNumbers(): Promise<WhatsAppNumbers | null> {
+  const row = await db.setting.findUnique({ where: { key: NUMBERS_KEY } });
+  const v = row?.value as Partial<WhatsAppNumbers> | undefined;
+  return v?.at ? { at: v.at, numbers: v.numbers ?? [], error: v.error ?? null } : null;
+}
+
+/**
+ * Reads the account's numbers from Meta again and keeps them for the funnel and Integrações screens. Never throws:
+ * without the account id or the token nothing changes, and when Meta fails the last list stays.
+ */
+export async function refreshWhatsAppNumbers(opts: { ifOlderThanMs?: number } = {}): Promise<WhatsAppNumbers | null> {
+  try {
+    const saved = await savedWhatsAppNumbers();
+    if (saved && opts.ifOlderThanMs !== undefined && Date.now() - Date.parse(saved.at) < opts.ifOlderThanMs) return saved;
+    if (!process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || !process.env.WHATSAPP_TOKEN) return saved;
+    let value: WhatsAppNumbers;
+    try {
+      value = { at: new Date().toISOString(), numbers: await listWhatsAppNumbers(), error: null };
+    } catch (e) {
+      value = { at: new Date().toISOString(), numbers: saved?.numbers ?? [], error: (e as Error).message };
+    }
+    await db.setting.upsert({ where: { key: NUMBERS_KEY }, create: { key: NUMBERS_KEY, value }, update: { value } });
+    return value;
+  } catch (e) {
+    console.error(`Números do WhatsApp: falha ao atualizar a lista (${(e as Error).message}).`);
+    return null;
+  }
+}
+
+/** "+55 17 99679-0187" as the account's saved list has it; the id when the number is not in it. */
+export async function numberDisplay(id: string) {
+  const n = (await savedWhatsAppNumbers().catch(() => null))?.numbers.find((x) => x.id === id);
+  return n?.display ?? id;
+}
+
+/** "o número principal" or "o número +55 17 99679-0187", for the lead's history. */
+export async function numberName(id: string | null) {
+  if (!id || id === process.env.WHATSAPP_PHONE_NUMBER_ID) return "o número principal";
+  return `o número ${await numberDisplay(id)}`;
 }
 
 // ---------- Templates at Meta ----------

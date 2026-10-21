@@ -1,11 +1,23 @@
 import Anthropic from "@anthropic-ai/sdk";
+import type { Lead } from "@prisma/client";
 import { db } from "./db";
 import { SDR_MODEL } from "./sdr";
 import { sendEmail } from "./email";
 import { formatSlot, freeSlotsFor, googleBusy } from "./calendar";
 import { googleAgendaFor, googleConfigured } from "./google";
 import { getSettings } from "./settings";
-import { normalizePhone, sendTemplate, sendText, submitTemplates, syncTemplateStatus } from "./whatsapp";
+import {
+  clearHealth,
+  getHealth,
+  normalizePhone,
+  refreshWhatsAppNumbers,
+  savedWhatsAppNumbers,
+  sendTemplate,
+  sendText,
+  setHealth,
+  submitTemplates,
+  syncTemplateStatus,
+} from "./whatsapp";
 import { auditMetaLeads, bringMissingMetaLeads, funnelForForm, leadForms, retryMetaLeadsNow } from "./meta-leads";
 import { adAccounts, syncAdSpend } from "./meta-ads";
 import { forwardTarget, setWhatsAppCopy } from "./whatsapp-forward";
@@ -44,10 +56,27 @@ async function graphGet<T>(path: string): Promise<T> {
   const json = (await res.json().catch(() => ({}))) as T & { error?: { message?: string; code?: number } };
   if (!res.ok) {
     const code = json.error?.code;
-    if (code === 190) throw new Error("Token do WhatsApp expirado ou inválido. Gere um token permanente (usuário do sistema) no Meta Business.");
-    throw new Error(json.error?.message ?? `HTTP ${res.status}`);
+    // Meta's code goes along, so a caller can tell Meta refusing something from the network failing
+    if (code === 190) throw Object.assign(new Error("Token do WhatsApp expirado ou inválido. Gere um token permanente (usuário do sistema) no Meta Business."), { code });
+    throw Object.assign(new Error(json.error?.message ?? `HTTP ${res.status}`), { code });
   }
   return json;
+}
+
+// Meta will not let the CRM use a number: it does not exist (or left the account), or the token has no access to it
+const NUMBER_REFUSED = new Set([100, 10, 200]);
+
+/**
+ * Whether this number (one of the account's other numbers) can send, as checkFunnelNumbers reads it: "refused" when Meta
+ * will not even read it, null when Meta could not be asked (network, a passing error).
+ */
+async function numberStatus(id: string) {
+  try {
+    return await whatsappSendStatus(id, { limitedSends: true });
+  } catch (e) {
+    const code = (e as { code?: number }).code;
+    return code !== undefined && NUMBER_REFUSED.has(code) ? ({ refused: code } as const) : null;
+  }
 }
 
 const PUBLIC_URL = (process.env.PUBLIC_BASE_URL ?? "https://crm-banneg-banneg.vercel.app").replace(/\/$/, "");
@@ -128,20 +157,31 @@ export async function giveWhatsAppBack(): Promise<CheckResult> {
   }
 }
 
-type HealthEntity = { entity_type: string; can_send_message: string; errors?: { error_code: number; error_description: string }[] };
+type HealthEntity = {
+  entity_type: string;
+  can_send_message: string;
+  errors?: { error_code: number; error_description: string }[];
+  additional_info?: string[];
+};
 
 /**
- * Whether Meta lets this number send right now, without sending anything. A pending payment on
- * the WhatsApp account (error 131042 on sends) shows up here as BLOCKED with the reason.
+ * Whether Meta lets this number (the main one unless another is given) send right now, without sending anything.
+ * A pending payment on the WhatsApp account (error 131042 on sends) shows up here as BLOCKED with the reason.
+ * limitedSends, for a funnel's own number: LIMITED (Meta's word for a new number whose display name is still in review)
+ * sends, with a limit Meta explains, so it is no problem. The main number reads it as before.
  */
-export async function whatsappSendStatus(): Promise<{ canSend: boolean; problem: { code?: number; message: string } | null } | null> {
-  const id = process.env.WHATSAPP_PHONE_NUMBER_ID;
+export async function whatsappSendStatus(
+  id = process.env.WHATSAPP_PHONE_NUMBER_ID,
+  opts: { limitedSends?: boolean } = {},
+): Promise<{ canSend: boolean; problem: { code?: number; message: string } | null; limit?: string } | null> {
   if (!id || !process.env.WHATSAPP_TOKEN) return null;
   const res = await graphGet<{ health_status?: { can_send_message: string; entities?: HealthEntity[] } }>(`${id}?fields=health_status`);
   const health = res.health_status;
   if (!health) return null;
   const error = health.entities?.flatMap((e) => e.errors ?? [])[0];
   if (health.can_send_message === "AVAILABLE") return { canSend: true, problem: null };
+  if (health.can_send_message === "LIMITED" && opts.limitedSends)
+    return { canSend: true, problem: null, limit: health.entities?.flatMap((e) => e.additional_info ?? []).join(" ") || "sem detalhe da Meta." };
   return { canSend: false, problem: { code: error?.error_code, message: error?.error_description ?? `Meta: envio ${health.can_send_message}` } };
 }
 
@@ -156,6 +196,77 @@ export async function whatsappNumber(): Promise<string | null> {
   const value = { number: n.display_phone_number };
   await db.setting.upsert({ where: { key: "whatsapp_number" }, create: { key: "whatsapp_number", value }, update: { value } });
   return n.display_phone_number;
+}
+
+/** The number this lead talks to us on, as people dial it: its funnel's own number, or the main one. */
+export async function whatsappNumberFor(lead: Pick<Lead, "whatsappNumberId">): Promise<string | null> {
+  const id = lead.whatsappNumberId;
+  if (!id || id === process.env.WHATSAPP_PHONE_NUMBER_ID) return whatsappNumber();
+  const saved = (await savedWhatsAppNumbers().catch(() => null))?.numbers.find((n) => n.id === id)?.display;
+  if (saved) return saved;
+  const n = process.env.WHATSAPP_TOKEN ? await graphGet<{ display_phone_number?: string }>(`${id}?fields=display_phone_number`).catch(() => null) : null;
+  return n?.display_phone_number ?? (await whatsappNumber());
+}
+
+/** The funnels' own numbers (not the main one), each once. */
+export async function funnelNumberIds() {
+  const main = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const funnels = await db.pipeline.findMany({ where: { whatsappNumberId: { not: null } }, select: { whatsappNumberId: true }, orderBy: { position: "asc" } });
+  return [...new Set(funnels.flatMap((f) => (f.whatsappNumberId && f.whatsappNumberId !== main ? [f.whatsappNumberId] : [])))];
+}
+
+/**
+ * Meta's word on the funnels' own numbers (one Meta blocks, or no longer lets the CRM use; a new number whose name is still
+ * in review sends with a limit, which stops nothing), for the banner, which says which one is stopped. Also on the number
+ * the banner names after no funnel uses it anymore: its leads still talk there, so it is checked until Meta releases it,
+ * or until Meta no longer knows it (nothing left to wait for).
+ */
+export async function checkFunnelNumbers() {
+  const ids = await funnelNumberIds();
+  for (const id of ids) {
+    const own = await numberStatus(id);
+    // A funnel starting conversations on a number Meta refuses: every send from it fails
+    if (own && "refused" in own)
+      await setHealth(
+        { code: own.refused, message: "A Meta não reconhece este número na conta do WhatsApp, ou o token não tem acesso a ele. Confira em Integrações > Verificar número." },
+        id,
+      );
+    else if (own?.problem) await setHealth(own.problem, id);
+    else if (own?.canSend) await clearHealth(id);
+  }
+  const stopped = (await getHealth())?.numberId;
+  if (stopped && !ids.includes(stopped)) {
+    const left = await numberStatus(stopped);
+    if (left && "refused" in left) await clearHealth(stopped);
+    else if (left?.problem) await setHealth(left.problem, stopped);
+    else if (left?.canSend) await clearHealth(stopped);
+  }
+}
+
+/** Each number of the account with the funnels that start conversations on it, read again from Meta. */
+async function numberDetails() {
+  const main = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const list = await refreshWhatsAppNumbers();
+  const funnels = await db.pipeline.findMany({ select: { name: true, whatsappNumberId: true }, orderBy: { position: "asc" } });
+  const details = (list?.numbers ?? []).map((n) => {
+    const using = funnels.filter((f) => (f.whatsappNumberId ?? main) === n.id).map((f) => f.name);
+    return `${n.display}${n.name ? ` (${n.name})` : ""}${n.id === main ? ", principal" : ""}: ${using.length ? `${using.length > 1 ? "funis" : "funil"} ${using.join(", ")}` : "nenhum funil"}.`;
+  });
+  // A funnel's own number may be blocked, or send with a limit (new number, name still in review at Meta)
+  for (const id of await funnelNumberIds()) {
+    const display = list?.numbers.find((n) => n.id === id)?.display ?? id;
+    const sending = await whatsappSendStatus(id, { limitedSends: true }).catch((e: Error) => ({ canSend: false, problem: { message: e.message }, limit: undefined }));
+    if (sending)
+      details.push(
+        !sending.canSend
+          ? `${display}: envio bloqueado pela Meta: ${sending.problem?.message}`
+          : sending.limit
+            ? `${display}: envio liberado pela Meta, com limite: ${sending.limit}`
+            : `${display}: envio liberado pela Meta.`,
+      );
+  }
+  if (list?.error) details.push(`Lista de números da Meta: ${list.error}`);
+  return details;
 }
 
 /** Reads the number's profile from Meta without sending anything. */
@@ -185,6 +296,7 @@ export async function checkWhatsApp(): Promise<CheckResult> {
           `${target?.here ? "Uma cópia de cada mensagem continua indo" : "Quando as mensagens vierem para cá, uma cópia continua indo"} para o CRM antigo (${new URL(copy).host}).`,
         );
     }
+    details.push(...(await numberDetails().catch(() => [])));
     return { ok: true, message: `Conectado ao número ${n.display_phone_number} (${n.verified_name}).`, details };
   } catch (e) {
     return fail(e);

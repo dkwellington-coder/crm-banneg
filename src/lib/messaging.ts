@@ -105,16 +105,18 @@ export async function sendWhatsApp(lead: Lead, body: string, author: string, opt
     return { ok: true, id: `simulado-${msg.id}`, messageId: msg.id, usedTemplate: !!template, simulated: true };
   }
   let res: SendResult;
+  // From the number the lead's conversation is on (a funnel's own number), null = the main one
+  const from = lead.whatsappNumberId;
   if (template) {
-    res = await sendTemplate(lead.phone, template.name, template.language, params, template.headerUrl);
+    res = await sendTemplate(lead.phone, template.name, template.language, params, template.headerUrl, from);
   } else {
     const material = findMaterial(body, Object.values(settings.materials));
     // Video and buttons in one message: the video on top, the text and the buttons below
     if (material && o.buttons?.length)
-      res = await sendButtons(lead.phone, material.caption, o.buttons, { kind: material.kind, link: material.url, filename: material.filename });
-    else if (material) res = await sendMedia(lead.phone, material.kind, material.url, material.caption, material.filename);
-    else if (o.buttons?.length) res = await sendButtons(lead.phone, body, o.buttons);
-    else res = await sendText(lead.phone, body);
+      res = await sendButtons(lead.phone, material.caption, o.buttons, { kind: material.kind, link: material.url, filename: material.filename }, from);
+    else if (material) res = await sendMedia(lead.phone, material.kind, material.url, material.caption, material.filename, from);
+    else if (o.buttons?.length) res = await sendButtons(lead.phone, body, o.buttons, undefined, from);
+    else res = await sendText(lead.phone, body, from);
   }
   if (res.ok) {
     await db.message.update({ where: { id: msg.id }, data: { status: "SENT", externalId: res.id } });
@@ -164,7 +166,7 @@ export async function sendAudioMessage(lead: Lead, audio: Uint8Array, mimeType: 
   }
   let res: SendResult;
   try {
-    res = await sendAudio(lead.phone, await uploadWhatsAppMedia(data, type, `audio.${AUDIO_EXT[type]}`));
+    res = await sendAudio(lead.phone, await uploadWhatsAppMedia(data, type, `audio.${AUDIO_EXT[type]}`, lead.whatsappNumberId), lead.whatsappNumberId);
   } catch (e) {
     res = { ok: false, error: (e as Error).message, accountLevel: false };
   }

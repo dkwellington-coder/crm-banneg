@@ -1,12 +1,14 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Bot, Sparkles, Star } from "lucide-react";
+import { after } from "next/server";
+import { ArrowLeft, Bot, MessageCircle, Sparkles, Star } from "lucide-react";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { Loading, btnCls, btnGhostCls, inputCls } from "@/components/ui";
 import type { RuleConfig, RuleTrigger } from "@/lib/rules";
-import { renamePipelineAction, savePipelineAiAction, setDefaultPipelineAction } from "../../../actions";
+import { refreshWhatsAppNumbers, savedWhatsAppNumbers } from "@/lib/whatsapp";
+import { renamePipelineAction, savePipelineAiAction, savePipelineWhatsAppAction, setDefaultPipelineAction } from "../../../actions";
 import { StageCard, type StageData } from "./StageCard";
 import { AddStageForm, DeletePipelineButton } from "./PipelineControls";
 
@@ -16,6 +18,16 @@ export default function FunilEditorPage({ params }: PageProps<"/funis/[id]">) {
       <Editor params={params} />
     </Suspense>
   );
+}
+
+const HOUR = 3600_000;
+
+/** The WhatsApp account's numbers: read from Meta on the first visit (waiting a moment at most), refreshed after the page when old. */
+async function accountNumbers() {
+  const saved = await savedWhatsAppNumbers();
+  if (!saved) return Promise.race([refreshWhatsAppNumbers(), new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000))]);
+  if (Date.now() - Date.parse(saved.at) > HOUR) after(() => refreshWhatsAppNumbers({ ifOlderThanMs: HOUR }));
+  return saved;
 }
 
 async function Editor({ params }: { params: PageProps<"/funis/[id]">["params"] }) {
@@ -29,17 +41,28 @@ async function Editor({ params }: { params: PageProps<"/funis/[id]">["params"] }
         include: { rules: { orderBy: [{ position: "asc" }, { createdAt: "asc" }] }, _count: { select: { leads: true } } },
       },
       _count: { select: { leads: true } },
+      sdr: { select: { id: true, name: true, active: true } },
     },
   });
   if (!pipeline) notFound();
-  const [allStages, emails, sdrs, waTemplates, pipelines] = await Promise.all([
+  const [allStages, emails, sdrs, waTemplates, pipelines, numbers] = await Promise.all([
     db.stage.findMany({ orderBy: [{ pipeline: { position: "asc" } }, { position: "asc" }], include: { pipeline: { select: { name: true } } } }),
     db.emailTemplate.findMany({ where: { active: true }, orderBy: { key: "asc" }, select: { key: true, name: true } }),
     db.sdrAgent.findMany({ where: { active: true }, select: { id: true, name: true } }),
     db.whatsAppTemplate.findMany({ orderBy: { name: "asc" }, select: { name: true, status: true, body: true } }),
     db.pipeline.findMany({ where: { id: { not: id } }, orderBy: { position: "asc" }, select: { id: true, name: true } }),
+    accountNumbers(),
   ]);
   const canEdit = user.role !== "SELLER";
+  const mainId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const mainNumber = numbers?.numbers.find((n) => n.id === mainId);
+  const ownNumbers = numbers?.numbers.filter((n) => n.id !== mainId) ?? [];
+  // A number saved before the list was lost (or removed at Meta) stays selectable, so saving does not drop it
+  if (pipeline.whatsappNumberId && !ownNumbers.some((n) => n.id === pipeline.whatsappNumberId))
+    ownNumbers.push({ id: pipeline.whatsappNumberId, display: pipeline.whatsappNumberId, name: "não está na lista da Meta", quality: null });
+  const funnelNumber = ownNumbers.find((n) => n.id === pipeline.whatsappNumberId);
+  // The funnel's SDR stays listed, marked, after it was switched off
+  const funnelSdrs = [...sdrs.map((s) => ({ ...s, active: true })), ...(pipeline.sdr && !pipeline.sdr.active ? [pipeline.sdr] : [])];
   const options = {
     stages: allStages.map((s) => ({ id: s.id, name: s.name, pipeline: s.pipeline.name, same: s.pipelineId === pipeline.id })),
     emails,
@@ -155,6 +178,53 @@ async function Editor({ params }: { params: PageProps<"/funis/[id]">["params"] }
               </select>
             </label>
           </div>
+          {canEdit && (
+            <div className="flex justify-end">
+              <button className={btnCls}>Salvar</button>
+            </div>
+          )}
+        </form>
+      </details>
+
+      <details className="mt-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+        <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold">
+          <MessageCircle size={16} className="text-brand" /> WhatsApp e SDR deste funil
+          <span className="font-normal text-slate-500">
+            {funnelNumber ? funnelNumber.display : "número principal"} · {pipeline.sdr ? pipeline.sdr.name : "rodízio entre as SDRs"}
+          </span>
+        </summary>
+        <form action={savePipelineWhatsAppAction.bind(null, pipeline.id)} className="mt-3 space-y-3 text-sm">
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="block space-y-1">
+              <span className="font-medium text-slate-700">Número do WhatsApp</span>
+              <select name="whatsappNumberId" defaultValue={pipeline.whatsappNumberId ?? ""} disabled={!canEdit} className={inputCls}>
+                <option value="">Número principal{mainNumber ? ` (${mainNumber.display})` : ""}</option>
+                {ownNumbers.map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.display}
+                    {n.name ? ` · ${n.name}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block space-y-1">
+              <span className="font-medium text-slate-700">SDR deste funil</span>
+              <select name="sdrId" defaultValue={pipeline.sdrId ?? ""} disabled={!canEdit} className={inputCls}>
+                <option value="">Rodízio entre as SDRs</option>
+                {funnelSdrs.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                    {s.active ? "" : " (inativa)"}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <p className="text-xs text-slate-500">
+            Vale para as conversas que começam neste funil: leads novos, indicações e quem escreve para este número pela primeira vez. Conversas já em
+            andamento continuam no número delas.
+            {!ownNumbers.length && " Os números vêm da conta do WhatsApp na Meta: em Integrações, clique em Verificar número."}
+          </p>
           {canEdit && (
             <div className="flex justify-end">
               <button className={btnCls}>Salvar</button>

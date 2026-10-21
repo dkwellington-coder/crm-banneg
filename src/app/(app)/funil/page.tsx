@@ -6,6 +6,7 @@ import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { teamAlerts } from "@/lib/alerts";
 import { lastMessages } from "@/lib/inbox";
+import { leadSearch } from "@/lib/leads";
 import { Search, UserRound, Workflow } from "lucide-react";
 import { Loading, Tabs, btnGhostCls, inputCls, tabCls } from "@/components/ui";
 import { NewPipelineButton } from "./NewPipelineButton";
@@ -41,14 +42,7 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
     db.sdrAgent.findMany({ select: { id: true, name: true } }),
   ]);
   const where: Prisma.LeadWhereInput = {
-    ...(q && {
-      OR: [
-        { name: { contains: q, mode: "insensitive" } },
-        { phone: { contains: q.replace(/\D/g, "") || q } },
-        { email: { contains: q, mode: "insensitive" } },
-        { city: { contains: q, mode: "insensitive" } },
-      ],
-    }),
+    ...(q && leadSearch(q)),
     ...(mine && { ownerId: user.id }),
   };
   // Red marks: which funnel has someone new or waiting, and which card

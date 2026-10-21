@@ -343,6 +343,7 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
               <div key={item.e.id} className="text-center text-xs text-slate-500">
                 <span className="rounded-full bg-white px-3 py-1 ring-1 ring-slate-200">
                   {fmt(item.at)} · {item.e.actor}: {item.e.summary}
+                  <OtherLead e={item.e} />
                 </span>
               </div>
             ) : (
@@ -392,6 +393,19 @@ const JOB_LABEL: Record<string, string> = {
   "email.send": "e-mail automático",
   "meeting.reminder": "lembrete de reunião",
 };
+
+// Events about another lead (a store's referral that went on there, or came from there): one click to it
+const OTHER_LEAD_EVENTS = new Set(["lead.duplicate", "lead.referral_joined", "lead.referral_code"]);
+
+function OtherLead({ e }: { e: { type: string; data: unknown } }) {
+  const id = (e.data as { leadId?: unknown } | null)?.leadId;
+  if (!OTHER_LEAD_EVENTS.has(e.type) || typeof id !== "string") return null;
+  return (
+    <Link href={`/leads/${id}`} className="ml-1 text-brand underline">
+      ver o outro lead
+    </Link>
+  );
+}
 
 type BubbleMessage = {
   id: string;

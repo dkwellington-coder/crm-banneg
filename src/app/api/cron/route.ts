@@ -1,7 +1,7 @@
 import { runDueJobs } from "@/lib/jobs";
 import { db } from "@/lib/db";
-import { getHealth, setHealth, submitTemplates, syncTemplateStatus } from "@/lib/whatsapp";
-import { checkCalendar, checkTranscription, checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
+import { clearHealth, refreshWhatsAppNumbers, setHealth, submitTemplates, syncTemplateStatus } from "@/lib/whatsapp";
+import { checkCalendar, checkFunnelNumbers, checkTranscription, checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
 import { googleConfigured } from "@/lib/google";
 import { runDailyBatches } from "@/lib/batches";
 import { auditMetaLeadsIfDue, pullMetaLeads } from "@/lib/meta-leads";
@@ -47,10 +47,15 @@ export async function GET(request: Request) {
     // queues and shows the banner while blocked, and clears both as soon as Meta releases it
     const sending = await whatsappSendStatus().catch(() => null);
     if (sending?.problem) await setHealth(sending.problem);
-    else if (sending?.canSend && (await getHealth())) await setHealth(null);
+    else if (sending?.canSend) await clearHealth();
     if (sending) meta.sending = sending;
+    // The funnels' own numbers too (one Meta blocks or refuses; a new number in name review only sends with a limit): the
+    // banner says which one is stopped
+    await checkFunnelNumbers().catch(() => console.error("WhatsApp: falha ao conferir os números dos funis."));
     // Where copies of the WhatsApp messages go (the old CRM); asked from Meta at most once an hour
     meta.copyTo = await forwardTarget().catch((e: Error) => ({ error: e.message }));
+    // The account's numbers, for each funnel's "Número do WhatsApp"; read from Meta at most once an hour, never throws
+    meta.numbers = await refreshWhatsAppNumbers({ ifOlderThanMs: 3600_000 }).then((n) => n && { count: n.numbers.length, error: n.error ?? null });
     // Lead audios are transcribed for the AI: proven once a day (and an hour after a failure)
     const last = (await db.setting.findUnique({ where: { key: "audio_check" } }))?.value as { ok?: boolean; at?: string } | undefined;
     const age = last?.at ? Date.now() - new Date(last.at).getTime() : Infinity;

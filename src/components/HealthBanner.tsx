@@ -1,4 +1,4 @@
-import { getHealth } from "@/lib/whatsapp";
+import { getHealth, numberDisplay } from "@/lib/whatsapp";
 import { connection } from "next/server";
 import { db } from "@/lib/db";
 import { daysAgo } from "@/lib/time";
@@ -12,6 +12,8 @@ export async function HealthBanner() {
     db.job.count({ where: { status: "FAILED", finishedAt: { gte: daysAgo(1) } } }),
     getSettings(),
   ]);
+  // A problem of one of the funnels' own numbers says which number stopped
+  const where = health?.numberId ? ` no número ${await numberDisplay(health.numberId)}` : "";
   return (
     <>
       {settings.testMode && (
@@ -21,7 +23,7 @@ export async function HealthBanner() {
       )}
       {health && (
         <div className="bg-red-600 px-4 py-2 text-sm font-medium text-white">
-          WhatsApp parado: {health.message}
+          WhatsApp parado{where}: {health.message}
           {health.code ? ` (erro Meta ${health.code})` : ""}
         </div>
       )}
