@@ -1,6 +1,7 @@
 // The COF by e-mail: documents uploaded in pieces, the e-mail kept byte for byte, and the lead's opening,
 // download and confirmation of receipt. SMTP is stubbed. Runs only when TEST_DATABASE_URL is set.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { PDFDocument, PDFRawStream, decodePDFRawStream } from "pdf-lib";
 import { installDefaultPipeline } from "@/lib/pipeline-defaults";
 
 const dbUrl = process.env.TEST_DATABASE_URL;
@@ -44,7 +45,7 @@ describe.skipIf(!dbUrl)("COF", () => {
     await db.setting.create({ data: { key: "crm", value: { testMode: false } } });
   });
 
-  const upload = async (name: string, content: string, pieces = 2) => {
+  const upload = async (name: string, content: string | Uint8Array, pieces = 2) => {
     const doc = await db.franchiseDocument.create({ data: { name, mimeType: "application/pdf", size: content.length, data: new Uint8Array(0), uploadedBy: "W" } });
     const bytes = Buffer.from(content);
     const step = Math.ceil(bytes.length / pieces);
@@ -136,6 +137,51 @@ describe.skipIf(!dbUrl)("COF", () => {
     const base = { agentName: "Duda", persona: "x", settings: DEFAULT_SETTINGS, knowledge: [] };
     expect(buildSystemPrompt({ ...base, cofReady: true })).toContain("marque sendCof = true");
     expect(buildSystemPrompt(base)).not.toContain("sendCof");
+  });
+
+  // The text a PDF draws (pdf-lib writes it in hex, WinAnsi)
+  const pdfTexts = async (pdf: Uint8Array) =>
+    (await PDFDocument.load(pdf)).context
+      .enumerateIndirectObjects()
+      .flatMap(([, o]) => (o instanceof PDFRawStream ? Buffer.from(decodePDFRawStream(o).decode()).toString("latin1").split("\n") : []))
+      .flatMap((line) => line.match(/^<([0-9A-F]+)> Tj$/i)?.slice(1) ?? [])
+      .map((hex) => Buffer.from(hex, "hex").toString("latin1"));
+  const attachment = (raw: string, name: string) => {
+    const part = raw.split(/\r?\n--/).find((p) => p.includes(`filename="${name}"`))!;
+    return new Uint8Array(Buffer.from(part.split(/\r?\n\r?\n/)[1], "base64"));
+  };
+
+  it("writes the candidate, the e-mail it went to and the sending date in each COF, and asks for the name first", async () => {
+    const tpl = await PDFDocument.create();
+    const page = tpl.addPage();
+    Object.values(cof.COF_FIELDS).forEach((field, i) => tpl.getForm().createTextField(field).addToPage(page, { x: 50, y: 700 - i * 20, width: 300, height: 14 }));
+    const circular = await upload("COF Banneg.pdf", await tpl.save());
+    const contract = await upload("Contrato.pdf", "%PDF-1.4 contrato");
+
+    // Without a name the COF does not go with a blank candidate: someone asks first
+    const { lead: unnamed } = await leads.createLead({ phone: "11955552222", email: "semnome@x.com", source: "site" }, "teste");
+    expect(await cof.sendCof(unnamed, "Automação")).toMatch(/sem nome/);
+    expect(await db.task.count({ where: { leadId: unnamed.id, title: { contains: "nome do lead" } } })).toBe(1);
+    expect(rawSent).toHaveLength(0);
+
+    const { lead } = await leads.createLead({ name: "Rafaela Conceição Lima", phone: "11955550000", email: "rafa@x.com", source: "site" }, "teste");
+    const today = new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+    expect(await cof.sendCof(lead, "Wellington")).toBe("COF enviada para rafa@x.com.");
+    const d = await db.cofDelivery.findFirstOrThrow({ where: { leadId: lead.id } });
+    const fill = { candidato: "Rafaela Conceição Lima", email: "rafa@x.com", data: today };
+    expect(d.documents).toEqual([expect.objectContaining({ id: circular.id, fill }), expect.objectContaining({ id: contract.id, fill })]);
+
+    // The attachment and the download carry her name, e-mail and date, locked (no field left to edit)
+    const sent = attachment(Buffer.from(d.raw!).toString(), "COF Banneg.pdf");
+    const downloaded = (await cof.downloadCofDocument(d.token, circular.id))!.data;
+    for (const pdf of [sent, downloaded]) {
+      expect(await pdfTexts(pdf)).toEqual(expect.arrayContaining([today, "Rafaela Conceição Lima", "rafa@x.com"]));
+      expect((await PDFDocument.load(pdf)).getForm().getFields()).toHaveLength(0);
+    }
+    // The template in Ajustes stays blank, and a PDF without the fields goes as it is
+    const stored = await db.franchiseDocument.findUniqueOrThrow({ where: { id: circular.id } });
+    expect((await PDFDocument.load(stored.data)).getForm().getFields()).toHaveLength(3);
+    expect(Buffer.from((await cof.downloadCofDocument(d.token, contract.id))!.data).toString()).toBe("%PDF-1.4 contrato");
   });
 
   it("asks for the e-mail and respects the lead who asked for no e-mails", async () => {

@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import MailComposer from "nodemailer/lib/mail-composer";
+import { PDFDocument, PDFName, PDFRef } from "pdf-lib";
 import type { Lead } from "@prisma/client";
 import { db } from "./db";
 import { logEvent } from "./events";
@@ -14,7 +15,47 @@ export const COF_DAYS = 10;
 export const MAX_ATTACHED_BYTES = 15 * 1024 * 1024;
 const BASE = (process.env.PUBLIC_BASE_URL ?? "https://crm-banneg-banneg.vercel.app").replace(/\/$/, "");
 
-export type CofDoc = { id: string; name: string; size: number; sha256: string };
+// The fields a COF's PDF carries for each candidate (form fields with these names), filled and locked when it goes
+export const COF_FIELDS = { candidato: "cof_candidato", email: "cof_email", data: "cof_data_envio" } as const;
+export type CofFill = Record<keyof typeof COF_FIELDS, string>;
+
+// fill: what the PDFs of this sending got written in them
+export type CofDoc = { id: string; name: string; size: number; sha256: string; fill?: CofFill };
+
+// The PDF's own font writes only these characters: anything else becomes a space
+const winAnsi = (s: string) =>
+  s
+    .normalize("NFC")
+    .replace(/[^\x20-\x7E\u00A0-\u00FF]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/** The PDF with the candidate's name, the e-mail it goes to and the sending date, when it has the COF's fields; else null. */
+export async function fillCof(pdf: Uint8Array, fill: CofFill): Promise<Uint8Array | null> {
+  try {
+    const doc = await PDFDocument.load(pdf);
+    const form = doc.getForm();
+    const names = new Set(form.getFields().map((f) => f.getName()));
+    const present = (Object.keys(COF_FIELDS) as (keyof CofFill)[]).filter((k) => names.has(COF_FIELDS[k]));
+    if (!present.length) return null;
+    for (const k of present) form.getTextField(COF_FIELDS[k]).setText(winAnsi(fill[k]));
+    form.flatten();
+    // Flattening leaves the pages pointing at the removed fields, which some readers report as a broken file
+    for (const page of doc.getPages()) {
+      const annots = page.node.Annots();
+      if (!annots) continue;
+      for (let i = annots.size() - 1; i >= 0; i--) {
+        const ref = annots.get(i);
+        if (ref instanceof PDFRef && !doc.context.lookup(ref)) annots.remove(i);
+      }
+      if (!annots.size()) page.node.delete(PDFName.of("Annots"));
+    }
+    // A classic cross-reference table: every PDF reader opens it
+    return await doc.save({ useObjectStreams: false });
+  } catch {
+    return null;
+  }
+}
 
 export const cofLink = (token: string) => `${BASE}/cof/${token}`;
 
@@ -70,6 +111,11 @@ export async function sendCof(lead: Lead, actor: string, opts: { once?: boolean 
     return "Ignorado: lead sem e-mail (tarefa criada para pedir).";
   }
   if (lead.emailOptOut) return "Ignorado: lead pediu para não receber e-mails.";
+  // The COF names the candidate: without a name it waits for someone to ask
+  if (!lead.name?.trim()) {
+    await ensureTask(lead.id, lead.ownerId, "Pedir o nome do lead para enviar a COF");
+    return "Ignorado: lead sem nome (tarefa criada para pedir).";
+  }
   const docs = await cofDocuments();
   if (!docs.length) {
     await ensureTask(lead.id, lead.ownerId, "Subir a COF em Ajustes e enviar para o lead");
@@ -98,8 +144,14 @@ export async function sendCof(lead: Lead, actor: string, opts: { once?: boolean 
     withButton(emailHtml(text), { label: "Confirmar que recebi", url: vars.link_cof }) +
     // Loads when the e-mail is opened: a sign it was seen, not the proof (that is the confirmation)
     `<img src="${BASE}/api/cof/${token}/aberto.gif" width="1" height="1" alt="" style="display:block;border:0">`;
+  const fill: CofFill = { candidato: lead.name.trim(), email: lead.email, data: dateBr(new Date()) };
+  const sent: CofDoc[] = docs.map((d) => ({ ...d, fill }));
   const files = attached
-    ? await db.franchiseDocument.findMany({ where: { id: { in: docs.map((d) => d.id) } }, select: { id: true, data: true, mimeType: true } })
+    ? await Promise.all(
+        (await db.franchiseDocument.findMany({ where: { id: { in: docs.map((d) => d.id) } }, select: { id: true, data: true, mimeType: true } })).map(
+          async (f) => ({ ...f, data: (f.mimeType === "application/pdf" && (await fillCof(f.data, fill))) || f.data }),
+        ),
+      )
     : [];
   const mail = new MailComposer({
     from: emailFrom(),
@@ -118,7 +170,7 @@ export async function sendCof(lead: Lead, actor: string, opts: { once?: boolean 
   const simulated = settings.testMode && !isTestContact(settings, lead.email);
   const smtpResponse = simulated ? "Simulado (modo teste): não enviado." : await sendRawEmail(lead.email, raw);
   const delivery = await db.cofDelivery.create({
-    data: { leadId: lead.id, token, to: lead.email, subject, body: text, documents: docs, attached, messageId, smtpResponse, raw: new Uint8Array(raw), sentBy: actor },
+    data: { leadId: lead.id, token, to: lead.email, subject, body: text, documents: sent, attached, messageId, smtpResponse, raw: new Uint8Array(raw), sentBy: actor },
   });
   await db.message.create({
     data: { leadId: lead.id, channel: "EMAIL", direction: "OUT", body: `${subject}\n\n${text}`, author: actor, status: simulated ? "SIMULATED" : "SENT" },
@@ -149,9 +201,11 @@ export async function downloadCofDocument(token: string, docId: string) {
   if (!d || !doc) return null;
   const file = await db.franchiseDocument.findUnique({ where: { id: doc.id }, select: { data: true, mimeType: true } });
   if (!file) return null;
+  // The same COF the e-mail carried: with this candidate's name, e-mail and sending date
+  const data = (doc.fill && file.mimeType === "application/pdf" && (await fillCof(file.data, doc.fill))) || file.data;
   await db.cofDelivery.update({ where: { id: d.id }, data: { downloadedAt: d.downloadedAt ?? new Date(), openedAt: d.openedAt ?? new Date() } });
   await logEvent(d.leadId, "cof.downloaded", "Lead", `Baixou ${doc.name}.`);
-  return { name: doc.name, mimeType: file.mimeType, data: file.data };
+  return { name: doc.name, mimeType: file.mimeType, data };
 }
 
 /** The lead pressed "Confirmo que recebi": the proof of receipt, with when, from where and on what device. */
