@@ -158,6 +158,13 @@ async function Config() {
                 <input name="hoursEnd" type="number" min={1} max={24} defaultValue={settings.businessHours.end} className={inputCls} />
               </label>
             </div>
+            <label className="block text-sm">
+              Convidados de toda reunião (um e-mail por linha)
+              <textarea name="meetingGuests" rows={2} defaultValue={settings.meetingGuests.join("\n")} placeholder="nome@banneg.com.br" className={inputCls} />
+              <span className="text-xs text-slate-500">
+                O Google manda o convite com o link do Meet para eles, como para o lead. Ao salvar, eles entram também nas reuniões já marcadas.
+              </span>
+            </label>
             <p className="text-xs text-slate-500">Follow-ups e lembretes agora ficam nas automações de cada etapa, em Funil › Editar funil.</p>
             <button className={btnCls}>Salvar</button>
           </fieldset>

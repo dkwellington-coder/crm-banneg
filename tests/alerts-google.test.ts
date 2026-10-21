@@ -29,7 +29,9 @@ describe.skipIf(!dbUrl)("alerts, Google agenda and meetings booked by the team",
   let google: typeof import("@/lib/google");
   let jobs: typeof import("@/lib/jobs");
   const meta: Record<string, unknown>[] = [];
-  const googleCalls: { url: string; body: Record<string, unknown> | string }[] = [];
+  const googleCalls: { url: string; method?: string; body: Record<string, unknown> | string }[] = [];
+  // The event as Google keeps it: created, then read and patched
+  let eventAttendees: { email: string; responseStatus?: string }[] = [];
 
   beforeAll(async () => {
     db = (await import("@/lib/db")).db;
@@ -37,7 +39,7 @@ describe.skipIf(!dbUrl)("alerts, Google agenda and meetings booked by the team",
     alerts = await import("@/lib/alerts");
     google = await import("@/lib/google");
     jobs = await import("@/lib/jobs");
-    vi.stubGlobal("fetch", async (url: string, init: { body: string | URLSearchParams }) => {
+    vi.stubGlobal("fetch", async (url: string, init: { method?: string; body?: string | URLSearchParams }) => {
       if (url.startsWith("https://oauth2.googleapis.com/token")) {
         const form = new URLSearchParams(String(init.body));
         googleCalls.push({ url, body: Object.fromEntries(form) });
@@ -48,7 +50,11 @@ describe.skipIf(!dbUrl)("alerts, Google agenda and meetings booked by the team",
         return Response.json({ access_token: `access-for-${form.get("refresh_token")}` });
       }
       if (url.startsWith("https://www.googleapis.com/calendar/v3/calendars/")) {
-        googleCalls.push({ url, body: JSON.parse(String(init.body)) });
+        const method = init.method ?? "GET";
+        const body = init.body ? JSON.parse(String(init.body)) : "";
+        googleCalls.push({ url, method, body });
+        if (method === "GET") return Response.json({ id: "ev1", attendees: eventAttendees });
+        if (body.attendees) eventAttendees = body.attendees;
         return Response.json({ id: "ev1", hangoutLink: "https://meet.google.com/abc-defg-hij" });
       }
       const body = JSON.parse(String(init.body));
@@ -170,6 +176,46 @@ describe.skipIf(!dbUrl)("alerts, Google agenda and meetings booked by the team",
     expect(after.stage.key).toBe("reuniao");
     expect(after.status).toBe("MEETING_BOOKED");
     expect(after.ownerId).toBe(manager.id);
+  });
+
+  it("invites the guests set in Ajustes to every meeting, and adds them to the ones already booked", async () => {
+    const { saveSettings } = await import("@/lib/settings");
+    const { inviteGuestsToUpcoming } = await import("@/lib/calendar");
+    const owner = await db.user.create({ data: { name: "Wellington", email: "wellington@banneg.com.br", role: "OWNER", passwordHash: "x" } });
+    await google.connectGoogle(owner.id, "code123", "https://crm/api/google/callback");
+    const book = async (name: string, phone: string, email: string, startsAt: Date) => {
+      const { lead } = await leads.createLead({ name, phone, email, source: "site" }, "teste");
+      return jobs.scheduleMeeting(await db.lead.findUniqueOrThrow({ where: { id: lead.id } }), {
+        userId: owner.id,
+        slot: { startsAt, endsAt: new Date(startsAt.getTime() + 30 * 60_000) },
+        actor: "Wellington",
+        notify: false,
+      });
+    };
+    const before = new Date("2026-10-01T00:00:00Z");
+
+    // Booked before anyone was on the list: only the lead is invited
+    await book("Ana", "41999990000", "ana@x.com", new Date("2026-10-19T13:00:00Z"));
+    expect(eventAttendees).toEqual([{ email: "ana@x.com" }]);
+    eventAttendees = [{ email: "ana@x.com", responseStatus: "accepted" }];
+
+    // The owner adds a partner in Ajustes: the meeting already booked gets him, the lead's answer is kept
+    await saveSettings({ meetingGuests: ["socio@banneg.com.br"] });
+    googleCalls.length = 0;
+    expect(await inviteGuestsToUpcoming(["socio@banneg.com.br"], before)).toBe(1);
+    const patch = googleCalls.find((c) => c.method === "PATCH")!;
+    expect(patch.url).toContain("/calendars/primary/events/ev1?sendUpdates=all");
+    expect(patch.body).toEqual({ attendees: [{ email: "ana@x.com", responseStatus: "accepted" }, { email: "socio@banneg.com.br" }] });
+    // Saving again changes nothing: he is already there
+    expect(await inviteGuestsToUpcoming(["SOCIO@banneg.com.br"], before)).toBe(0);
+    // Meetings in the past are left alone
+    expect(await inviteGuestsToUpcoming(["outro@banneg.com.br"], new Date("2026-10-20T00:00:00Z"))).toBe(0);
+
+    // New bookings invite the lead and the partner, each once
+    await book("Bia", "41999990001", "Socio@Banneg.com.br", new Date("2026-10-19T14:00:00Z"));
+    expect(eventAttendees).toEqual([{ email: "socio@banneg.com.br" }]);
+    await book("Caio", "41999990002", "caio@x.com", new Date("2026-10-19T15:00:00Z"));
+    expect(eventAttendees).toEqual([{ email: "caio@x.com" }, { email: "socio@banneg.com.br" }]);
   });
 
   it("outside the 24-hour window the link goes in the approved template with day, time and link", async () => {

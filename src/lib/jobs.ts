@@ -389,6 +389,7 @@ export async function bookMeeting(lead: Lead, userId: string, slot: Slot, actor:
       description: `Agendada por ${actor} pelo CRM.\n\n${lead.aiSummary ?? ""}`,
       slot,
       attendeeEmail: lead.email,
+      guests: (await getSettings()).meetingGuests,
     });
   } catch (e) {
     await logEvent(lead.id, "calendar.failed", actor, `Reunião salva no CRM, mas o Google Agenda falhou: ${(e as Error).message}`);

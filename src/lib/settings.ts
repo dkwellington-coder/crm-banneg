@@ -10,6 +10,8 @@ export type CrmSettings = {
   // Minimum score (0-100) to offer a meeting
   qualifyScore: number;
   meetingMinutes: number;
+  // E-mails invited to every meeting the CRM books; Google sends them the invitation, as it does to the lead
+  meetingGuests: string[];
   businessHours: BusinessHours;
   presentationUrl: string;
   // While on, WhatsApp and e-mail only really go to testContacts; the rest is recorded as simulated
@@ -62,6 +64,7 @@ export const DEFAULT_SETTINGS: CrmSettings = {
   ],
   qualifyScore: 60,
   meetingMinutes: 30,
+  meetingGuests: [],
   businessHours: { start: 9, end: 18, days: [1, 2, 3, 4, 5], timezone: "America/Sao_Paulo" },
   presentationUrl: DEFAULT_MATERIALS.apresentacao,
   testMode: true,

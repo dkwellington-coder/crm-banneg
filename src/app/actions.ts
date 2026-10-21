@@ -15,6 +15,7 @@ import { importLeads, importSummary } from "@/lib/import";
 import { ACTIONS, UNITS, type RuleConfig } from "@/lib/rules";
 import { METRICS } from "@/lib/goals";
 import { sendCof } from "@/lib/cof";
+import { inviteGuestsToUpcoming } from "@/lib/calendar";
 
 export async function loginAction(_: unknown, form: FormData) {
   const user = await login(String(form.get("email") ?? ""), String(form.get("password") ?? ""));
@@ -187,18 +188,29 @@ export async function saveSettingsAction(form: FormData) {
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
+  const guests = [
+    ...new Set(
+      String(form.get("meetingGuests") ?? "")
+        .split(/[\s,;]+/)
+        .map((e) => e.trim().toLowerCase())
+        .filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)),
+    ),
+  ];
   await saveSettings({
     companyName: String(form.get("companyName") ?? current.companyName),
     presentationUrl: String(form.get("presentationUrl") ?? ""),
     qualificationQuestions: lines("qualificationQuestions"),
     qualifyScore: Number(form.get("qualifyScore") ?? current.qualifyScore),
     meetingMinutes: Number(form.get("meetingMinutes") ?? current.meetingMinutes),
+    meetingGuests: guests,
     businessHours: {
       ...current.businessHours,
       start: Number(form.get("hoursStart") ?? current.businessHours.start),
       end: Number(form.get("hoursEnd") ?? current.businessHours.end),
     },
   });
+  // Whoever is on the list also gets the meetings already booked
+  await inviteGuestsToUpcoming(guests).catch(() => 0);
   revalidatePath("/configuracoes");
 }
 

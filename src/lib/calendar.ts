@@ -109,9 +109,14 @@ export async function googleBusy(user: AgendaUser, from: Date, to: Date) {
   return (cal?.busy ?? []).map((b) => ({ startsAt: new Date(b.start), endsAt: new Date(b.end) }));
 }
 
+/** Each e-mail once, whatever the case it was typed in. */
+const guestList = (emails: (string | null | undefined)[]) =>
+  [...new Set(emails.map((e) => e?.trim().toLowerCase()).filter((e): e is string => !!e))].map((email) => ({ email }));
+
 /**
  * Creates the event with a Meet link on the manager's Google agenda (or on the connected one, with the
- * manager invited). Google e-mails the invitation to the lead when the lead has an e-mail.
+ * manager invited). Google e-mails the invitation to the lead when the lead has an e-mail, and to the
+ * guests set in Ajustes for every meeting.
  */
 export async function createCalendarEvent(input: {
   user: AgendaUser;
@@ -119,10 +124,11 @@ export async function createCalendarEvent(input: {
   description: string;
   slot: Slot;
   attendeeEmail?: string | null;
+  guests?: string[];
 }) {
   const agenda = await googleAgendaFor(input.user);
   if (!agenda) return null;
-  const attendees = [input.attendeeEmail, agenda.invite].filter((e): e is string => !!e).map((email) => ({ email }));
+  const attendees = guestList([input.attendeeEmail, agenda.invite, ...(input.guests ?? [])]);
   const res = await fetch(
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(agenda.calendarId)}/events?conferenceDataVersion=1&sendUpdates=all`,
     {
@@ -155,4 +161,40 @@ export async function deleteCalendarEvent(user: AgendaUser, eventId: string) {
   // Already deleted on Google by hand: nothing left to do
   if (!res.ok && res.status !== 404 && res.status !== 410) throw new Error(`Google Agenda não apagou o evento: HTTP ${res.status} ${await res.text()}`);
   return true;
+}
+
+/**
+ * Adds the guests set in Ajustes to the meetings already booked ahead, so someone added there gets those
+ * invitations too. Who is already on an event is left as is; Google e-mails only the new guests.
+ */
+export async function inviteGuestsToUpcoming(guests: string[], now = new Date()) {
+  if (!guests.length) return 0;
+  const meetings = await db.meeting.findMany({
+    where: { status: "scheduled", startsAt: { gte: now }, calendarEventId: { not: null } },
+    include: { user: { select: { id: true, email: true, calendarId: true } } },
+    orderBy: { startsAt: "asc" },
+    take: 50,
+  });
+  let invited = 0;
+  for (const m of meetings) {
+    if (!m.user || !m.calendarEventId) continue;
+    try {
+      const agenda = await googleAgendaFor(m.user);
+      if (!agenda) continue;
+      const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(agenda.calendarId)}/events/${encodeURIComponent(m.calendarEventId)}`;
+      const headers = { Authorization: `Bearer ${agenda.accessToken}`, "Content-Type": "application/json" };
+      const res = await fetch(url, { method: "GET", headers });
+      if (!res.ok) continue;
+      const ev = (await res.json()) as { attendees?: { email: string }[] };
+      const current = ev.attendees ?? [];
+      const have = new Set(current.map((a) => a.email.toLowerCase()));
+      const add = guestList(guests).filter((g) => !have.has(g.email));
+      if (!add.length) continue;
+      const patch = await fetch(`${url}?sendUpdates=all`, { method: "PATCH", headers, body: JSON.stringify({ attendees: [...current, ...add] }) });
+      if (patch.ok) invited++;
+    } catch {
+      // That meeting keeps the guests it had; the next bookings still invite everyone
+    }
+  }
+  return invited;
 }
