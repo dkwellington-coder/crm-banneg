@@ -298,7 +298,9 @@ async function takeEmail(source: Buffer, pipelineId: string | null, opts: Parame
   if (!created) await logEvent(lead.id, "lead.email", "E-mail de leads", `Mandou um e-mail para ${opts.mailbox}${read.subject ? `: "${read.subject}"` : "."}`);
   // Without WhatsApp the AI cannot answer, and a lead already here wrote about something new: a person reads it
   if (!created || !lead.phone) await ensureTask(lead.id, lead.ownerId, ANSWER_EMAIL_TASK);
-  return { entry: { at, from: read.from, subject: read.subject, result: created ? "lead novo" : "lead que já estava no CRM", leadId: lead.id }, created };
+  // The log shows the lead, not the site or the person who sent the e-mail on its behalf
+  const who = [lead.name, lead.email && `<${lead.email}>`].filter(Boolean).join(" ") || lead.phone || read.from;
+  return { entry: { at, from: who, subject: read.subject, result: created ? "lead novo" : "lead que já estava no CRM", leadId: lead.id }, created };
 }
 
 /** Reads the e-mails that arrived since the last read and creates their leads. Called by the cron every 2 minutes. */
