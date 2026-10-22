@@ -9,6 +9,8 @@ export const RESEND_HOURS = 48;
 // One lead every 20 seconds: an account just back from a block should not see a burst
 const SPACING_MS = 20_000;
 const REACHED = ["SENT", "DELIVERED", "READ"] as const;
+// How meeting.reminder starts its text (jobs.ts)
+const REMINDER = "Lembrete: nossa reunião";
 
 export type Blocked = { lead: Lead & { stage: Stage }; messages: Message[]; waitingForAi: boolean };
 
@@ -65,9 +67,12 @@ export async function blockedByAccount(since: Date, leadId?: string): Promise<Bl
     // The lead wrote and the answer was lost: the AI answers again, with what is true now (free times change)
     const inbound = lead.lastInboundAt;
     const waitingForAi = !!(!lead.aiPaused && lead.sdrId && inbound && all.some((m) => m.createdAt > inbound) && !(await reachedAfter(lead.id, inbound)));
-    // Otherwise the same messages, one of each, from the stage the lead is still in (an older stage's follow-up is stale)
+    // Otherwise the same messages, one of each, from the stage the lead is still in (an older stage's follow-up is stale).
+    // Not a meeting reminder: its "amanhã" may no longer be true, and the one an hour before goes anyway
     const seen = new Set<string>();
-    const messages = all.filter((m) => m.createdAt >= lead.stageEnteredAt && !seen.has(m.body) && seen.add(m.body)).slice(-3);
+    const messages = all
+      .filter((m) => m.createdAt >= lead.stageEnteredAt && !m.body.startsWith(REMINDER) && !seen.has(m.body) && seen.add(m.body))
+      .slice(-3);
     if (waitingForAi || messages.length) blocked.push({ lead, messages: waitingForAi ? all.slice(-1) : messages, waitingForAi });
   }
   return blocked;

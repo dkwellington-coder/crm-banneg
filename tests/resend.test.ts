@@ -77,6 +77,10 @@ describe.skipIf(!dbUrl)("resend after an account block", () => {
     const lucas = await lead("Lucas Lima", "11955550002", { aiPaused: true, lastInboundAt: hoursAgo(120) });
     for (const h of [3, 2.9, 2.8]) await out(lucas.id, "Oi, Lucas! Conseguiu olhar a proposta?", hoursAgo(h), { template: "banneg_proposta", author: "Alice" });
 
+    // A meeting reminder is not sent again: "amanhã" may be today by now, and the one an hour before goes anyway
+    const andre = await lead("André", "11955550007", { aiPaused: true, lastInboundAt: hoursAgo(20) });
+    await out(andre.id, "Lembrete: nossa reunião é amanhã, quinta-feira, 22/10, 14:30. Até lá!", hoursAgo(18), { author: "Automação" });
+
     // Left out: the contact's own failure, a closed lead, a lead reached since, and the paused queue of the old base
     const paola = await lead("Paola", "11955550003");
     await out(paola.id, "Oi, Paola!", hoursAgo(3), { errorCode: 131049 });
