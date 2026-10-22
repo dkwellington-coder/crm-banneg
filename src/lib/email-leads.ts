@@ -23,7 +23,8 @@ export function mailboxUser() {
   return (process.env.LEADS_IMAP_USER || "leads@banneg.com.br").trim().toLowerCase();
 }
 
-export type EmailLog = { at: string; from: string; subject: string; result: string; leadId?: string };
+// preview: the start of an e-mail that had no contact, so a form laid out some new way can be read later
+export type EmailLog = { at: string; from: string; subject: string; result: string; leadId?: string; preview?: string };
 
 export type EmailLeadsState = {
   // The box's UIDVALIDITY and the last e-mail read: a new e-mail always has a higher UID
@@ -87,24 +88,94 @@ const clean = (s: string) =>
     .replace(/[*_]/g, "")
     .trim();
 
-/** A form's "Label: value" lines as lead fields; labels the CRM has no field for go to the AI. */
+type Field = "name" | "email" | "phone" | "city" | "state";
+
+function fieldOf(label: string): Field | null {
+  if (/^(nome( completo)?|seu nome|name|full name|your name)$/.test(label)) return "name";
+  if (/^(e-?mail|seu e-?mail|email address|your email)$/.test(label)) return "email";
+  if (/^(telefone|celular|whatsapp|whats|fone|tel|phone|contato|telefone\/whatsapp|celular\/whatsapp|telefone \(whatsapp\)|phone number)$/.test(label)) return "phone";
+  if (/^(cidade|city)$/.test(label)) return "city";
+  if (/^(estado|uf)$/.test(label)) return "state";
+  return null;
+}
+
+// Questions a site form asks that are worth a line of their own for the AI (the label sits above the answer)
+const EXTRA_LABEL = /^(mensagem|message|comment or message|comentario( ou mensagem)?|observac(ao|oes)|duvida|interesse|produto|servico|empresa|seguro|tipo de seguro|consorcio|como nos conheceu|o que procura)$/;
+const HEADER_LABEL = /^(de|from|para|to|cc|enviado|sent|data|date|assunto|subject)$/;
+
+function put(out: Fields, label: string, raw: string, value: string) {
+  out.lines++;
+  const field = fieldOf(label);
+  if (field === "email") out.email ??= EMAIL_RE.exec(value)?.[0];
+  else if (field) out[field] ??= value;
+  else if (Object.keys(out.qualification).length < 12) out.qualification[raw.trim().slice(0, 60)] = value.slice(0, 500);
+}
+
+const LABEL_LINE = /^[-*_ ]*([\p{L}][\p{L}\p{N} /()?-]{0,40}?)[-*_ :]*$/u;
+
+function isLabelLine(line: string) {
+  const m = LABEL_LINE.exec(line);
+  const label = m ? clean(m[1]).replace(/\?$/, "").trim() : "";
+  return !!m && (!!fieldOf(label) || EXTRA_LABEL.test(label));
+}
+
+/**
+ * A form's answers as lead fields: "Label: value" lines, or a known label on its own line with the answer below it
+ * (WordPress forms such as WPForms). Labels the CRM has no field for go to the AI.
+ */
 export function formFields(text: string): Fields {
   const out: Fields = { qualification: {}, lines: 0 };
-  for (const line of text.split(/\r?\n/)) {
-    const m = /^\s*[*_]*([\p{L}][\p{L}\p{N} /()?-]{0,40}?)[*_]*\s*:\s*(.+?)\s*$/u.exec(line);
-    if (!m) continue;
-    const label = clean(m[1]).replace(/\?$/, "").trim();
-    const value = m[2].replace(/^[*_]+|[*_]+$/g, "").trim();
-    if (!value || value.startsWith("//") || /^(de|from|para|to|cc|enviado|sent|data|date|assunto|subject)$/.test(label)) continue;
-    out.lines++;
-    if (/^(nome( completo)?|seu nome|name|full name)$/.test(label)) out.name ??= value;
-    else if (/^(e-?mail|seu e-?mail|email address)$/.test(label)) out.email ??= EMAIL_RE.exec(value)?.[0];
-    else if (/^(telefone|celular|whatsapp|whats|fone|tel|phone|contato|telefone\/whatsapp|celular\/whatsapp)$/.test(label)) out.phone ??= value;
-    else if (/^cidade$/.test(label)) out.city ??= value;
-    else if (/^(estado|uf)$/.test(label)) out.state ??= value;
-    else if (Object.keys(out.qualification).length < 12) out.qualification[m[1].trim().slice(0, 60)] = value.slice(0, 500);
+  const lines = text.split(/\r?\n/).map((l) => l.trim());
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^[*_]*([\p{L}][\p{L}\p{N} /()?-]{0,40}?)[*_]*\s*:\s*(.+?)$/u.exec(lines[i]);
+    if (m) {
+      const label = clean(m[1]).replace(/\?$/, "").trim();
+      const value = m[2].replace(/^[*_]+|[*_]+$/g, "").trim();
+      if (value && !value.startsWith("//") && !HEADER_LABEL.test(label)) put(out, label, m[1], value);
+      continue;
+    }
+    // "--- Nome ---", "Nome", "NOME:" alone on a line, the answer on the next lines
+    const alone = LABEL_LINE.exec(lines[i]);
+    const label = alone ? clean(alone[1]).replace(/\?$/, "").trim() : "";
+    if (!alone || !isLabelLine(lines[i])) continue;
+    let j = i + 1;
+    while (j < lines.length && !lines[j]) j++;
+    const answer: string[] = [];
+    let last = i;
+    // The answer is one line for a contact field; a message runs to a blank line or the next label
+    for (; j < lines.length && lines[j] && !isLabelLine(lines[j]); j++) {
+      answer.push(lines[j]);
+      last = j;
+      if (fieldOf(label)) break;
+    }
+    if (!answer.length) continue;
+    put(out, label, alone[1], answer.join(" "));
+    i = last;
   }
   return out;
+}
+
+const ENTITIES: Record<string, string> = {
+  nbsp: " ", amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
+  aacute: "á", agrave: "à", acirc: "â", atilde: "ã", eacute: "é", ecirc: "ê", iacute: "í", oacute: "ó", ocirc: "ô", otilde: "õ", uacute: "ú", ccedil: "ç",
+  Aacute: "Á", Agrave: "À", Acirc: "Â", Atilde: "Ã", Eacute: "É", Ecirc: "Ê", Iacute: "Í", Oacute: "Ó", Ocirc: "Ô", Otilde: "Õ", Uacute: "Ú", Ccedil: "Ç",
+};
+
+/** An HTML e-mail as lines of text, each table row, cell and bold label on its own line (as a form e-mail shows them). */
+export function htmlText(html: string) {
+  return html
+    .replace(/<(style|script|head|title)[\s\S]*?<\/\1>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|tr|td|th|li|h[1-6]|table|section|strong|b|blockquote)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&#(\d+);/g, (_, n: string) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n: string) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&([a-z]+);/gi, (e, name: string) => ENTITIES[name] ?? e)
+    .split("\n")
+    .map((l) => l.replace(/[ \t\u00a0]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 /** The first phone in the text that is a real Brazilian number and not one of the company's own. */
@@ -134,7 +205,7 @@ function ownText(text: string) {
 }
 
 export type ReadEmail =
-  | { skip: string; from: string; subject: string }
+  | { skip: string; from: string; subject: string; preview?: string }
   | {
       skip?: undefined;
       from: string;
@@ -147,7 +218,8 @@ export type ReadEmail =
 
 /**
  * Who the e-mail is from and what it says. Auto-replies, bounces and newsletters are skipped. An e-mail from the
- * company itself (a site form sent by wordpress@, a person forwarding a lead) is read for the contact inside it.
+ * company itself (the site's form, sent from the leads box to itself; a person forwarding a lead) is read for the contact
+ * inside it.
  */
 export function readLeadEmail(mail: ParsedMail, opts: { mailbox: string; ownPhones: string[]; ownDomains: string[] }): ReadEmail {
   const h = mail.headers;
@@ -160,12 +232,14 @@ export function readLeadEmail(mail: ParsedMail, opts: { mailbox: string; ownPhon
   const isOwn = (address: string) => opts.ownDomains.some((d) => address.endsWith(`@${d}`));
   const usable = (a: { address: string } | null) => !!a && !isOwn(a.address) && !NO_REPLY.test(a.address) && !BOUNCE.test(a.address);
 
-  if (from?.address === opts.mailbox) return skip("enviado pela própria caixa");
   if (from && BOUNCE.test(from.address)) return skip("aviso de e-mail não entregue");
   if ((header("auto-submitted") && header("auto-submitted") !== "no") || AUTO_SUBJECT.test(subject)) return skip("resposta automática");
   if (header("x-spam-flag") === "yes") return skip("marcado como spam");
 
-  const raw = (mail.text || "").replace(/ /g, " ");
+  // A site form usually sends HTML only, laid out in a table: its rows read better than the text mailparser makes of it
+  const plain = (mail.text || "").replace(/\u00a0/g, " ");
+  const fromHtml = mail.html ? htmlText(mail.html) : "";
+  const raw = fromHtml && formFields(fromHtml).lines > formFields(plain).lines ? fromHtml : plain;
   // A forwarded lead: the contact is the one in the forwarded e-mail, not the person who forwarded it
   const forward = from && isOwn(from.address) ? FORWARD_MARK.exec(raw) : null;
   const forwarded = forward ? raw.slice(forward.index + forward[0].length) : null;
@@ -181,10 +255,13 @@ export function readLeadEmail(mail: ParsedMail, opts: { mailbox: string; ownPhon
 
   const sender = [forwardedSender?.address ? forwardedSender : null, replyTo, forwarded ? null : from].find(usable) ?? null;
   const labeledEmail = fields.email?.toLowerCase();
-  const email = (labeledEmail && !isOwn(labeledEmail) ? labeledEmail : null) ?? sender?.address ?? null;
+  // Last, any address in the text that is not the company's (a form that labels the e-mail some other way)
+  const anyEmail =
+    fields.lines >= 2 ? [...text.matchAll(new RegExp(EMAIL_RE.source, "g"))].map((m) => m[0].toLowerCase()).find((a) => !isOwn(a) && !NO_REPLY.test(a)) : undefined;
+  const email = (labeledEmail && !isOwn(labeledEmail) ? labeledEmail : null) ?? sender?.address ?? anyEmail ?? null;
   const labeledPhone = fields.phone ? normalizePhone(fields.phone) : "";
   const phone = (/^55[1-9]\d{9,10}$/.test(labeledPhone) && !opts.ownPhones.includes(labeledPhone) ? labeledPhone : null) ?? findPhone(text, opts.ownPhones);
-  if (!email && !phone) return skip("sem e-mail nem telefone do lead");
+  if (!email && !phone) return { ...skip("sem e-mail nem telefone do lead"), preview: text.slice(0, 400) };
 
   const senderName = sender && sender.address === email && sender.name && !EMAIL_RE.test(sender.name) ? sender.name : null;
   const date = mail.date && mail.date.getTime() < Date.now() ? mail.date : new Date();
@@ -268,7 +345,8 @@ function friendlyError(e: unknown) {
 async function takeEmail(source: Buffer, pipelineId: string | null, opts: Parameters<typeof readLeadEmail>[1]): Promise<{ entry: EmailLog; created: boolean }> {
   const read = readLeadEmail(await simpleParser(source), opts);
   const at = new Date().toISOString();
-  if (read.skip !== undefined) return { entry: { at, from: read.from, subject: read.subject, result: `ignorado: ${read.skip}` }, created: false };
+  if (read.skip !== undefined)
+    return { entry: { at, from: read.from, subject: read.subject, result: `ignorado: ${read.skip}`, preview: read.preview }, created: false };
   const externalId = `email:${read.messageId}`;
   const known = await db.message.findUnique({ where: { externalId }, select: { leadId: true } });
   if (known) return { entry: { at, from: read.from, subject: read.subject, result: "já lido antes", leadId: known.leadId }, created: false };

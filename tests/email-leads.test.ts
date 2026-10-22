@@ -75,14 +75,52 @@ describe("reading an e-mail", () => {
     expect(r.lead).toMatchObject({ name: "Ana Paz", email: "ana@x.com", phone: "556193258573" });
   });
 
-  it("skips auto-replies, bounces, newsletters, its own e-mails and e-mails with no contact", async () => {
+  it("the site's form (WPForms), sent from the box to itself: the answers under each label make the lead", async () => {
+    // Classic template: the label in one table row, the answer in the next
+    const classic = await read(
+      eml(
+        { From: `Website Demos <${BOX}>`, Subject: "New Entry: Simple Contact Form" },
+        `<table><tbody><tr><td style="padding:10px"><strong>Nome</strong></td></tr><tr><td>Jo&atilde;o da Silva</td></tr>
+<tr><td><strong>E-mail</strong></td></tr><tr><td><a href="mailto:joao@x.com">joao@x.com</a></td></tr>
+<tr><td><strong>Telefone</strong></td></tr><tr><td>(11) 98888-7777</td></tr>
+<tr><td><strong>Comment or Message</strong></td></tr><tr><td>Quero uma cota&ccedil;&atilde;o<br>de seguro auto</td></tr></tbody></table>
+<p>Sent from <a href="https://banneg.com.br">Website Demos</a></p>`,
+        "text/html",
+      ),
+    );
+    if (classic.skip !== undefined) throw new Error(classic.skip);
+    expect(classic.lead).toMatchObject({ name: "João da Silva", email: "joao@x.com", phone: "5511988887777" });
+    expect(classic.lead.qualification).toMatchObject({ "Comment or Message": "Quero uma cotação de seguro auto" });
+    expect(classic.body).toContain("Quero uma cotação");
+
+    // Newer template: label and answer in the same cell
+    const modern = await read(
+      eml(
+        { From: `Website Demos <${BOX}>`, Subject: "New Entry: Simple Contact Form" },
+        `<table><tr class="smart-tag"><td class="field-name field-value"><strong>Name</strong><span class="field-value-break"></span>Maria Souza</td></tr><tr class="smart-tag"><td><strong>Email</strong><br><a href="mailto:maria@y.com">maria@y.com</a></td></tr><tr><td><strong>Comment or Message</strong><br>Oi, quero saber de consórcio. Meu zap 21 97777-6666</td></tr></table>`,
+        "text/html",
+      ),
+    );
+    if (modern.skip !== undefined) throw new Error(modern.skip);
+    expect(modern.lead).toMatchObject({ name: "Maria Souza", email: "maria@y.com", phone: "5521977776666" });
+
+    // Plain text template
+    const plain = await read(eml({ From: BOX, Subject: "New Entry: Contato" }, "--- Name ---\n\nRui Lima\n\n--- Email ---\n\nrui@z.com\n\n--- Comment or Message ---\n\nLigar à tarde"));
+    if (plain.skip !== undefined) throw new Error(plain.skip);
+    expect(plain.lead).toMatchObject({ name: "Rui Lima", email: "rui@z.com" });
+    expect(plain.lead.qualification).toMatchObject({ "Comment or Message": "Ligar à tarde" });
+  });
+
+  it("skips auto-replies, bounces, newsletters and e-mails with no contact", async () => {
     expect((await read(eml({ From: "a@x.com", "Auto-Submitted": "auto-replied", Subject: "Oi" }, "Estou fora")))).toMatchObject({ skip: "resposta automática" });
     expect((await read(eml({ From: "a@x.com", Subject: "Resposta automática: Franquia" }, "Estou fora")))).toMatchObject({ skip: "resposta automática" });
     expect((await read(eml({ From: "MAILER-DAEMON@locaweb.com.br", Subject: "Undelivered" }, "x")))).toMatchObject({ skip: "aviso de e-mail não entregue" });
     expect((await read(eml({ From: "news@loja.com", "List-Unsubscribe": "<https://x>", Subject: "Ofertas" }, "Promoções da semana")))).toMatchObject({
       skip: "newsletter ou e-mail em massa",
     });
-    expect((await read(eml({ From: BOX, Subject: "teste" }, "x")))).toMatchObject({ skip: "enviado pela própria caixa" });
+    expect((await read(eml({ From: `Banneg | Cotações <${BOX}>`, Subject: "WP Mail SMTP: HTML test email" }, "<p>Congrats, test email was sent successfully!</p>", "text/html")))).toMatchObject({
+      skip: "sem e-mail nem telefone do lead",
+    });
     expect((await read(eml({ From: "odair@banneg.com.br", Subject: "Reunião" }, "Pessoal, reunião amanhã.")))).toMatchObject({
       skip: "sem e-mail nem telefone do lead",
     });
