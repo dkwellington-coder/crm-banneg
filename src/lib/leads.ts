@@ -92,15 +92,32 @@ async function leadByPhone(phone: string) {
   );
 }
 
+/**
+ * A lead who comes back by another way (wrote on WhatsApp, then filled the Meta form) keeps one card, and
+ * gets what the new entry knows and the card lacks: the e-mail the COF goes to, the name, the Meta id.
+ */
+async function returning(existing: Lead, input: NewLeadInput, actor: string) {
+  const email = input.email?.trim().toLowerCase();
+  const fill = {
+    ...(!existing.email && email && { email }),
+    ...(!existing.name && input.name?.trim() && { name: input.name.trim() }),
+    ...(!existing.city && input.city?.trim() && { city: input.city.trim() }),
+    ...(!existing.state && input.state?.trim() && { state: input.state.trim() }),
+    ...(!existing.externalId && input.externalId && { externalId: input.externalId }),
+  };
+  const lead = Object.keys(fill).length ? await db.lead.update({ where: { id: existing.id }, data: fill }) : existing;
+  const added = Object.keys(fill).length ? ` Completou: ${Object.keys(fill).join(", ")}.` : "";
+  await logEvent(existing.id, "lead.duplicate", actor, `Entrou de novo pela origem "${input.source}".${added}`);
+  return { lead, created: false };
+}
+
 export async function createLead(input: NewLeadInput, actor: string) {
-  const phone = input.phone ? normalizePhone(input.phone) : null;
-  if (phone) {
-    const existing = await leadByPhone(phone);
-    if (existing) {
-      await logEvent(existing.id, "lead.duplicate", actor, `Entrou de novo pela origem "${input.source}".`);
-      return { lead: existing, created: false };
-    }
-  }
+  // "-" or "não tenho" has no digits: no phone, not an empty one (the column is unique)
+  const phone = (input.phone && normalizePhone(input.phone)) || null;
+  const email = input.email?.trim().toLowerCase() || null;
+  // With a phone, the phone decides (two people can share an e-mail); without one, the e-mail
+  const existing = phone ? await leadByPhone(phone) : email ? await db.lead.findFirst({ where: { email }, orderBy: { createdAt: "asc" } }) : null;
+  if (existing) return returning(existing, input, actor);
   const chosen = input.stageId ? await db.stage.findUnique({ where: { id: input.stageId } }) : null;
   const pipelineId = chosen?.pipelineId ?? (input.pipelineId || (await defaultPipeline()).id);
   const stage =
@@ -115,7 +132,7 @@ export async function createLead(input: NewLeadInput, actor: string) {
       data: {
         name: input.name?.trim() || null,
         phone,
-        email: input.email?.trim().toLowerCase() || null,
+        email,
         city: input.city?.trim() || null,
         state: input.state?.trim() || null,
         source: input.source,
@@ -136,7 +153,7 @@ export async function createLead(input: NewLeadInput, actor: string) {
     // Two posts with the same number at the same moment: the second gets the lead the first one created
     const existing = (e as { code?: string }).code === "P2002" && phone ? await leadByPhone(phone) : null;
     if (!existing) throw e;
-    return { lead: existing, created: false };
+    return returning(existing, input, actor);
   }
   await logEvent(lead.id, "lead.created", actor, `Lead criado (origem: ${input.source}).`);
   await queueCapi(db, lead, stage).catch(() => console.error("Meta CAPI: falha ao registrar evento na fila."));
@@ -744,7 +761,8 @@ const STATUS_BY_STAGE_KEY = Object.fromEntries(Object.entries(STAGE_KEYS).map(([
 >;
 
 /** Moves a lead (drag and drop, the AI or a rule) and starts the new stage's automations. */
-export async function moveLead(leadId: string, stageId: string, actor: string, extra: Prisma.LeadUncheckedUpdateInput = {}) {
+/** rules: false moves without starting the new stage's automations (a stage being deleted hands its leads over). */
+export async function moveLead(leadId: string, stageId: string, actor: string, extra: Prisma.LeadUncheckedUpdateInput = {}, { rules = true } = {}) {
   const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId }, include: { stage: true } });
   const stage = await db.stage.findUniqueOrThrow({ where: { id: stageId } });
   if (lead.stageId === stageId && Object.keys(extra).length === 0) return lead;
@@ -782,7 +800,7 @@ export async function moveLead(leadId: string, stageId: string, actor: string, e
     } else {
       await cancelRuleJobs(leadId, "stage");
     }
-    await scheduleStageRules(updated);
+    if (rules) await scheduleStageRules(updated);
   }
   return updated;
 }

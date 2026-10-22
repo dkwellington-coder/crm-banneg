@@ -332,11 +332,11 @@ describe.skipIf(!dbUrl)("lead flow", () => {
   });
 
   it("a lead whose WhatsApp comes without the 9 lands on the lead the form created", async () => {
-    const { lead } = await leads.createLead({ name: "Lucas", phone: "61 99325-8573", source: "Instagram" }, "teste");
-    await leads.handleInbound({ phone: "556193258573", body: "Confirmo", externalId: "nine1", at: new Date() });
-    expect(await db.lead.count({ where: { phone: { in: ["5561993258573", "556193258573"] } } })).toBe(1);
+    const { lead } = await leads.createLead({ name: "Lucas", phone: "61 98765-4321", source: "Instagram" }, "teste");
+    await leads.handleInbound({ phone: "556187654321", body: "Confirmo", externalId: "nine1", at: new Date() });
+    expect(await db.lead.count({ where: { phone: { in: ["5561987654321", "556187654321"] } } })).toBe(1);
     expect(await db.message.findFirstOrThrow({ where: { externalId: "nine1" } })).toMatchObject({ leadId: lead.id });
-    const again = await leads.createLead({ name: "Lucas", phone: "556193258573", source: "site" }, "teste");
+    const again = await leads.createLead({ name: "Lucas", phone: "556187654321", source: "site" }, "teste");
     expect(again).toMatchObject({ created: false, lead: { id: lead.id } });
   });
 
@@ -414,5 +414,44 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(await jobs.runAction(quiet, "whatsapp", { text: "Oi" })).toMatch(/não tem modelo da Meta/);
     expect(await jobs.runAction(quiet, "whatsapp", { text: "Oi", templateName: "banneg_inexistente" })).toMatch(/não está cadastrado/);
     expect(raw).toHaveLength(0);
+  });
+  it("a returning lead fills only what was missing, and a lead without a phone is matched by e-mail", async () => {
+    const { lead } = await leads.createLead({ name: "Rui", phone: "(061) 98765-0000", source: "site" }, "teste");
+    // The leading 0 is the long-distance prefix
+    expect(lead.phone).toBe("5561987650000");
+    const again = await leads.createLead({ name: "Rui Lima", phone: "61 98765-0000", email: "Rui@X.com", city: "Brasília", source: "Facebook" }, "teste");
+    expect(again.created).toBe(false);
+    expect(await db.lead.findUniqueOrThrow({ where: { id: lead.id } })).toMatchObject({ name: "Rui", email: "rui@x.com", city: "Brasília" });
+
+    // "-" as the phone is no phone: two such leads never collide on the unique column
+    const a = await leads.createLead({ name: "Sem fone", phone: "-", email: "semfone@x.com", source: "Facebook" }, "teste");
+    const other = await leads.createLead({ name: "Outro", phone: "-", email: "outro@x.com", source: "Facebook" }, "teste");
+    const b = await leads.createLead({ name: "Sem fone", email: " SemFone@x.com ", source: "Facebook" }, "teste");
+    expect([a.created, other.created, b.created]).toEqual([true, true, false]);
+    expect(a.lead.phone).toBeNull();
+    expect(b.lead.id).toBe(a.lead.id);
+  });
+
+  it("drops the AI's answer when someone took the lead over while it was thinking", async () => {
+    const { lead } = await leads.createLead({ name: "Bia", phone: "41999990005", source: "site" }, "teste");
+    await drain();
+    sent.length = 0;
+    await leads.handleInbound({ phone: "5541999990005", body: "Oi, quero saber mais", externalId: "stale1", at: new Date() });
+    const sdr = await import("@/lib/sdr");
+    vi.mocked(sdr.runSdrTurn).mockImplementationOnce(async () => {
+      await db.lead.update({ where: { id: lead.id }, data: { aiPaused: true } });
+      return { reply: "Resposta que não deve sair", extracted: empty, score: 50, temperature: "morno", decision: "continue", slotIndex: null, sendCof: false, reason: "", summary: "" };
+    });
+    const results = await drain();
+    expect(sent).toEqual([]);
+    expect(results.find((r) => r.type === "sdr.reply")?.result).toMatch(/mudou enquanto a IA respondia/);
+  });
+
+  it("a job cut off midway fails once, with a task for the team, instead of hanging", async () => {
+    const { lead } = await leads.createLead({ name: "Caio", phone: "41999990006", source: "site" }, "teste");
+    const job = await db.job.create({ data: { type: "rule.run", leadId: lead.id, status: "RUNNING", runAt: new Date(Date.now() - 20 * 60_000), dedupeKey: "cut" } });
+    await jobs.runDueJobs();
+    expect(await db.job.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "FAILED", dedupeKey: null });
+    expect(await db.task.count({ where: { leadId: lead.id, title: { contains: "Automação interrompida" } } })).toBe(1);
   });
 });

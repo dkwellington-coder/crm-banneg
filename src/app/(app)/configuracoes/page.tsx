@@ -16,6 +16,7 @@ import {
   saveKnowledgeAction,
   saveMacroAction,
   saveSettingsAction,
+  removeUserAccessAction,
   saveUserAction,
   saveWaTemplateAction,
 } from "../../actions";
@@ -336,10 +337,12 @@ async function Config() {
       <Section id="macros" title="Macros" hint="Respostas prontas para a equipe. Apague o título para remover.">
         {[...macros, null].map((m) => (
           <form key={m?.id ?? "new"} action={saveMacroAction} className="space-y-2 border-t border-slate-100 pt-2 first:border-0 first:pt-0">
-            <input type="hidden" name="id" defaultValue={m?.id ?? ""} />
-            <input name="title" defaultValue={m?.title ?? ""} placeholder="Nova macro" className={inputCls} />
-            <textarea name="body" rows={2} defaultValue={m?.body ?? ""} className={inputCls} />
-            <button className={btnGhostCls}>{m ? "Salvar" : "Adicionar macro"}</button>
+            <fieldset disabled={!!m && user.role === "SELLER"} className="space-y-2">
+              <input type="hidden" name="id" defaultValue={m?.id ?? ""} />
+              <input name="title" defaultValue={m?.title ?? ""} placeholder="Nova macro" className={inputCls} />
+              <textarea name="body" rows={2} defaultValue={m?.body ?? ""} className={inputCls} />
+              <button className={`${btnGhostCls} ${m && user.role === "SELLER" ? "hidden" : ""}`}>{m ? "Salvar" : "Adicionar macro"}</button>
+            </fieldset>
           </form>
         ))}
       </Section>
@@ -358,6 +361,15 @@ async function Config() {
               <input name="calendarId" defaultValue={u?.calendarId ?? ""} placeholder="Agenda Google" className={`${inputCls} w-48!`} />
               <input name="password" type="password" placeholder={u ? "Nova senha (opcional)" : "Senha"} className={`${inputCls} w-40!`} />
               <button className={btnGhostCls}>{u ? "Salvar" : "Adicionar"}</button>
+              {u && owner && u.id !== user.id && (
+                <button
+                  formAction={removeUserAccessAction.bind(null, u.id)}
+                  title="Desconecta a pessoa de todos os aparelhos e troca a senha. Para devolver o acesso, dê uma nova senha aqui."
+                  className="text-xs text-slate-400 hover:text-red-600"
+                >
+                  Tirar acesso
+                </button>
+              )}
             </fieldset>
           </form>
         ))}

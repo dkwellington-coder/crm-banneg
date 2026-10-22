@@ -5,18 +5,19 @@ import { checkCalendar, checkFunnelNumbers, checkTranscription, checkWhatsApp, w
 import { googleConfigured } from "@/lib/google";
 import { runDailyBatches } from "@/lib/batches";
 import { auditMetaLeadsIfDue, pullMetaLeads } from "@/lib/meta-leads";
+import { bearerMatches } from "@/lib/auth";
 import { syncAdSpend } from "@/lib/meta-ads";
 import { forwardTarget } from "@/lib/whatsapp-forward";
 import { backfillCapi, runCapi } from "@/lib/meta-capi";
 
 // Called every minute by the server's scheduler (cron, Vercel Cron, or the worker script).
 export async function GET(request: Request) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret || request.headers.get("authorization") !== `Bearer ${secret}`) {
+  if (!bearerMatches(request.headers.get("authorization"), process.env.CRON_SECRET)) {
     return new Response("unauthorized", { status: 401 });
   }
   const minute = new Date().getMinutes();
-  await backfillCapi().catch(() => console.error("Meta CAPI: falha ao preparar histórico."));
+  // The history only needs a pass now and then; new leads are queued as they come
+  if (minute % 15 === 0) await backfillCapi().catch(() => console.error("Meta CAPI: falha ao preparar histórico."));
   await runCapi(3).catch(() => console.error("Meta CAPI: falha ao processar fila."));
   const batches = await runDailyBatches().catch((e: Error) => ({ error: e.message }));
   const results = await runDueJobs();

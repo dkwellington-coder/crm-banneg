@@ -68,6 +68,8 @@ const handlers: Record<string, Handler> = {
   async "sdr.first_contact"(_job, l) {
     const lead = needLead(l);
     if (lead.aiPaused || lead.status !== "NEW") return "Ignorado: lead já em atendimento.";
+    // It wrote in the minute before this ran: the AI is answering what it said, no canned opener on top
+    if (lead.lastInboundAt) return "Ignorado: o lead já escreveu; a IA responde.";
     const { agent, settings } = await sdrContext(lead);
     const firstName = lead.name?.split(" ")[0];
     const body = `Olá${firstName ? `, ${firstName}` : ""}! Aqui é a ${agent.name}, do time de expansão do ${settings.companyName}. Recebi seu interesse na nossa franquia de seguros e separei um vídeo de 1 minuto que mostra como o franqueado ganha dinheiro. Posso te enviar?`;
@@ -89,6 +91,11 @@ const handlers: Record<string, Handler> = {
     if (lead.aiPaused) return "Ignorado: IA pausada neste lead.";
     const { ctx, slots, settings, agent, owner } = await sdrContext(lead);
     const decision = await runSdrTurn(ctx);
+    // Claude takes a while: meanwhile someone may have answered (which pauses the AI), closed or moved the lead,
+    // or the lead asked to stop. Then this answer is stale and does not go
+    const current = await db.lead.findUniqueOrThrow({ where: { id: lead.id } });
+    if (current.aiPaused || current.whatsappOptOut || isClosed(current) || current.stageId !== lead.stageId)
+      return "Ignorado: o lead mudou enquanto a IA respondia (atendido, pausado, encerrado, movido ou pediu para parar).";
     const plan = planFromDecision(decision, slots, settings.qualifyScore);
 
     await db.lead.update({
@@ -99,7 +106,6 @@ const handlers: Record<string, Handler> = {
         temperature: decision.temperature,
         aiSummary: decision.summary,
         qualification: { ...(lead.qualification as object), ...plan.qualification },
-        aiPaused: plan.stopAi,
         ownerId: lead.ownerId ?? (["QUALIFIED", "MEETING_BOOKED", "HANDED_OFF"].includes(plan.status) ? owner?.id : undefined),
       },
     });
@@ -110,28 +116,42 @@ const handlers: Record<string, Handler> = {
     });
 
     let reply = plan.reply;
+    let booked = false;
     if (plan.slot && owner) {
       const meeting = await bookMeeting(lead, owner.id, plan.slot, agent.name);
       // The time comes from the booking itself, so the lead never gets one the AI misread
       reply = `${reply}\n\nReunião: ${formatSlot(plan.slot.startsAt)} (horário de Brasília)${meeting.meetLink ? `\nLink da reunião: ${meeting.meetLink}` : ""}`;
+      booked = true;
     }
     if (reply) {
       const fresh = await db.lead.findUniqueOrThrow({ where: { id: lead.id } });
       const res = await sendWhatsApp(fresh, reply, agent.name);
-      if (!res.ok) throw new Error(res.error);
+      if (!res.ok) {
+        // Nothing went yet: the turn runs again later. A meeting already booked stays booked and a person tells
+        // the lead, so a retry never books a second one
+        if (!booked) throw new Error(res.error);
+        await ensureTask(lead.id, lead.ownerId ?? owner?.id ?? null, `Avisar o lead da reunião marcada: o WhatsApp não saiu (${res.error})`);
+      }
       if (res.skipped) await logEvent(lead.id, "whatsapp.skipped", agent.name, res.skipped);
     }
-    // The lead asked for the COF before the meeting: it goes by e-mail now, once for the same files
-    if (decision.sendCof) {
-      const result = await sendCof(await db.lead.findUniqueOrThrow({ where: { id: lead.id } }), agent.name, { once: true });
-      await logEvent(lead.id, "cof.requested", agent.name, `O lead pediu a COF: ${result}`);
+    // From here the answer went out: a failure below must never run the turn again (a second, different answer)
+    try {
+      if (plan.stopAi) await db.lead.update({ where: { id: lead.id }, data: { aiPaused: true } });
+      // The lead asked for the COF before the meeting: it goes by e-mail now, once for the same files
+      if (decision.sendCof) {
+        const result = await sendCof(await db.lead.findUniqueOrThrow({ where: { id: lead.id } }), agent.name, { once: true });
+        await logEvent(lead.id, "cof.requested", agent.name, `O lead pediu a COF: ${result}`);
+      }
+      // Funnels the team built may not have the AI's stage: try the funnel this one hands leads to
+      // (old leads go on to Vendas de Franquias once qualified), else only the status changes
+      const target = await aiTargetStage(plan.stageKey, lead.pipelineId);
+      if (target) await moveLead(lead.id, target.id, agent.name);
+      else await db.lead.update({ where: { id: lead.id }, data: { status: plan.status } });
+      if (plan.handoffTask) await ensureTask(lead.id, lead.ownerId ?? owner?.id ?? null, plan.handoffTask);
+    } catch (e) {
+      await logEvent(lead.id, "ai.after_reply_failed", agent.name, `A IA respondeu, mas o passo seguinte falhou: ${(e as Error).message}`);
+      await ensureTask(lead.id, lead.ownerId ?? owner?.id ?? null, "Conferir o lead: a IA respondeu, mas a COF, a etapa ou a passagem para o time falhou");
     }
-    // Funnels the team built may not have the AI's stage: try the funnel this one hands leads to
-    // (old leads go on to Vendas de Franquias once qualified), else only the status changes
-    const target = await aiTargetStage(plan.stageKey, lead.pipelineId);
-    if (target) await moveLead(lead.id, target.id, agent.name);
-    else await db.lead.update({ where: { id: lead.id }, data: { status: plan.status } });
-    if (plan.handoffTask) await ensureTask(lead.id, lead.ownerId ?? owner?.id ?? null, plan.handoffTask);
     return `${decisionLabel[decision.decision]} (score ${decision.score})`;
   },
 
@@ -504,8 +524,38 @@ export async function sendMeetingLink(lead: Lead, meeting: { startsAt: Date; mee
   return `${what} ${sentHow(res)}.`;
 }
 
+// A job RUNNING this long was cut off with its server (a timeout or a deploy)
+const STUCK_MS = 15 * 60_000;
+// The cron call stops taking jobs after this, so the server is never killed in the middle of one
+const RUN_BUDGET_MS = 45_000;
+
+/**
+ * Jobs cut off in the middle stay RUNNING with their dedupe key, and block the same job for the lead forever. They
+ * fail with a task for the team instead of running again: the message may have gone before the cut.
+ */
+async function failStuckJobs() {
+  const stuck = await db.job.findMany({
+    // Meta CAPI jobs have their own recovery (runCapi)
+    where: { status: "RUNNING", type: { not: "meta.capi" }, runAt: { lt: new Date(Date.now() - STUCK_MS) } },
+    select: { id: true, type: true, leadId: true, lead: { select: { ownerId: true } } },
+    take: 50,
+  });
+  for (const job of stuck) {
+    const done = await db.job.updateMany({
+      where: { id: job.id, status: "RUNNING" },
+      data: { status: "FAILED", lastError: "Interrompida no meio (o servidor parou).", finishedAt: new Date(), dedupeKey: null },
+    });
+    if (done.count && job.leadId) {
+      await logEvent(job.leadId, "automation.failed", "Automação", `Interrompida no meio (${job.type}); não roda de novo sozinha.`);
+      await ensureTask(job.leadId, job.lead?.ownerId ?? null, `Automação interrompida (${job.type}): verificar`);
+    }
+  }
+}
+
 /** Runs due jobs. Called every minute by the scheduler (cron hitting /api/cron). */
 export async function runDueJobs(limit = 20) {
+  const deadline = Date.now() + RUN_BUDGET_MS;
+  await failStuckJobs();
   const due = await db.job.findMany({
     where: { status: "PENDING", type: { not: "meta.capi" }, runAt: { lte: new Date() } },
     orderBy: { runAt: "asc" },
@@ -513,10 +563,11 @@ export async function runDueJobs(limit = 20) {
   });
   const results: { id: string; type: string; ok: boolean; result: string }[] = [];
   for (const job of due) {
-    // Claim the job so two schedulers never run it twice
+    if (Date.now() > deadline) break;
+    // Claim the job so two schedulers never run it twice; while RUNNING, runAt is when it started
     const claimed = await db.job.updateMany({
       where: { id: job.id, status: "PENDING" },
-      data: { status: "RUNNING", attempts: { increment: 1 } },
+      data: { status: "RUNNING", attempts: { increment: 1 }, runAt: new Date() },
     });
     if (claimed.count === 0) continue;
     const handler = handlers[job.type];

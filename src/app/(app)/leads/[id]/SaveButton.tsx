@@ -24,3 +24,13 @@ export function SaveButton({ label }: { label: string }) {
     </button>
   );
 }
+
+/** A button that locks while its form is sending, so a second click can't send it twice. */
+export function PendingButton({ label, pendingLabel, disabled, className }: { label: string; pendingLabel: string; disabled?: boolean; className?: string }) {
+  const { pending } = useFormStatus();
+  return (
+    <button disabled={disabled || pending} className={className}>
+      {pending ? pendingLabel : label}
+    </button>
+  );
+}

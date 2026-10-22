@@ -118,7 +118,7 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
               changes: [
                 {
                   value: {
-                    metadata: { phone_number_id: to, display_phone_number: to === ALICE_NUMBER ? "5517996790187" : "5511920138123" },
+                    metadata: { phone_number_id: to, display_phone_number: to === ALICE_NUMBER ? "5517999990101" : "5511920138123" },
                     contacts: [{ profile: { name }, wa_id: from }],
                     messages: [{ from, id, timestamp: String(Math.floor(at.getTime() / 1000)), type: "text", text: { body: text } }],
                   },
@@ -328,12 +328,12 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
 
     // Back to Alice's number, named as the account lists it
     await db.setting.create({
-      data: { key: "whatsapp_numbers", value: { at: new Date().toISOString(), numbers: [{ id: ALICE_NUMBER, display: "+55 17 99679-0187", name: "Alice Banneg", quality: "GREEN" }] } },
+      data: { key: "whatsapp_numbers", value: { at: new Date().toISOString(), numbers: [{ id: ALICE_NUMBER, display: "+55 17 99999-0101", name: "Alice Banneg", quality: "GREEN" }] } },
     });
     calls.length = 0;
     await inbound(ALICE_NUMBER, "5511933332222", "Oi de novo", "wamid.in2");
     expect((await db.lead.findUniqueOrThrow({ where: { id: lead.id } })).whatsappNumberId).toBe(ALICE_NUMBER);
-    expect(await db.leadEvent.count({ where: { leadId: lead.id, summary: { contains: "+55 17 99679-0187" } } })).toBe(1);
+    expect(await db.leadEvent.count({ where: { leadId: lead.id, summary: { contains: "+55 17 99999-0101" } } })).toBe(1);
     await drain();
     expect(sentFrom()).toEqual([ALICE_NUMBER]);
 
@@ -1422,14 +1422,14 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
           : Response.json({
               data: [
                 { id: "123", display_phone_number: "+55 11 92013-8123", verified_name: "Banneg", quality_rating: "GREEN" },
-                { id: ALICE_NUMBER, display_phone_number: "+55 17 99679-0187", verified_name: "Alice Banneg", quality_rating: "GREEN" },
+                { id: ALICE_NUMBER, display_phone_number: "+55 17 99999-0101", verified_name: "Alice Banneg", quality_rating: "GREEN" },
               ],
             })
         : undefined;
     const first = await refreshWhatsAppNumbers();
     expect(first?.numbers).toEqual([
       { id: "123", display: "+55 11 92013-8123", name: "Banneg", quality: "GREEN" },
-      { id: ALICE_NUMBER, display: "+55 17 99679-0187", name: "Alice Banneg", quality: "GREEN" },
+      { id: ALICE_NUMBER, display: "+55 17 99999-0101", name: "Alice Banneg", quality: "GREEN" },
     ]);
     expect((await savedWhatsAppNumbers())?.numbers).toHaveLength(2);
 
@@ -1466,7 +1466,7 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
           return Response.json({
             data: [
               { id: "123", display_phone_number: "+55 11 92013-8123", verified_name: "Banneg", quality_rating: "GREEN" },
-              { id: ALICE_NUMBER, display_phone_number: "+55 17 99679-0187", verified_name: "Alice Banneg", quality_rating: "UNKNOWN" },
+              { id: ALICE_NUMBER, display_phone_number: "+55 17 99999-0101", verified_name: "Alice Banneg", quality_rating: "UNKNOWN" },
             ],
           });
       };
@@ -1475,8 +1475,8 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
       expect(check.details).toEqual(
         expect.arrayContaining([
           "+55 11 92013-8123 (Banneg), principal: funil Expansão.",
-          "+55 17 99679-0187 (Alice Banneg): funil Cotações/ Seguros e Consórcios.",
-          `+55 17 99679-0187: envio liberado pela Meta, com limite: ${LIMITED_INFO}`,
+          "+55 17 99999-0101 (Alice Banneg): funil Cotações/ Seguros e Consórcios.",
+          `+55 17 99999-0101: envio liberado pela Meta, com limite: ${LIMITED_INFO}`,
         ]),
       );
       // Blocked by Meta, it says why
@@ -1484,7 +1484,7 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
         Response.json({
           health_status: { can_send_message: "BLOCKED", entities: [{ entity_type: "PHONE_NUMBER", can_send_message: "BLOCKED", errors: [{ error_code: 141010, error_description: "Número bloqueado." }] }] },
         });
-      expect((await checkWhatsApp()).details).toContain("+55 17 99679-0187: envio bloqueado pela Meta: Número bloqueado.");
+      expect((await checkWhatsApp()).details).toContain("+55 17 99999-0101: envio bloqueado pela Meta: Número bloqueado.");
     } finally {
       delete process.env.WHATSAPP_FORWARD_URL;
     }
@@ -1500,18 +1500,18 @@ describe.skipIf(!dbUrl)("WhatsApp number per funnel", () => {
     expect(await integrations.whatsappNumberFor(onMain)).toBe("+55 11 92013-8123");
 
     // Not in the saved list yet: Meta is asked for that number's name; if it does not answer, the main number
-    metaGet = (url) => (url.includes(`/${ALICE_NUMBER}?fields=display_phone_number`) ? Response.json({ display_phone_number: "+55 17 99679-0187" }) : undefined);
-    expect(await integrations.whatsappNumberFor(onAlice)).toBe("+55 17 99679-0187");
+    metaGet = (url) => (url.includes(`/${ALICE_NUMBER}?fields=display_phone_number`) ? Response.json({ display_phone_number: "+55 17 99999-0101" }) : undefined);
+    expect(await integrations.whatsappNumberFor(onAlice)).toBe("+55 17 99999-0101");
     metaGet = () => Response.json({ error: { message: "x" } }, { status: 400 });
     expect(await integrations.whatsappNumberFor(onAlice)).toBe("+55 11 92013-8123");
 
     await db.setting.create({
-      data: { key: "whatsapp_numbers", value: { at: new Date().toISOString(), numbers: [{ id: ALICE_NUMBER, display: "+55 17 99679-0187", name: "Alice Banneg", quality: "GREEN" }] } },
+      data: { key: "whatsapp_numbers", value: { at: new Date().toISOString(), numbers: [{ id: ALICE_NUMBER, display: "+55 17 99999-0101", name: "Alice Banneg", quality: "GREEN" }] } },
     });
     for (const lead of [onMain, onAlice]) await enqueue("whatsapp.undelivered_emails", { leadId: lead.id });
     await drain();
     expect(sentEmails.find((e) => e.to === "maria@x.com")?.body).toContain("https://wa.me/5511920138123?text=");
-    expect(sentEmails.find((e) => e.to === "rui@x.com")?.body).toContain("https://wa.me/5517996790187?text=");
-    expect(sentEmails.find((e) => e.to === "rui@x.com")?.body).toContain("salve +55 17 99679-0187");
+    expect(sentEmails.find((e) => e.to === "rui@x.com")?.body).toContain("https://wa.me/5517999990101?text=");
+    expect(sentEmails.find((e) => e.to === "rui@x.com")?.body).toContain("salve +55 17 99999-0101");
   });
 });

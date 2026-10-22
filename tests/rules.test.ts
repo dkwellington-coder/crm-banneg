@@ -81,16 +81,16 @@ describe("test mode", () => {
   });
 
   it("recognizes a released number that WhatsApp sends without the 9", () => {
-    const s = { testContacts: ["61 99325-8573"] };
-    expect(isTestContact(s, "556193258573")).toBe(true);
-    expect(isTestContact({ testContacts: ["61 9325-8573"] }, "5561993258573")).toBe(true);
+    const s = { testContacts: ["61 98765-4321"] };
+    expect(isTestContact(s, "556187654321")).toBe(true);
+    expect(isTestContact({ testContacts: ["61 8765-4321"] }, "5561987654321")).toBe(true);
     expect(isTestContact(s, "556193258574")).toBe(false);
   });
 
   it("in test mode can still answer whoever wrote in the last 24 hours", () => {
     const now = Date.now();
-    const wrote = { phone: "5511993781411", lastInboundAt: new Date(now - 60_000) };
-    const never = { phone: "5511993781411", lastInboundAt: null };
+    const wrote = { phone: "5511987650000", lastInboundAt: new Date(now - 60_000) };
+    const never = { phone: "5511987650000", lastInboundAt: null };
     const base = { testMode: true, testContacts: [], answerInbound: false };
     expect(whatsappIsReal(base, wrote)).toBe(false);
     expect(whatsappIsReal({ ...base, answerInbound: true }, wrote)).toBe(true);

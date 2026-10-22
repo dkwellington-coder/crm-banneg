@@ -35,8 +35,8 @@ describe("whatsapp helpers", () => {
   });
 
   it("knows a mobile WhatsApp sends without the 9 is the same number", () => {
-    expect(phoneVariants("61 99325-8573")).toEqual(["5561993258573", "556193258573"]);
-    expect(phoneVariants("556193258573")).toEqual(["556193258573", "5561993258573"]);
+    expect(phoneVariants("61 98765-4321")).toEqual(["5561987654321", "556187654321"]);
+    expect(phoneVariants("556187654321")).toEqual(["556187654321", "5561987654321"]);
     // Landlines (2 to 5) never had a 9 to lose
     expect(phoneVariants("(11) 3456-7890")).toEqual(["551134567890"]);
   });
@@ -91,11 +91,14 @@ describe("csv import", () => {
       createdAt: new Date("2026-10-02T20:11:00Z"),
       lastContactAt: new Date("2026-10-02T21:00:00Z"),
     });
-    expect(cleanName("vagno@gmail.com")).toBeNull();
+    expect(cleanName("fulano123@gmail.com")).toBeNull();
     expect(cleanName("❣️")).toBeNull();
     expect(cleanName("Sem nome (Kommo #1)")).toBeNull();
     expect(cleanName("José de Souza")).toBe("José de Souza");
     expect(parseLocalDate("16.10.2026")).toEqual(new Date("2026-10-16T15:00:00Z"));
+    expect(parseLocalDate("02-10-2026 9:05")).toEqual(new Date("2026-10-02T12:05:00Z"));
+    expect(parseLocalDate("2/1/2026")).toEqual(new Date("2026-01-02T15:00:00Z"));
+    expect(parseLocalDate("31/02/2026")).toBeNull();
     expect(parseLocalDate("ontem")).toBeNull();
   });
 });

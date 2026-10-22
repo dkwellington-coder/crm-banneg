@@ -29,9 +29,10 @@ export async function teamAlerts(now = new Date()) {
     // Same rule as Conversas > "Aguardando uma pessoa": the lead's last WhatsApp message is theirs and no AI is on it
     db.$queryRaw<{ id: string; pipelineId: string; name: string | null; phone: string | null; body: string; at: Date }[]>`
       SELECT l.id, l."pipelineId", l.name, l.phone, m.body, m."createdAt" AS at
-      FROM (SELECT DISTINCT ON ("leadId") "leadId", direction, body, "createdAt" FROM "Message"
-            WHERE channel = 'WHATSAPP' ORDER BY "leadId", "createdAt" DESC) m
-      JOIN "Lead" l ON l.id = m."leadId"
+      FROM "Lead" l
+      -- Only the few leads no AI answers, each read through its (leadId, createdAt) index: runs every 15 s on every open screen
+      CROSS JOIN LATERAL (SELECT direction, body, "createdAt" FROM "Message"
+            WHERE "leadId" = l.id AND channel = 'WHATSAPP' ORDER BY "createdAt" DESC LIMIT 1) m
       WHERE m.direction = 'IN' AND (l."sdrId" IS NULL OR l."aiPaused")
         AND (l."alertsClearedAt" IS NULL OR m."createdAt" > l."alertsClearedAt")
       ORDER BY m."createdAt" DESC LIMIT 100`,

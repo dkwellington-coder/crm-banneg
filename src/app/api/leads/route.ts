@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { bearerMatches } from "@/lib/auth";
 import { adoptReferral, createLead, leadThatQuoted, pipelineByRef, referExisting, referralOnClosedReferral, type NewLeadInput } from "@/lib/leads";
 import { cancelGreetings } from "@/lib/automations";
 import { db } from "@/lib/db";
@@ -42,7 +43,7 @@ const LeadInput = z.object({
 function authorized(header: string | null) {
   // One token per site, so one can be revoked without breaking the others
   const tokens = [process.env.LEADS_API_TOKEN, process.env.SITE_LEADS_TOKEN, process.env.PORTAL_LEADS_TOKEN].filter(Boolean);
-  return tokens.some((t) => header === `Bearer ${t}`);
+  return tokens.some((t) => bearerMatches(header, t));
 }
 
 // Site forms, landing pages and ad integrations post new leads here.

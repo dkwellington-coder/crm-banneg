@@ -30,8 +30,8 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
     db.lead.count({ where: inPeriod }),
     db.lead.count({ where: { ...inPeriod, status: { in: [...ADVANCED] } } }),
     db.meeting.count({ where: { ...inPeriod, status: { not: "canceled" } } }),
-    db.lead.count({ where: { status: "WON", updatedAt: { gte: since } } }),
-    db.stage.findMany({ orderBy: { position: "asc" } }),
+    db.lead.count({ where: { wonAt: { gte: since } } }),
+    db.stage.findMany({ orderBy: [{ pipeline: { position: "asc" } }, { position: "asc" }], include: { pipeline: { select: { name: true } } } }),
     db.lead.groupBy({ by: ["stageId"], _count: true }),
     db.$queryRaw<{ avg_minutes: number | null; median_minutes: number | null }[]>`
       SELECT AVG(m) AS avg_minutes, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY m) AS median_minutes FROM (
@@ -42,12 +42,12 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
       ) t`,
     db.$queryRaw<{ name: string; leads: bigint; advanced: bigint; meetings: bigint }[]>`
       SELECT a.name,
-        COUNT(l.id) AS leads,
-        COUNT(l.id) FILTER (WHERE l.status IN ('QUALIFIED','MEETING_BOOKED','HANDED_OFF','WON')) AS advanced,
+        COUNT(DISTINCT l.id) AS leads,
+        COUNT(DISTINCT l.id) FILTER (WHERE l.status IN ('QUALIFIED','MEETING_BOOKED','HANDED_OFF','WON')) AS advanced,
         COUNT(DISTINCT mt.id) AS meetings
       FROM "SdrAgent" a
       LEFT JOIN "Lead" l ON l."sdrId" = a.id AND l."createdAt" >= ${since}
-      LEFT JOIN "Meeting" mt ON mt."leadId" = l.id
+      LEFT JOIN "Meeting" mt ON mt."leadId" = l.id AND mt.status <> 'canceled'
       GROUP BY a.name ORDER BY a.name`,
     db.$queryRaw<{ source: string; leads: bigint; advanced: bigint }[]>`
       SELECT source, COUNT(*) AS leads,
@@ -89,10 +89,13 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
         <Card>
           <h2 className="mb-3 font-bold">Funil agora</h2>
           <div className="space-y-2">
-            {stages.map((s) => {
+            {stages.map((s, i) => {
               const n = countBy.get(s.id) ?? 0;
               return (
                 <div key={s.id} className="text-sm">
+                  {s.pipeline.name !== stages[i - 1]?.pipeline.name && (
+                    <div className={`text-xs font-semibold uppercase tracking-wide text-slate-500 ${i ? "mt-4" : ""}`}>{s.pipeline.name}</div>
+                  )}
                   <div className="flex justify-between">
                     <span>{s.name}</span>
                     <span className="font-semibold">{n}</span>

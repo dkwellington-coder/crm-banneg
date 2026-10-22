@@ -25,7 +25,7 @@ import { StageSelect } from "./StageSelect";
 import { Composer } from "./Composer";
 import { AudioRecorder } from "./AudioRecorder";
 import { ScheduleMeeting } from "./ScheduleMeeting";
-import { SaveButton } from "./SaveButton";
+import { PendingButton, SaveButton } from "./SaveButton";
 import { googleConfigured, googleLinks } from "@/lib/google";
 import { cofDeadline, dateTimeBr } from "@/lib/cof";
 
@@ -62,8 +62,9 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
         stage: true,
         sdr: true,
         owner: true,
-        messages: { orderBy: { createdAt: "asc" }, take: 300 },
-        events: { orderBy: { createdAt: "asc" }, take: 300 },
+        // The newest 300 (put back in order below): a long conversation shows its end, not its beginning
+        messages: { orderBy: { createdAt: "desc" }, take: 300 },
+        events: { orderBy: { createdAt: "desc" }, take: 300 },
         tasks: { where: { doneAt: null }, orderBy: { dueAt: "asc" } },
         meetings: { orderBy: { startsAt: "desc" }, include: { user: true } },
         cofDeliveries: {
@@ -81,6 +82,8 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
     googleConfigured() ? googleLinks() : [],
   ]);
   if (!lead) notFound();
+  lead.messages.reverse();
+  lead.events.reverse();
   // Someone opened it: it stops lighting the "new lead" alert
   if (!lead.seenAt) after(() => markSeen(lead.id));
   const managers = users.filter((u) => u.role === "OWNER" || u.role === "MANAGER");
@@ -131,7 +134,7 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
             </div>
           </div>
         </div>
-        <StageSelect leadId={lead.id} stageId={lead.stageId} stages={stages.map((s) => ({ id: s.id, name: s.name, pipeline: s.pipeline.name }))} />
+        <StageSelect key={lead.stageId} leadId={lead.id} stageId={lead.stageId} stages={stages.map((s) => ({ id: s.id, name: s.name, pipeline: s.pipeline.name }))} />
         {alerting && (
           <form
             action={markAlertSeenAction.bind(null, lead.id)}
@@ -278,9 +281,12 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
           <details>
             <summary className="cursor-pointer text-xs text-brand underline">Enviar COF agora</summary>
             <form action={sendCofAction.bind(null, lead.id)} className="mt-1">
-              <button disabled={!lead.email} className="rounded border border-brand px-2 py-0.5 text-xs text-brand disabled:opacity-40">
-                {lead.email ? `Confirmar: mandar a COF e os documentos para ${lead.email}` : "Cadastre o e-mail do lead primeiro"}
-              </button>
+              <PendingButton
+                disabled={!lead.email}
+                pendingLabel="Enviando a COF…"
+                label={lead.email ? `Confirmar: mandar a COF e os documentos para ${lead.email}` : "Cadastre o e-mail do lead primeiro"}
+                className="rounded border border-brand px-2 py-0.5 text-xs text-brand disabled:opacity-40"
+              />
             </form>
           </details>
         </Card>

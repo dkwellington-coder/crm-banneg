@@ -22,7 +22,8 @@ export function isWindowOpen(lastInboundAt: Date | null | undefined, now = new D
 }
 
 export function normalizePhone(raw: string) {
-  const digits = raw.replace(/\D/g, "");
+  // A leading 0 is the long-distance prefix ("(061) 98765-4321"), never part of the number
+  const digits = raw.replace(/\D/g, "").replace(/^0+/, "");
   if (!digits) return "";
   // Brazilian numbers without country code
   if (digits.length === 10 || digits.length === 11) return `55${digits}`;
@@ -31,7 +32,7 @@ export function normalizePhone(raw: string) {
 
 /**
  * A Brazilian mobile written both ways: WhatsApp still sends older numbers without the 9
- * (556193258573) while forms carry it (5561993258573). Both are the same person.
+ * (556187654321) while forms carry it (5561987654321). Both are the same person.
  */
 export function phoneVariants(raw: string) {
   const phone = normalizePhone(raw);
@@ -80,11 +81,18 @@ async function post(body: Record<string, unknown>, from?: string | null): Promis
   const phoneId = senderId(from);
   const token = process.env.WHATSAPP_TOKEN;
   if (!phoneId || !token) return { ok: false, error: "WhatsApp não configurado (WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_TOKEN).", accountLevel: true };
-  const res = await fetch(`${GRAPH}/${phoneId}/messages`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ messaging_product: "whatsapp", ...body }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${GRAPH}/${phoneId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ messaging_product: "whatsapp", ...body }),
+      // A Meta that hangs must not hold the whole minute's queue
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (e) {
+    return { ok: false, error: `Sem resposta da Meta (${(e as Error).name === "TimeoutError" ? "demorou mais de 20 s" : (e as Error).message}).`, accountLevel: false };
+  }
   const json = (await res.json().catch(() => ({}))) as {
     messages?: { id: string }[];
     error?: { code?: number; message?: string };
@@ -293,13 +301,13 @@ export async function refreshWhatsAppNumbers(opts: { ifOlderThanMs?: number } = 
   }
 }
 
-/** "+55 17 99679-0187" as the account's saved list has it; the id when the number is not in it. */
+/** "+55 17 99999-0101" as the account's saved list has it; the id when the number is not in it. */
 export async function numberDisplay(id: string) {
   const n = (await savedWhatsAppNumbers().catch(() => null))?.numbers.find((x) => x.id === id);
   return n?.display ?? id;
 }
 
-/** "o número principal" or "o número +55 17 99679-0187", for the lead's history. */
+/** "o número principal" or "o número +55 17 99999-0101", for the lead's history. */
 export async function numberName(id: string | null) {
   if (!id || id === process.env.WHATSAPP_PHONE_NUMBER_ID) return "o número principal";
   return `o número ${await numberDisplay(id)}`;

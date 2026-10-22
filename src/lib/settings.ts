@@ -83,7 +83,7 @@ export function isTestContact(settings: Pick<CrmSettings, "testContacts">, conta
     if (x.includes("@")) return x === c;
     const xd = x.replace(/\D/g, "");
     if (xd.length < 8 || digits.length < 8) return false;
-    // 41999990000 matches 5541999990000, and 61 99325-8573 matches WhatsApp's 556193258573
+    // 41999990000 matches 5541999990000, and 61 98765-4321 matches WhatsApp's 556187654321
     return phoneVariants(xd).some((v) => mine.includes(v)) || digits.endsWith(xd) || xd.endsWith(digits);
   });
 }

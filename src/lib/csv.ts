@@ -64,21 +64,25 @@ export function cleanName(raw: string | null) {
     .join(" ");
 }
 
-/** "2026-10-02 17:11", "02/10/2026 17:11" or "02.10.2026" in São Paulo time (no daylight saving since 2019). */
+/** "2026-10-02 17:11", "02/10/2026 17:11", "2-10-2026 9:05" or "02.10.2026" in São Paulo time (no daylight saving since 2019). */
 export function parseLocalDate(raw: string | null) {
   const s = (raw ?? "").trim();
   if (!s) return null;
   if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s)) return new Date(s);
-  const iso = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/.exec(s);
-  const br = /^(\d{2})[/.](\d{2})[/.](\d{4})(?:[ T,]+(\d{2}):(\d{2})(?::(\d{2}))?)?/.exec(s);
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/.exec(s);
+  // Day first, as Brazil writes it, whatever the separator
+  const br = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})(?:[ T,]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/.exec(s);
   const [y, m, d, h, min, sec] = iso
     ? [iso[1], iso[2], iso[3], iso[4], iso[5], iso[6]]
     : br
       ? [br[3], br[2], br[1], br[4], br[5], br[6]]
       : [];
   if (!y) return null;
-  const date = new Date(`${y}-${m}-${d}T${h ?? "12"}:${min ?? "00"}:${sec ?? "00"}-03:00`);
-  return Number.isNaN(date.getTime()) ? null : date;
+  const two = (v: string | undefined, or: string) => (v ?? or).padStart(2, "0");
+  const day = `${y}-${two(m, "")}-${two(d, "")}`;
+  const date = new Date(`${day}T${two(h, "12")}:${two(min, "00")}:${two(sec, "00")}-03:00`);
+  // "31/02" would roll over into March: a date that doesn't exist is no date
+  return Number.isNaN(date.getTime()) || date.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }) !== day ? null : date;
 }
 
 const yes = (v: string | null) => /^(sim|s|yes|y|true|1|x)$/i.test((v ?? "").trim());

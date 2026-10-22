@@ -52,7 +52,8 @@ export async function importLeads(text: string, opts: { pipelineId: string; star
   // Each lead's history line, by phone|e-mail (what createManyAndReturn hands back)
   const notes = new Map<string, string>();
   for (const row of rows) {
-    const phone = row.phone ? normalizePhone(row.phone) : null;
+    // "-" or "não tenho" has no digits: no phone, not an empty one (the column is unique)
+    const phone = (row.phone && normalizePhone(row.phone)) || null;
     const email = row.email?.trim().toLowerCase() || null;
     if (!phone && !email) {
       count.empty++;

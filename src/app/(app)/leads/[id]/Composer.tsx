@@ -10,6 +10,7 @@ export function Composer({ leadId, macros }: { leadId: string; macros: { title: 
   return (
     <form
       action={(form) => {
+        if (pending || !String(form.get("body") ?? "").trim()) return;
         start(async () => {
           await sendMessageAction(leadId, form);
           if (ref.current) ref.current.value = "";
@@ -24,7 +25,7 @@ export function Composer({ leadId, macros }: { leadId: string; macros: { title: 
         placeholder="Mensagem de WhatsApp"
         className={inputCls}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) e.currentTarget.form?.requestSubmit();
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !pending) e.currentTarget.form?.requestSubmit();
         }}
       />
       <div className="flex items-center gap-2">

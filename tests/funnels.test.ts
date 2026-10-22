@@ -160,11 +160,11 @@ describe.skipIf(!dbUrl)("funnels", () => {
     await db.automationRule.create({ data: { stageId: prodNovo.id, action: "whatsapp", config: { text: "Recebi seu pedido" } } });
     const prodPerdido = await db.stage.create({ data: { pipelineId: prod.id, key: "perdido", name: "Perdido", position: 11, kind: "LOST" } });
     // Already in the CRM through WhatsApp, without the 9
-    await leads.createLead({ name: "Lucas", phone: "556193258573", source: "whatsapp", reactivation: true }, "teste");
+    await leads.createLead({ name: "Lucas", phone: "556187654321", source: "whatsapp", reactivation: true }, "teste");
 
     const csv = [
       "﻿id;nome;telefone;email;cidade;estado;origem;campanha;criado_em;ultimo_contato_em;etapa;status;nao_contatar;funil",
-      "a1;Lucas David;5561993258573;;;;Meta Ads;;2026-10-15 18:53;;Reunião agendada;open;não;antigos",
+      "a1;Lucas David;5561987654321;;;;Meta Ads;;2026-10-15 18:53;;Reunião agendada;open;não;antigos",
       "a2;JOÃO DA SILVA;11988887777;Joao@X.com;Curitiba;PR;Base antiga;Reativação BANNEG;2026-10-02 17:11;;Pronto para contato;open;não;antigos",
       "a3;Ana;5511977776666;;;;Base antiga · consórcio;Aquecimento Consórcios;2026-10-05 10:00;2026-10-12 09:00;Alice aquecendo;open;não;produtos",
       "a4;Zé;11966665555;;;;Base antiga;;2026-10-02 17:11;2026-10-09 10:00;Sem interesse / não contatar;lost;sim;antigos",

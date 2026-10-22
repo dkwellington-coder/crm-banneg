@@ -232,7 +232,7 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
                 name="testContacts"
                 rows={3}
                 defaultValue={settings.testContacts.join("\n")}
-                placeholder={"41999990000\nwellington@banneg.com.br"}
+                placeholder={"41999990000\nnome@banneg.com.br"}
                 className={`${inputCls} font-mono`}
               />
             </label>

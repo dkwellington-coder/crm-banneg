@@ -16,11 +16,12 @@ export default function AgendaPage() {
   );
 }
 
+/** "2026-10-22" for the day the date falls on in Brasília; these sort like the dates. */
+const dayKey = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+
 async function Agenda() {
   const user = await requireUser();
   const now = new Date();
-  const endOfToday = new Date(now);
-  endOfToday.setHours(23, 59, 59, 999);
   const [meetings, tasks] = await Promise.all([
     db.meeting.findMany({
       where: { startsAt: { gte: new Date(now.getTime() - 3600_000) }, status: "scheduled" },
@@ -35,10 +36,12 @@ async function Agenda() {
       include: { lead: true },
     }),
   ]);
+  // Days in Brasília: the server runs in UTC, where "today" ends at 21h
+  const today = dayKey(now);
   const groups = [
-    ["Atrasadas", tasks.filter((t) => t.dueAt < now && t.dueAt.toDateString() !== now.toDateString())],
-    ["Hoje", tasks.filter((t) => t.dueAt <= endOfToday && !(t.dueAt < now && t.dueAt.toDateString() !== now.toDateString()))],
-    ["Próximas", tasks.filter((t) => t.dueAt > endOfToday)],
+    ["Atrasadas", tasks.filter((t) => dayKey(t.dueAt) < today)],
+    ["Hoje", tasks.filter((t) => dayKey(t.dueAt) === today)],
+    ["Próximas", tasks.filter((t) => dayKey(t.dueAt) > today)],
   ] as const;
   return (
     <div className="grid gap-4 px-6 pb-6 lg:grid-cols-2">

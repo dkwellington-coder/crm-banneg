@@ -67,6 +67,34 @@ function fromRule(rule?: RuleData): Draft {
   };
 }
 
+const parseList = (text: string, max: number) =>
+  text
+    .split("|")
+    .map((a) => a.trim())
+    .filter(Boolean)
+    .slice(0, max);
+
+/** An "a | b | c" field: shows what the person types (spaces, a "|" about to get a second item) and hands back the list. */
+function ListInput({ value, onChange, max = 10, ...props }: { value: string[]; onChange: (list: string[]) => void; max?: number; name?: string; placeholder: string; className: string }) {
+  const [text, setText] = useState(value.join(" | "));
+  const [prev, setPrev] = useState(value);
+  // A preset replaced the list: show the new one
+  if (value !== prev) {
+    setPrev(value);
+    if (parseList(text, max).join("|") !== value.join("|")) setText(value.join(" | "));
+  }
+  return (
+    <input
+      {...props}
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value);
+        onChange(parseList(e.target.value, max));
+      }}
+    />
+  );
+}
+
 const sel = "rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm font-medium text-slate-800 outline-none focus:border-brand";
 const word = "text-sm font-medium text-slate-500";
 
@@ -158,12 +186,7 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
           <option value="answer">responder</option>
         </select>
         {answer ? (
-          <input
-            value={(d.config.answers ?? []).join(" | ")}
-            onChange={(e) => setConfig({ answers: e.target.value.split("|").map((a) => a.trim()).filter(Boolean) })}
-            placeholder="Quero ver | Sim"
-            className={`${sel} w-56`}
-          />
+          <ListInput value={d.config.answers ?? []} onChange={(answers) => setConfig({ answers })} placeholder="Quero ver | Sim" className={`${sel} w-56`} />
         ) : daily ? (
           <>
             <span className={word}>soltar</span>
@@ -238,10 +261,11 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
               </button>
             ))}
           </div>
-          <input
+          <ListInput
             name="buttons"
-            value={(d.config.buttons ?? []).join(" | ")}
-            onChange={(e) => setConfig({ buttons: e.target.value.split("|").map((b) => b.trim()).filter(Boolean).slice(0, 3) })}
+            max={3}
+            value={d.config.buttons ?? []}
+            onChange={(buttons) => setConfig({ buttons })}
             placeholder="Botões (opcional, até 3, separados por |): Quero ver | Agora não"
             className={inputCls}
           />

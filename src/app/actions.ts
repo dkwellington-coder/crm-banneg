@@ -1,5 +1,6 @@
 "use server";
 
+import { randomBytes } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireUser, login, logout, hashPassword } from "@/lib/auth";
@@ -10,7 +11,7 @@ import { sendWhatsApp } from "@/lib/messaging";
 import { clearAlerts } from "@/lib/alerts";
 import { enqueue } from "@/lib/queue";
 import { getSettings, saveSettings } from "@/lib/settings";
-import { savedWhatsAppNumbers } from "@/lib/whatsapp";
+import { getHealth, savedWhatsAppNumbers } from "@/lib/whatsapp";
 import { importLeads, importSummary } from "@/lib/import";
 import { ACTIONS, UNITS, type RuleConfig } from "@/lib/rules";
 import { METRICS } from "@/lib/goals";
@@ -20,6 +21,7 @@ import { scheduleResends } from "@/lib/resend";
 
 export async function loginAction(_: unknown, form: FormData) {
   const user = await login(String(form.get("email") ?? ""), String(form.get("password") ?? ""));
+  if (user === "locked") return { error: "Muitas tentativas erradas com este e-mail. Espere 15 minutos e tente de novo." };
   if (!user) return { error: "E-mail ou senha incorretos." };
   redirect("/funil");
 }
@@ -168,10 +170,13 @@ export async function importCsvAction(_: unknown, form: FormData) {
   const user = await requireUser();
   const file = form.get("file");
   if (!(file instanceof File) || file.size === 0) return { message: "Escolha um arquivo CSV." };
+  const startAi = form.get("startAi") === "on";
+  // Turning the AI on for a whole list sends WhatsApp to every lead in it
+  if (startAi && user.role === "SELLER") return { message: "Só gestores podem importar já com a IA ligada. Importe sem marcar a IA, ou peça a um gestor." };
   try {
     const count = await importLeads(await file.text(), {
       pipelineId: String(form.get("pipelineId") ?? "") || (await defaultPipeline()).id,
-      startAi: form.get("startAi") === "on",
+      startAi,
       actor: user.name,
     });
     revalidatePath("/funil");
@@ -197,17 +202,26 @@ export async function saveSettingsAction(form: FormData) {
         .filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)),
     ),
   ];
+  // An empty or bad field keeps what was saved, never turns into 0
+  const num = (k: string, keep: number, min: number, max: number) => {
+    const raw = String(form.get(k) ?? "").trim();
+    const n = raw ? Number(raw.replace(",", ".")) : NaN;
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : keep;
+  };
+  const start = num("hoursStart", current.businessHours.start, 0, 23);
+  const end = num("hoursEnd", current.businessHours.end, 1, 24);
+  if (end <= start) throw new Error("O fim do expediente precisa ser depois do início.");
   await saveSettings({
     companyName: String(form.get("companyName") ?? current.companyName),
     presentationUrl: String(form.get("presentationUrl") ?? ""),
     qualificationQuestions: lines("qualificationQuestions"),
-    qualifyScore: Number(form.get("qualifyScore") ?? current.qualifyScore),
-    meetingMinutes: Number(form.get("meetingMinutes") ?? current.meetingMinutes),
+    qualifyScore: num("qualifyScore", current.qualifyScore, 0, 100),
+    meetingMinutes: num("meetingMinutes", current.meetingMinutes, 15, 240),
     meetingGuests: guests,
     businessHours: {
       ...current.businessHours,
-      start: Number(form.get("hoursStart") ?? current.businessHours.start),
-      end: Number(form.get("hoursEnd") ?? current.businessHours.end),
+      start,
+      end,
     },
   });
   // Whoever is on the list also gets the meetings already booked
@@ -275,10 +289,26 @@ export async function saveUserAction(form: FormData) {
   };
   const existing = await db.user.findUnique({ where: { email } });
   if (existing) {
+    if (existing.role === "OWNER" && data.role !== "OWNER" && (await db.user.count({ where: { role: "OWNER" } })) <= 1)
+      throw new Error("O CRM precisa de pelo menos um proprietário.");
     await db.user.update({ where: { email }, data: { ...data, ...(password ? { passwordHash: await hashPassword(password) } : {}) } });
+    // A new password signs the person out everywhere: whoever had the old one loses access now
+    if (password) await db.session.deleteMany({ where: { userId: existing.id } });
   } else if (password) {
     await db.user.create({ data: { ...data, email, passwordHash: await hashPassword(password) } });
   }
+  revalidatePath("/configuracoes");
+}
+
+/**
+ * Someone who left the team: signed out everywhere and the password replaced by one nobody knows. The person stays
+ * in the history and as owner of their leads; giving a new password in Equipe brings the access back.
+ */
+export async function removeUserAccessAction(userId: string) {
+  const owner = await requireOwner();
+  if (userId === owner.id) throw new Error("Você não pode tirar o seu próprio acesso.");
+  await db.user.update({ where: { id: userId }, data: { passwordHash: await hashPassword(randomBytes(32).toString("hex")) } });
+  await db.session.deleteMany({ where: { userId } });
   revalidatePath("/configuracoes");
 }
 
@@ -295,10 +325,12 @@ async function requireOwner() {
 }
 
 export async function saveMacroAction(form: FormData) {
-  await requireUser();
+  const user = await requireUser();
   const id = String(form.get("id") ?? "");
   const title = String(form.get("title") ?? "").trim();
   const body = String(form.get("body") ?? "").trim();
+  // Anyone adds a reply; changing or deleting the team's replies is for managers
+  if (id && user.role === "SELLER") throw new Error("Apenas gestores podem alterar ou apagar respostas prontas.");
   if (id && !title) await db.macro.delete({ where: { id } });
   else if (id) await db.macro.update({ where: { id }, data: { title, body } });
   else if (title) await db.macro.create({ data: { title, body } });
@@ -457,7 +489,9 @@ export async function deleteStageAction(stageId: string) {
   });
   if (!fallback) throw new Error("O funil precisa de pelo menos uma etapa.");
   const leads = await db.lead.findMany({ where: { stageId }, select: { id: true } });
-  for (const l of leads) await moveLead(l.id, fallback.id, user.name);
+  // The first stage's automations are for leads arriving there, not for these: they move without a new welcome
+  for (let i = 0; i < leads.length; i += 20)
+    await Promise.all(leads.slice(i, i + 20).map((l) => moveLead(l.id, fallback.id, user.name, {}, { rules: false })));
   await db.stage.delete({ where: { id: stageId } });
   revalidatePath(`/funis/${stage.pipelineId}`);
 }
@@ -553,7 +587,8 @@ export async function saveGoalsAction(form: FormData) {
   for (const who of [null, ...users.map((u) => u.id)]) {
     for (const m of METRICS) {
       const raw = String(form.get(`${m.key}:${who ?? "team"}`) ?? "").trim();
-      const target = m.money ? parseMoney(raw) : raw ? Math.round(Number(raw)) : null;
+      // "1.200" is twelve hundred, as people write it here
+      const target = m.money ? parseMoney(raw) : raw ? Number(raw.replace(/\D/g, "")) : null;
       const existing = await db.goal.findFirst({ where: { userId: who, metric: m.key, period } });
       if (target === null || !Number.isFinite(target) || target <= 0) {
         if (existing) await db.goal.delete({ where: { id: existing.id } });
@@ -624,7 +659,9 @@ export async function setFormFunnelAction(formId: string, form: FormData) {
 
 /** Sends again what never went while the WhatsApp account was blocked (Integrações). */
 export async function resendBlockedAction() {
-  const user = await requireUser();
+  const user = await requireManager();
+  const health = await getHealth();
+  if (health && !health.numberId) throw new Error("A conta do WhatsApp ainda aparece bloqueada; o reenvio libera quando ela voltar a enviar.");
   const count = await scheduleResends();
   // A second click, after everyone was already scheduled, finds no one: the card keeps showing the real one
   if (!count) return revalidatePath("/integracoes");
