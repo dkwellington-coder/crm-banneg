@@ -209,7 +209,7 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
   const owner = user.role === "OWNER";
 
   return (
-    <div className="grid gap-4 px-6 pb-10 xl:grid-cols-2">
+    <div className="grid gap-4 px-4 pb-10 max-md:[overflow-wrap:anywhere] md:px-6 xl:grid-cols-2 [&>*]:min-w-0">
       <ResendBlocked />
       <Card className={`space-y-3 xl:col-span-2 ${settings.testMode ? "ring-2 ring-amber-300" : ""}`}>
         <div className="flex items-center gap-3">

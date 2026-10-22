@@ -2,10 +2,10 @@ import type { ReactNode } from "react";
 
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: ReactNode }) {
   return (
-    <div className="flex flex-wrap items-end justify-between gap-3 px-6 pb-4 pt-6">
+    <div className="flex flex-wrap items-end justify-between gap-3 px-4 pb-3 pt-4 md:px-6 md:pb-4 md:pt-6">
       <div>
-        <h1 className="text-[28px] font-normal tracking-tight text-slate-900">{title}</h1>
-        {subtitle && <p className="mt-0.5 text-sm text-slate-500">{subtitle}</p>}
+        <h1 className="text-2xl font-normal tracking-tight text-slate-900 md:text-[28px]">{title}</h1>
+        {subtitle && <p className="mt-0.5 text-sm text-slate-500 max-md:hidden">{subtitle}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </div>
@@ -53,7 +53,8 @@ export function tabCls(active: boolean) {
 
 /** Wraps tabCls links in a segmented control. */
 export function Tabs({ children }: { children: ReactNode }) {
-  return <div className="inline-flex flex-wrap gap-1 rounded-xl bg-sunken p-1">{children}</div>;
+  // One line that slides sideways on the phone, instead of piling up
+  return <div className="inline-flex max-w-full gap-1 overflow-x-auto rounded-xl bg-sunken p-1 md:flex-wrap [&>*]:shrink-0">{children}</div>;
 }
 
 export function relTime(d: Date | null | undefined) {

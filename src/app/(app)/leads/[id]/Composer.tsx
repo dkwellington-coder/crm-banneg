@@ -23,7 +23,7 @@ export function Composer({ leadId, macros }: { leadId: string; macros: { title: 
         name="body"
         rows={3}
         placeholder="Mensagem de WhatsApp"
-        className={inputCls}
+        className={`${inputCls} max-md:h-[4.5rem]`}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !pending) e.currentTarget.form?.requestSubmit();
         }}
@@ -47,7 +47,13 @@ export function Composer({ leadId, macros }: { leadId: string; macros: { title: 
           </select>
         )}
         <button className={`${btnCls} ml-auto`} disabled={pending}>
-          {pending ? "Enviando…" : "Enviar (Ctrl+Enter)"}
+          {pending ? (
+            "Enviando…"
+          ) : (
+            <>
+              Enviar<span className="max-md:hidden"> (Ctrl+Enter)</span>
+            </>
+          )}
         </button>
       </div>
     </form>

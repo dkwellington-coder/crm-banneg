@@ -44,7 +44,7 @@ async function Agenda() {
     ["Próximas", tasks.filter((t) => dayKey(t.dueAt) > today)],
   ] as const;
   return (
-    <div className="grid gap-4 px-6 pb-6 lg:grid-cols-2">
+    <div className="grid gap-4 px-4 pb-6 md:px-6 lg:grid-cols-2">
       <Card>
         <h2 className="mb-2 font-bold">Reuniões</h2>
         {meetings.length === 0 && <p className="text-sm text-slate-400">Nenhuma reunião marcada.</p>}

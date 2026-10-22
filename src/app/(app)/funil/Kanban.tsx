@@ -80,7 +80,8 @@ export function Kanban({ columns }: { columns: KanbanColumn[] }) {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-6 pb-6">
+    // On the phone one column fills the screen and a swipe goes to the next
+    <div className="flex min-h-0 flex-1 snap-x snap-mandatory gap-3 overflow-x-auto scroll-px-4 px-4 pb-4 md:snap-none md:px-6 md:pb-6">
       {cols.map((col) => (
         <section
           key={col.id}
@@ -90,7 +91,7 @@ export function Kanban({ columns }: { columns: KanbanColumn[] }) {
           }}
           onDragLeave={() => setDragOver(null)}
           onDrop={(e) => drop(col.id, e)}
-          className={`flex shrink-0 flex-col rounded-2xl transition ${col.closed ? "w-60" : "w-[290px]"} ${
+          className={`flex shrink-0 flex-col rounded-2xl transition snap-start ${col.closed ? "w-60" : "w-[min(290px,calc(100vw-3rem))]"} ${
             dragOver === col.id ? "bg-brand-soft ring-2 ring-brand" : "bg-sunken"
           }`}
         >

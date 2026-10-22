@@ -99,24 +99,24 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
   const total = counts.reduce((n, c) => n + c._count, 0);
   return (
     <>
-      <div className="flex flex-wrap items-end justify-between gap-3 px-6 pb-3 pt-6">
+      <div className="flex flex-wrap items-end justify-between gap-3 px-4 pb-3 pt-4 md:px-6 md:pt-6">
         <div>
-          <h1 className="text-[28px] font-normal tracking-tight text-slate-900">{pipeline.name}</h1>
-          <p className="mt-0.5 text-sm text-slate-500">
+          <h1 className="text-2xl font-normal tracking-tight text-slate-900 md:text-[28px]">{pipeline.name}</h1>
+          <p className="mt-0.5 text-sm text-slate-500 max-md:hidden">
             {unread
               ? `${total} ${total === 1 ? "lead precisa" : "leads precisam"} de atenção neste funil: novos sem abrir ou esperando resposta`
               : `${total} ${total === 1 ? "lead" : "leads"} neste funil · arraste o card para mudar de etapa`}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Link href={`/funis/${pipeline.id}`} className={btnGhostCls}>
-            <Workflow size={16} /> Editar funil e automações
+          <Link href={`/funis/${pipeline.id}`} className={btnGhostCls} title="Editar funil e automações">
+            <Workflow size={16} /> <span className="max-md:hidden">Editar funil e automações</span>
           </Link>
           <ImportButton pipelineId={pipeline.id} />
           <NewLeadButton pipelineId={pipeline.id} />
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-2 px-6 pb-4">
+      <div className="flex flex-wrap items-center gap-2 px-4 pb-3 md:px-6 md:pb-4">
         <Tabs>
           {pipelines.map((p) => (
             <Link key={p.id} href={link({ f: p.id })} className={tabCls(p.id === pipeline.id)}>
@@ -133,11 +133,11 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
           ))}
           <NewPipelineButton />
         </Tabs>
-        <form className="ml-auto flex gap-2">
+        <form className="flex gap-2 max-md:order-last max-md:w-full md:ml-auto">
           <input type="hidden" name="f" value={pipeline.id} />
-          <div className="relative">
+          <div className="relative max-md:flex-1">
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input name="q" defaultValue={q} placeholder="Buscar nome, telefone, cidade" className={`${inputCls} w-72! pl-9`} />
+            <input name="q" defaultValue={q} placeholder="Buscar nome, telefone, cidade" className={`${inputCls} pl-9 md:w-72!`} />
           </div>
           {mine && <input type="hidden" name="meus" value="1" />}
           {unread && <input type="hidden" name="naolidos" value="1" />}

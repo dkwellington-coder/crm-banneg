@@ -89,12 +89,12 @@ async function Editor({ params }: { params: PageProps<"/funis/[id]">["params"] }
   const ruleCount = stages.reduce((n, s) => n + s.rules.filter((r) => r.active).length, 0);
 
   return (
-    <div className="mx-auto max-w-4xl px-6 pb-16 pt-6">
+    <div className="mx-auto max-w-4xl px-4 pb-16 pt-4 md:px-6 md:pt-6">
       <Link href={`/funil?f=${pipeline.id}`} className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-900">
         <ArrowLeft size={15} /> Voltar para o funil
       </Link>
       <div className="mt-3 flex flex-wrap items-center gap-3">
-        <form action={renamePipelineAction.bind(null, pipeline.id)} className="min-w-0 flex-1">
+        <form action={renamePipelineAction.bind(null, pipeline.id)} className="min-w-0 flex-[1_1_14rem]">
           <input
             name="name"
             defaultValue={pipeline.name}
@@ -131,7 +131,7 @@ async function Editor({ params }: { params: PageProps<"/funis/[id]">["params"] }
       </div>
 
       <details className="mt-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" open={!pipeline.isDefault && !pipeline.aiGoal}>
-        <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold">
+        <summary className="flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-0.5 text-sm font-semibold">
           <Bot size={16} className="text-brand" /> A IA neste funil
           <span className="font-normal text-slate-500">
             {pipeline.aiGoal ? "objetivo próprio" : "roteiro de venda de franquia"}
@@ -187,7 +187,7 @@ async function Editor({ params }: { params: PageProps<"/funis/[id]">["params"] }
       </details>
 
       <details className="mt-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-        <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold">
+        <summary className="flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-0.5 text-sm font-semibold">
           <MessageCircle size={16} className="text-brand" /> WhatsApp e SDR deste funil
           <span className="font-normal text-slate-500">
             {funnelNumber ? funnelNumber.display : "número principal"} · {pipeline.sdr ? pipeline.sdr.name : "rodízio entre as SDRs"}

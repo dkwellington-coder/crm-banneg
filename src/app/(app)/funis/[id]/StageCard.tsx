@@ -197,7 +197,7 @@ function RuleRow({ rule, label, canEdit, onEdit }: { rule: RuleData; label: stri
   const Icon = ACTION_ICON[rule.action] ?? Zap;
   const TriggerIcon = rule.trigger === "idle" ? Hourglass : rule.trigger === "daily" ? CalendarClock : rule.trigger === "answer" ? MousePointerClick : Clock;
   return (
-    <div className={`group flex items-center gap-3 rounded-xl border border-slate-100 bg-slate-50/60 px-3 py-2 ${rule.active ? "" : "opacity-50"}`}>
+    <div className={`group flex items-center gap-x-3 gap-y-1.5 rounded-xl border border-slate-100 bg-slate-50/60 px-3 py-2 max-sm:flex-wrap ${rule.active ? "" : "opacity-50"}`}>
       <button
         type="button"
         disabled={!canEdit}
@@ -213,12 +213,14 @@ function RuleRow({ rule, label, canEdit, onEdit }: { rule: RuleData; label: stri
       <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${ACTION_TINT[rule.action] ?? ""}`}>
         <Icon size={15} />
       </span>
-      <span className="min-w-0 flex-1 truncate text-sm text-slate-800" title={label}>
+      {/* On the phone the sentence gets its own line, whole */}
+      <span className="min-w-0 flex-1 truncate text-sm text-slate-800 max-sm:order-last max-sm:basis-full max-sm:whitespace-normal" title={label}>
         {label}
         {rule.runAfterLeaving && <span className="ml-2 text-xs text-slate-400">(mesmo se sair da etapa)</span>}
       </span>
       {canEdit && (
-        <div className="flex shrink-0 opacity-0 transition group-hover:opacity-100">
+        // Shown on hover with a mouse; always on a touch screen, which has no hover
+        <div className="flex shrink-0 opacity-0 transition group-hover:opacity-100 max-sm:ml-auto [@media(hover:none)]:opacity-100">
           <button className={iconBtn} onClick={onEdit} title="Editar">
             <Pencil size={15} />
           </button>

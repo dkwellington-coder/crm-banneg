@@ -82,7 +82,7 @@ export function Simulator({
   }
 
   return (
-    <div className="grid min-h-0 flex-1 gap-4 px-6 pb-6 lg:grid-cols-[1fr_360px]">
+    <div className="grid min-h-0 flex-1 gap-4 px-4 pb-6 md:px-6 lg:grid-cols-[1fr_360px]">
       <Card className="flex min-h-[520px] flex-col p-0">
         <div className="grid grid-cols-2 items-center gap-2 border-b border-slate-100 px-4 py-3 md:grid-cols-[150px_1fr_1fr_auto]">
           <select value={agentId} onChange={(e) => setAgentId(e.target.value)} className={inputCls}>
@@ -122,7 +122,7 @@ export function Simulator({
             <div className="mx-auto max-w-md space-y-2 rounded-2xl bg-white/80 p-4 text-center text-sm text-slate-600">
               <Sparkles className="mx-auto text-brand" size={20} />
               <p>
-                Escreva como um lead da {company} escreveria no WhatsApp. Ou comece por um destes:
+                Escreva como um lead do {company} escreveria no WhatsApp. Ou comece por um destes:
               </p>
               <div className="flex flex-col gap-1.5">
                 {SCENARIOS.map((s) => (

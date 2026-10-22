@@ -70,7 +70,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
   const roi = (revenue: number, spend: number) => (spend && revenue ? `${(revenue / spend).toFixed(1).replace(".", ",")}x` : "—");
 
   return (
-    <div className="space-y-4 px-6 pb-6">
+    <div className="space-y-4 px-4 pb-6 md:px-6">
       <Tabs>
         {[7, 30, 90].map((d) => (
           <Link key={d} href={`/painel?d=${d}`} className={tabCls(d === days)}>

@@ -40,7 +40,7 @@ async function Inbox({ searchParams }: { searchParams: PageProps<"/conversas">["
     ["todas", "Todas"],
   ];
   return (
-    <div className="px-6 pb-6">
+    <div className="px-4 pb-6 md:px-6">
       <div className="mb-3">
         <Tabs>
           {tabs.map(([k, label]) => (
@@ -59,10 +59,10 @@ async function Inbox({ searchParams }: { searchParams: PageProps<"/conversas">["
               <Avatar name={l.name ?? l.phone ?? "?"} size={38} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <span className="truncate font-semibold">{l.name ?? l.phone}</span>
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px]">{l.stage.name}</span>
+                  <span className="min-w-0 truncate font-semibold">{l.name ?? l.phone}</span>
+                  <span className="shrink-0 whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[11px] max-sm:hidden">{l.stage.name}</span>
                   {l.sdr && (
-                    <span className={`rounded-full px-2 py-0.5 text-[11px] ${l.aiPaused ? "bg-slate-100 text-slate-500" : "bg-emerald-100 text-emerald-700"}`}>
+                    <span className={`shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] max-sm:hidden ${l.aiPaused ? "bg-slate-100 text-slate-500" : "bg-emerald-100 text-emerald-700"}`}>
                       {l.sdr.name}
                       {l.aiPaused ? " pausada" : ""}
                     </span>

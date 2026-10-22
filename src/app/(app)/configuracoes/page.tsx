@@ -95,7 +95,7 @@ async function Config() {
   const capiLogs = owner ? await db.job.findMany({ where: { type: CAPI_JOB }, orderBy: { createdAt: "desc" }, take: 20 }) : [];
 
   return (
-    <div className="grid gap-4 px-6 pb-6 xl:grid-cols-2">
+    <div className="grid gap-4 px-4 pb-6 max-md:[overflow-wrap:anywhere] md:px-6 xl:grid-cols-2 [&>*]:min-w-0">
       {owner && <Section id="meta-capi" title="API de Conversões Meta" hint="Prospecção e meta · eventos de formulários no funil Franquias. Nenhuma mensagem é enviada ao lead.">
         <MetaCapiForm configured={capi!.configured} />
         <p className="text-xs text-slate-500">Novo → Lead; Qualificado → Lead qualificado; Reunião marcada → Reuniao agendada; Reunião realizada → Reuniao realizada; Ganho → Franquia vendida; Perdido/Descartado → Desqualificado. As demais etapas usam o próprio nome. Com o gerente não confirma reunião realizada.</p>
@@ -376,7 +376,7 @@ async function Config() {
       </Section>
 
       <Section id="automacoes" title="Registro de automações" hint="Tudo o que a IA e as automações fizeram ou vão fazer, com erro e nova tentativa.">
-        <div className="max-h-96 overflow-y-auto text-sm">
+        <div className="max-h-96 overflow-auto text-sm">
           <table className="w-full">
             <tbody>
               {jobs.map((j) => (

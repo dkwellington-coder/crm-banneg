@@ -228,7 +228,7 @@ export function AlertBell({ sound, permission, onClick }: { sound: boolean; perm
 export function AlertToasts({ toasts, dismiss, seen }: { toasts: Alert[]; dismiss: (key: string) => void; seen: (a: Alert) => void }) {
   if (!toasts.length) return null;
   return (
-    <div className="fixed bottom-4 right-4 z-[60] flex w-[340px] max-w-[calc(100vw-2rem)] flex-col gap-2">
+    <div className="fixed bottom-24 right-4 z-[60] flex w-[340px] max-w-[calc(100vw-2rem)] flex-col gap-2 md:bottom-4">
       {toasts.map((a) => {
         const Icon = a.kind === "new" ? UserPlus : MessageCircle;
         return (

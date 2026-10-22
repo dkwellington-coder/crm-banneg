@@ -48,7 +48,7 @@ async function Goals({ searchParams }: { searchParams: PageProps<"/metas">["sear
   const isCurrent = period === currentPeriod(now);
 
   return (
-    <div className="space-y-5 px-6 pb-10">
+    <div className="space-y-5 px-4 pb-10 md:px-6">
       <div className="flex flex-wrap items-center gap-2">
         <div className="inline-flex items-center rounded-xl bg-white p-1 shadow-sm ring-1 ring-slate-200">
           <Link href={`/metas?p=${shiftPeriod(period, -1)}`} className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100" title="Mês anterior">

@@ -4,8 +4,9 @@ import { HealthBanner } from "@/components/HealthBanner";
 
 export default function AppLayout({ children }: LayoutProps<"/">) {
   return (
-    <div className="flex h-screen">
-      <Suspense fallback={<nav className="w-[88px] shrink-0 border-r border-slate-200 bg-white" />}>
+    // Phone: the page on top and the menu bar at the bottom; computer: the menu on the left
+    <div className="flex h-dvh flex-col-reverse md:flex-row">
+      <Suspense fallback={<nav className="h-16 shrink-0 border-slate-200 bg-white max-md:border-t md:h-auto md:w-[88px] md:border-r" />}>
         <Sidebar />
       </Suspense>
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">

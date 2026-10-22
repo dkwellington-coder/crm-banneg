@@ -10,8 +10,8 @@ export function ImportButton({ pipelineId }: { pipelineId: string }) {
   const [state, action, pending] = useActionState(importCsvAction, null);
   return (
     <>
-      <button className={btnGhostCls} onClick={() => setOpen(true)}>
-        <Upload size={16} /> Importar
+      <button className={btnGhostCls} onClick={() => setOpen(true)} title="Importar planilha">
+        <Upload size={16} /> <span className="max-md:hidden">Importar</span>
       </button>
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={() => setOpen(false)}>
