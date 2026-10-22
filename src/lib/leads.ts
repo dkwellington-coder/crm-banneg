@@ -6,7 +6,8 @@ import { cancelGreetings, cancelRuleJobs, scheduleAnswerRules, scheduleStageRule
 import { isWindowOpen, normalizePhone, numberName, phoneVariants } from "./whatsapp";
 import { AUDIO_MARK, downloadWhatsAppMedia, transcribe } from "./audio";
 import { SEND_ERROR_STAGE, sendWhatsApp } from "./messaging";
-import { REFERRAL_FUNNEL, STAGE_KEYS } from "./plan";
+import { NO_SHOW_STAGE, REFERRAL_FUNNEL, STAGE_KEYS } from "./plan";
+import { formatSlot } from "./calendar";
 import { queueCapi } from "./meta-capi";
 
 /** A stage of the given funnel by its AI key; null when that funnel has no such stage. */
@@ -755,10 +756,25 @@ export async function ensureTask(leadId: string, userId: string | null, title: s
   return db.task.create({ data: { leadId, userId, title, dueAt } });
 }
 
-const STATUS_BY_STAGE_KEY = Object.fromEntries(Object.entries(STAGE_KEYS).map(([status, key]) => [key, status])) as Record<
-  string,
-  LeadStatus
->;
+const STATUS_BY_STAGE_KEY = {
+  ...(Object.fromEntries(Object.entries(STAGE_KEYS).map(([status, key]) => [key, status])) as Record<string, LeadStatus>),
+  // Back to "needs a meeting": the AI answers it again and offers new times
+  [NO_SHOW_STAGE.key]: "QUALIFIED",
+} as Record<string, LeadStatus>;
+
+/**
+ * Dragged to "Não compareceu": the last meeting that already began is the one missed. Off the agenda's open meetings,
+ * and the AI sees it was missed. A result someone already gave it (realizada, não compareceu) stays.
+ */
+async function markMeetingMissed(leadId: string, actor: string) {
+  const last = await db.meeting.findFirst({
+    where: { leadId, startsAt: { lte: new Date() }, status: { not: "canceled" } },
+    orderBy: { startsAt: "desc" },
+  });
+  if (last?.status !== "scheduled") return;
+  await db.meeting.update({ where: { id: last.id }, data: { status: "no_show" } });
+  await logEvent(leadId, "meeting.no_show", actor, `O lead não compareceu à reunião de ${formatSlot(last.startsAt)}.`);
+}
 
 /** Moves a lead (drag and drop, the AI or a rule) and starts the new stage's automations. */
 /** rules: false moves without starting the new stage's automations (a stage being deleted hands its leads over). */
@@ -800,6 +816,7 @@ export async function moveLead(leadId: string, stageId: string, actor: string, e
     } else {
       await cancelRuleJobs(leadId, "stage");
     }
+    if (stage.key === NO_SHOW_STAGE.key) await markMeetingMissed(leadId, actor);
     if (rules) await scheduleStageRules(updated);
   }
   return updated;

@@ -779,6 +779,19 @@ export async function cancelMeetingAction(meetingId: string) {
   revalidatePath("/agenda");
 }
 
+/** "Compareceu" / "Não compareceu" once the meeting began; a missed one starts the funnel's "Não compareceu" stage. */
+export async function meetingOutcomeAction(meetingId: string, outcome: string) {
+  const user = await requireUser();
+  if (outcome !== "done" && outcome !== "no_show") return;
+  const { setMeetingOutcome } = await import("@/lib/jobs");
+  const meeting = await db.meeting.findUnique({ where: { id: meetingId }, select: { leadId: true } });
+  if (!meeting) return;
+  await setMeetingOutcome(meetingId, outcome, user.name);
+  revalidatePath(`/leads/${meeting.leadId}`);
+  revalidatePath("/agenda");
+  revalidatePath("/funil");
+}
+
 /** "Agendar reunião" on the lead's page: Google agenda with Meet, lead in "Reunião marcada", link to the lead. */
 export async function scheduleMeetingAction(leadId: string, _: unknown, form: FormData) {
   const user = await requireUser();

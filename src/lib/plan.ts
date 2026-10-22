@@ -14,6 +14,10 @@ export const STAGE_KEYS = {
   LOST: "perdido",
 } as const satisfies Partial<Record<LeadStatus, string>>;
 
+// Not one the AI moves leads to: the team marks a lead who missed the meeting, it gets a message to book again
+// and goes back to "Qualificado" for the AI to offer new times
+export const NO_SHOW_STAGE = { key: "nao_compareceu", name: "Não compareceu" } as const;
+
 // In the lead's qualification next to "parceiro": the id of the funnel the store referred the lead to
 export const REFERRAL_FUNNEL = "parceiroFunil";
 

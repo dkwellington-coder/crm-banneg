@@ -144,6 +144,61 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(await jobs.cancelMeeting(booked.meetings[0].id, "Gerente")).toBe("Essa reunião já não estava marcada.");
   });
 
+  it("asks a lead who missed the meeting to book again, then nurtures it", async () => {
+    const { NO_SHOW_TEMPLATE } = await import("@/lib/pipeline-defaults");
+    await db.whatsAppTemplate.create({ data: { ...NO_SHOW_TEMPLATE, buttons: [...NO_SHOW_TEMPLATE.buttons] } });
+    const { lead } = await leads.createLead({ name: "Caio Lima", phone: "11977776666", source: "site" }, "teste");
+    const stage = (key: string) => db.stage.findFirstOrThrow({ where: { pipelineId: lead.pipelineId, key } });
+    const manager = await db.user.findFirstOrThrow();
+    // Booked days ago, talked to the AI before that: Meta's window is closed
+    await leads.moveLead(lead.id, (await stage("reuniao")).id, "Duda", { aiPaused: true, lastInboundAt: new Date(Date.now() - 3 * 86_400_000) });
+    await db.job.updateMany({ where: { leadId: lead.id, status: "PENDING" }, data: { status: "CANCELLED", dedupeKey: null } });
+    const at = (min: number) => new Date(Date.now() + min * 60_000);
+    const missed = await db.meeting.create({ data: { leadId: lead.id, userId: manager.id, startsAt: at(-60), endsAt: at(-30) } });
+    const next = await db.meeting.create({ data: { leadId: lead.id, userId: manager.id, startsAt: at(60 * 24), endsAt: at(60 * 24 + 30) } });
+
+    // Not before it begins
+    expect(await jobs.setMeetingOutcome(next.id, "no_show", "Gerente")).toBe("A reunião ainda não começou.");
+    expect(await jobs.setMeetingOutcome(missed.id, "no_show", "Gerente")).toMatch(/^Lead em Não compareceu/);
+    expect(await jobs.setMeetingOutcome(missed.id, "done", "Gerente")).toBe("Essa reunião já tinha um resultado.");
+    let l = await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } });
+    expect(l.stage.key).toBe("nao_compareceu");
+    expect(l.status).toBe("QUALIFIED");
+    expect(await db.meeting.findUniqueOrThrow({ where: { id: missed.id } })).toMatchObject({ status: "no_show" });
+    expect(await db.meeting.findUniqueOrThrow({ where: { id: next.id } })).toMatchObject({ status: "scheduled" });
+
+    // The AI comes back on; two minutes later the approved message goes, with its buttons
+    await drain();
+    l = await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } });
+    expect(l.aiPaused).toBe(false);
+    const message = await db.job.findFirstOrThrow({ where: { leadId: lead.id, type: "rule.run", status: "PENDING", payload: { path: ["idle"], equals: false } } });
+    await db.job.update({ where: { id: message.id }, data: { runAt: new Date(Date.now() - 1000) } });
+    await drain();
+    expect(sent).toEqual([{ to: "5511977776666", type: "template", body: NO_SHOW_TEMPLATE.name }]);
+    expect(JSON.stringify(raw[0])).toContain('"text":"Caio"');
+
+    // "Agora não": a thank-you, then nurture; the AI stays quiet on the button
+    await leads.handleInbound({ phone: "5511977776666", body: "Agora não", externalId: "ns1", at: new Date() });
+    // Each rule waits a second per position, so they run in order
+    await db.job.updateMany({ where: { leadId: lead.id, type: "rule.run", status: "PENDING", runAt: { lt: at(0.5) } }, data: { runAt: new Date(Date.now() - 1000) } });
+    await drain();
+    expect(await db.job.count({ where: { leadId: lead.id, type: "sdr.reply" } })).toBe(0);
+    expect(sent.at(-1)).toMatchObject({ type: "text", body: expect.stringContaining("Obrigado por avisar") });
+    const move = await db.job.findFirstOrThrow({ where: { leadId: lead.id, type: "rule.run", status: "PENDING", runAt: { lt: at(5) } } });
+    await db.job.update({ where: { id: move.id }, data: { runAt: new Date(Date.now() - 1000) } });
+    await drain();
+    l = await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } });
+    expect(l.stage.key).toBe("nutricao");
+
+    // Dragged there instead of the button: the last meeting that began is the one missed
+    const { lead: other } = await leads.createLead({ name: "Rita", phone: "11966665555", source: "site" }, "teste");
+    const older = await db.meeting.create({ data: { leadId: other.id, userId: manager.id, startsAt: at(-3 * 24 * 60), endsAt: at(-3 * 24 * 60 + 30), status: "done" } });
+    const last = await db.meeting.create({ data: { leadId: other.id, userId: manager.id, startsAt: at(-90), endsAt: at(-60) } });
+    await leads.moveLead(other.id, (await db.stage.findFirstOrThrow({ where: { pipelineId: other.pipelineId, key: "nao_compareceu" } })).id, "Gerente");
+    expect(await db.meeting.findUniqueOrThrow({ where: { id: last.id } })).toMatchObject({ status: "no_show" });
+    expect(await db.meeting.findUniqueOrThrow({ where: { id: older.id } })).toMatchObject({ status: "done" });
+  });
+
   it("shows the Meta payment error as an account problem and retries the job", async () => {
     const { lead } = await leads.createLead({ name: "Bia", phone: "11988887777", source: "site" }, "teste");
     await jobs.runDueJobs(); // turns the AI on, which queues the first contact

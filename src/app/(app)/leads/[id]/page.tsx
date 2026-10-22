@@ -26,6 +26,7 @@ import { Composer } from "./Composer";
 import { AudioRecorder } from "./AudioRecorder";
 import { ScheduleMeeting } from "./ScheduleMeeting";
 import { LeadSplit } from "./LeadSplit";
+import { MeetingOutcome, OUTCOME_LABEL } from "@/components/MeetingOutcome";
 import { PendingButton, SaveButton } from "./SaveButton";
 import { googleConfigured, googleLinks } from "@/lib/google";
 import { cofDeadline, dateTimeBr } from "@/lib/cof";
@@ -217,10 +218,18 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
               ) : (
                 <div key={m.id} className="text-sm">
                   Reunião {fmt(m.startsAt)} com {m.user?.name ?? "gerente"}
-                  {m.meetLink && (
+                  {m.status !== "scheduled" && (
+                    <span className={m.status === "no_show" ? "font-medium text-amber-700" : "text-slate-500"}> · {OUTCOME_LABEL[m.status] ?? m.status}</span>
+                  )}
+                  {m.status === "scheduled" && m.meetLink && (
                     <a href={m.meetLink} className="ml-1 text-brand underline" target="_blank">
                       Meet
                     </a>
+                  )}
+                  {m.status === "scheduled" && m.startsAt <= new Date() && (
+                    <div className="mt-1">
+                      <MeetingOutcome meetingId={m.id} />
+                    </div>
                   )}
                   {m.status === "scheduled" && m.endsAt > new Date() && (
                     // Two clicks, so a slip never cancels a meeting the lead was told about

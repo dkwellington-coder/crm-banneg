@@ -9,6 +9,7 @@ export const DEFAULT_STAGES: { key: string; name: string; color: string; kind?: 
   { key: "qualificando", name: "IA qualificando", color: "#0ea5e9" },
   { key: "qualificado", name: "Qualificado", color: "#8b5cf6" },
   { key: "reuniao", name: "Reunião marcada", color: "#f59e0b" },
+  { key: "nao_compareceu", name: "Não compareceu", color: "#f97316" },
   { key: "com_gerente", name: "Com o gerente", color: "#ec4899" },
   { key: "proposta", name: "Proposta enviada", color: "#14b8a6" },
   { key: "nutricao", name: "Nutrição", color: "#94a3b8" },
@@ -17,17 +18,43 @@ export const DEFAULT_STAGES: { key: string; name: string; color: string; kind?: 
   { key: "descartado", name: "Descartado", color: "#71717a", kind: "LOST" },
 ];
 
+/** The message after a missed meeting; outside the 24 h window it goes as this approved template. */
+export const NO_SHOW_TEMPLATE = {
+  name: "banneg_reuniao_nao_compareceu",
+  category: "UTILITY",
+  // Its own purpose: a message typed outside the window never borrows it
+  purpose: "no_show",
+  body: "Poxa, {{1}}, você não conseguiu participar da nossa reunião. Ainda tem interesse em conversar sobre a franquia do Banneg? Se sim, me responda aqui que a gente reagenda.",
+  buttons: ["Quero reagendar", "Agora não"],
+} as const;
+
+const NO_SHOW_MESSAGE = {
+  text: "Poxa, {{nome}}, você não conseguiu participar da nossa reunião. Ainda tem interesse em conversar sobre a franquia do Banneg? Se sim, me responda aqui que a gente reagenda.",
+  buttons: [...NO_SHOW_TEMPLATE.buttons],
+  templateName: NO_SHOW_TEMPLATE.name,
+  templateParams: ["nome"],
+};
+
 const MIN = 1;
 const HOUR = 60;
 const DAY = 24 * HOUR;
 
 type DefaultRule = {
   stage: string;
-  trigger?: "enter" | "idle";
+  trigger?: "enter" | "idle" | "answer";
   delay: number;
   action: string;
   // toStage is a stage key, resolved to an id when installed
-  config?: { text?: string; templateKey?: string; title?: string; toStage?: string };
+  config?: {
+    text?: string;
+    templateKey?: string;
+    title?: string;
+    toStage?: string;
+    templateName?: string;
+    templateParams?: string[];
+    buttons?: string[];
+    answers?: string[];
+  };
   runAfterLeaving?: boolean;
 };
 
@@ -59,6 +86,18 @@ export const DEFAULT_RULES: DefaultRule[] = [
   },
   { stage: "qualificando", trigger: "idle", delay: 8 * DAY, action: "move", config: { toStage: "nutricao" } },
   { stage: "qualificado", delay: 2 * DAY, action: "task", config: { title: "Lead qualificado há 2 dias sem reunião: ligar" } },
+  // Missed the meeting: the AI comes back to offer new times; a few minutes undo a card dragged here by mistake
+  { stage: "nao_compareceu", delay: 0, action: "ai_on" },
+  { stage: "nao_compareceu", delay: 2 * MIN, action: "whatsapp", config: NO_SHOW_MESSAGE },
+  {
+    stage: "nao_compareceu",
+    trigger: "answer",
+    delay: 0,
+    action: "whatsapp",
+    config: { answers: ["Agora não"], text: "Tudo bem, {{nome}}! Obrigado por avisar. Quando quiser retomar, é só me chamar aqui." },
+  },
+  { stage: "nao_compareceu", trigger: "answer", delay: 1 * MIN, action: "move", config: { answers: ["Agora não"], toStage: "nutricao" } },
+  { stage: "nao_compareceu", trigger: "idle", delay: 2 * DAY, action: "move", config: { toStage: "nutricao" } },
   { stage: "com_gerente", delay: 3 * DAY, action: "task", config: { title: "Lead com o gerente há 3 dias: dar retorno" } },
   { stage: "proposta", trigger: "idle", delay: 2 * DAY, action: "task", config: { title: "Cobrar retorno da proposta enviada" } },
   { stage: "nutricao", delay: 7 * DAY, action: "email", config: { templateKey: "nutricao_7" } },

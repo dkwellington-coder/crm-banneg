@@ -29,5 +29,22 @@ describe("SDR prompt", () => {
     expect(u).toContain("<conversa>");
     expect(u).toContain("LEAD: Oi, quero saber da franquia");
     expect(u).not.toContain("5511");
+    expect(u).not.toContain("Reuniões deste lead");
+  });
+
+  it("tells the AI the lead missed its meeting, so it offers new times", () => {
+    const turn = (status: string) =>
+      buildUserTurn({
+        ...base,
+        lead: { name: "Ana", phone: null, email: null, city: null, state: null, source: "site", qualification: {}, summary: null },
+        transcript: [],
+        meetings: [{ startsAt: new Date("2026-10-20T17:30:00Z"), status }],
+        slots: [],
+        now: new Date("2026-10-21T15:00:00Z"),
+      });
+    expect(turn("no_show")).toContain("Reuniões deste lead:\n- terça-feira, 20/10, 14:30: o lead não compareceu");
+    expect(turn("no_show")).toContain("O lead faltou à última reunião");
+    expect(turn("done")).toContain("20/10, 14:30: realizada");
+    expect(turn("done")).not.toContain("faltou");
   });
 });

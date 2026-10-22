@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { Card, Loading, PageHeader, fmt } from "@/components/ui";
 import { completeTaskAction } from "../../actions";
+import { MeetingOutcome } from "@/components/MeetingOutcome";
 
 export default function AgendaPage() {
   return (
@@ -24,7 +25,8 @@ async function Agenda() {
   const now = new Date();
   const [meetings, tasks] = await Promise.all([
     db.meeting.findMany({
-      where: { startsAt: { gte: new Date(now.getTime() - 3600_000) }, status: "scheduled" },
+      // The ones still waiting for a result come first: did the lead come?
+      where: { startsAt: { gte: new Date(now.getTime() - 14 * 24 * 3600_000) }, status: "scheduled" },
       orderBy: { startsAt: "asc" },
       take: 50,
       include: { lead: true, user: true },
@@ -50,16 +52,21 @@ async function Agenda() {
         {meetings.length === 0 && <p className="text-sm text-slate-400">Nenhuma reunião marcada.</p>}
         <ul className="divide-y divide-slate-100">
           {meetings.map((m) => (
-            <li key={m.id} className="flex items-center gap-3 py-2 text-sm">
+            <li key={m.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 text-sm">
               <span className="w-28 shrink-0 font-semibold">{fmt(m.startsAt)}</span>
-              <Link href={`/leads/${m.leadId}`} className="flex-1 truncate hover:underline">
+              <Link href={`/leads/${m.leadId}`} className="min-w-0 flex-1 truncate hover:underline">
                 {m.lead.name ?? m.lead.phone}
               </Link>
               <span className="text-slate-500">{m.user?.name.split(" ")[0]}</span>
-              {m.meetLink && (
+              {m.meetLink && m.endsAt > now && (
                 <a href={m.meetLink} target="_blank" className="text-brand underline">
                   Meet
                 </a>
+              )}
+              {m.startsAt <= now && (
+                <div className="basis-full">
+                  <MeetingOutcome meetingId={m.id} />
+                </div>
               )}
             </li>
           ))}

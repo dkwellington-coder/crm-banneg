@@ -8,7 +8,7 @@ import { whatsappNumberFor } from "./integrations";
 import { getSettings, isTestContact, messageVars } from "./settings";
 import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
-import { planFromDecision, STAGE_KEYS } from "./plan";
+import { NO_SHOW_STAGE, planFromDecision, STAGE_KEYS } from "./plan";
 import { ensureTask, funnelStart, moveLead, sdrFor, stageByKey } from "./leads";
 import { fillVariables, templateSlots, type RuleConfig } from "./rules";
 import { isGreeting, type RuleJobPayload } from "./automations";
@@ -25,12 +25,13 @@ function needLead(lead: Lead | null): Lead {
 
 async function sdrContext(lead: Lead) {
   const settings = await getSettings();
-  const [agent, knowledge, messages, pipeline] = await Promise.all([
+  const [agent, knowledge, messages, pipeline, meetings] = await Promise.all([
     lead.sdrId ? db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null,
     db.knowledgeItem.findMany({ orderBy: { title: "asc" } }),
     // What never reached the lead stays out: the AI must not take a message lost to an account block as said
     db.message.findMany({ where: { leadId: lead.id, channel: "WHATSAPP", NOT: { direction: "OUT", status: "FAILED" } }, orderBy: { createdAt: "desc" }, take: 40 }),
     db.pipeline.findUnique({ where: { id: lead.pipelineId } }),
+    db.meeting.findMany({ where: { leadId: lead.id }, orderBy: { startsAt: "desc" }, take: 3, select: { startsAt: true, status: true } }),
   ]);
   if (!agent) throw new Error("Lead sem SDR de IA atribuída.");
   const owner = lead.ownerId ? await db.user.findUnique({ where: { id: lead.ownerId } }) : await pickOwner();
@@ -57,6 +58,7 @@ async function sdrContext(lead: Lead) {
         summary: lead.aiSummary,
       },
       transcript: messages.reverse().map((m) => ({ direction: m.direction, author: m.author, body: m.body, at: m.createdAt })),
+      meetings: meetings.reverse(),
       slots,
       now: new Date(),
       cofReady: (await cofDocuments()).length > 0,
@@ -481,6 +483,28 @@ export async function cancelMeeting(meetingId: string, actor: string) {
   });
   await logEvent(meeting.leadId, "meeting.canceled", actor, `Reunião de ${formatSlot(meeting.startsAt)} desmarcada.${google}`);
   return `Reunião desmarcada.${google}`;
+}
+
+/**
+ * After the meeting began, on the lead's page or the agenda: it happened, or the lead missed it. A missed one moves the
+ * lead to its funnel's "Não compareceu", whose automations ask it to book again.
+ */
+export async function setMeetingOutcome(meetingId: string, outcome: "done" | "no_show", actor: string) {
+  const meeting = await db.meeting.findUnique({ where: { id: meetingId }, include: { lead: true } });
+  if (!meeting || meeting.status !== "scheduled") return "Essa reunião já tinha um resultado.";
+  if (meeting.startsAt > new Date()) return "A reunião ainda não começou.";
+  const when = formatSlot(meeting.startsAt);
+  if (outcome === "done") {
+    await db.meeting.update({ where: { id: meeting.id }, data: { status: "done" } });
+    await logEvent(meeting.leadId, "meeting.done", actor, `Reunião de ${when} realizada.`);
+    return "Reunião marcada como realizada.";
+  }
+  await db.meeting.update({ where: { id: meeting.id }, data: { status: "no_show" } });
+  await logEvent(meeting.leadId, "meeting.no_show", actor, `O lead não compareceu à reunião de ${when}.`);
+  const stage = await stageByKey(NO_SHOW_STAGE.key, meeting.lead.pipelineId);
+  if (!stage) return `Anotado. Este funil não tem a etapa ${NO_SHOW_STAGE.name}, então nenhuma mensagem foi enviada.`;
+  await moveLead(meeting.leadId, stage.id, actor);
+  return `Lead em ${stage.name}: as automações dessa etapa começam agora.`;
 }
 
 // Approved by Meta (they came over from the old CRM): they carry the date, the time and the Meet link
