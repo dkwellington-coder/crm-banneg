@@ -1,11 +1,11 @@
 import { Suspense, type ReactNode } from "react";
 import { headers } from "next/headers";
-import { BadgeDollarSign, Bot, CalendarDays, ClipboardList, Copy, FlaskConical, Mail, MessageCircle, RotateCcw, ShieldCheck, Webhook, type LucideIcon } from "lucide-react";
+import { BadgeDollarSign, Bot, CalendarDays, ClipboardList, Copy, FlaskConical, Inbox, Mail, MessageCircle, RotateCcw, ShieldCheck, Webhook, type LucideIcon } from "lucide-react";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { Card, Loading, PageHeader, btnCls, btnGhostCls, inputCls, relTime } from "@/components/ui";
-import { disconnectGoogleAction, resendBlockedAction, saveTestModeAction } from "../../actions";
+import { disconnectGoogleAction, resendBlockedAction, saveTestModeAction, setEmailLeadsFunnelAction } from "../../actions";
 import { googleLinks } from "@/lib/google";
 import { TestButton } from "./TestButton";
 import { FormFunnelSelect } from "./FormFunnelSelect";
@@ -14,6 +14,7 @@ import type { MetaAdsState } from "@/lib/meta-ads";
 import { daysAgo } from "@/lib/time";
 import { getHealth, savedWhatsAppNumbers } from "@/lib/whatsapp";
 import { resendState } from "@/lib/resend";
+import { emailLeadsState, mailboxUser } from "@/lib/email-leads";
 
 export default function IntegracoesPage({ searchParams }: PageProps<"/integracoes">) {
   return (
@@ -114,6 +115,68 @@ async function CalendarCheck() {
       Teste automático: {check.message} {check.at && `(${relTime(new Date(check.at))})`}
       {check.details?.[0] && <span className="block text-xs text-slate-500">{check.details[0]}</span>}
     </p>
+  );
+}
+
+/** E-mails sent to the leads box become leads in the chosen funnel; the last ones read and what became of each. */
+async function EmailLeads() {
+  const [state, pipelines] = await Promise.all([
+    emailLeadsState(),
+    db.pipeline.findMany({ select: { id: true, name: true, isDefault: true }, orderBy: { position: "asc" } }),
+  ]);
+  const box = mailboxUser();
+  const fallback = (pipelines.find((p) => p.isDefault) ?? pipelines[0])?.name ?? "funil padrão";
+  const chosen = pipelines.find((p) => p.id === state.pipelineId);
+  return (
+    <Block icon={Inbox} color="#0891b2" title="E-mail que vira lead" missing={has("LEADS_IMAP_PASSWORD")}>
+      <p className="text-sm text-slate-600">
+        Todo e-mail que chega em <span className="font-medium text-slate-800">{box}</span> vira um lead no funil escolhido, com o e-mail guardado na
+        conversa. Se o e-mail trouxer um telefone, as automações e a IA chamam no WhatsApp; sem telefone, o lead recebe os e-mails do funil e a equipe
+        ganha a tarefa de responder. Respostas automáticas, avisos de entrega e newsletters são ignorados. A caixa é lida a cada 2 minutos e nada é
+        marcado como lido.
+      </p>
+      {has("LEADS_IMAP_PASSWORD").length > 0 && (
+        <ol className="list-decimal space-y-1 pl-5">
+          <Step>Crie a caixa {box} na Locaweb.</Step>
+          <Step>No Vercel, salve a senha dela como LEADS_IMAP_PASSWORD e publique o CRM de novo.</Step>
+        </ol>
+      )}
+      <form action={setEmailLeadsFunnelAction} className="flex flex-wrap items-center gap-2 text-sm">
+        <label htmlFor="email-funnel" className="text-slate-600">
+          Funil dos leads:
+        </label>
+        <select id="email-funnel" name="pipelineId" defaultValue={chosen?.id ?? ""} className={`${inputCls} w-auto!`}>
+          <option value="">Funil padrão ({fallback})</option>
+          {pipelines.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+        <button className={btnGhostCls}>Salvar</button>
+      </form>
+      {state.at && (
+        <div className={`text-sm ${state.error ? "text-amber-700" : "text-emerald-700"}`}>
+          {state.error
+            ? `Última tentativa ${relTime(new Date(state.at))}: ${state.error}`
+            : `Lida ${relTime(new Date(state.at))}: ${state.created ?? 0} leads novos trazidos até agora.`}
+        </div>
+      )}
+      {!!state.log?.length && (
+        <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 text-sm">
+          {state.log.map((l, i) => (
+            <li key={`${l.at}-${i}`} className="flex flex-wrap items-center justify-between gap-x-3 px-3 py-1.5">
+              <span className="min-w-0 truncate text-slate-700">
+                {l.leadId ? <a href={`/leads/${l.leadId}`} className="hover:underline">{l.from}</a> : l.from}
+                {l.subject && <span className="text-slate-400"> · {l.subject}</span>}
+              </span>
+              <span className={`shrink-0 text-xs ${l.result.startsWith("lead") ? "text-emerald-700" : "text-slate-500"}`}>{l.result}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <TestButton kind="email_leads" label="Conferir caixa agora" />
+    </Block>
   );
 }
 
@@ -450,6 +513,8 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
           <input name="to" type="email" defaultValue={user.email} className={`${inputCls} w-64!`} />
         </TestButton>
       </Block>
+
+      <EmailLeads />
 
       <div id="google" className="xl:col-span-2">
         <Block icon={CalendarDays} color="#d97706" title="Google Agenda (reuniões com Meet)" missing={has("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")}>

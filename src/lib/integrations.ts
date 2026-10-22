@@ -23,6 +23,7 @@ import { adAccounts, syncAdSpend } from "./meta-ads";
 import { forwardTarget, setWhatsAppCopy } from "./whatsapp-forward";
 import { templateFor } from "./messaging";
 import { transcribe } from "./audio";
+import { mailboxUser, pullEmailLeads } from "./email-leads";
 
 export type CheckResult = { ok: boolean; message: string; details?: string[] };
 
@@ -359,6 +360,19 @@ export async function checkMetaLeads(): Promise<CheckResult> {
   } catch (e) {
     return fail(e);
   }
+}
+
+/** Reads the leads box right now: proves the password and brings what arrived since the last read. */
+export async function checkEmailLeads(): Promise<CheckResult> {
+  if (!process.env.LEADS_IMAP_PASSWORD) return { ok: false, message: `Falta a senha da caixa ${mailboxUser()} (LEADS_IMAP_PASSWORD) no Vercel.` };
+  const res = await pullEmailLeads(new Date(), { force: true });
+  if ("error" in res && res.error) return { ok: false, message: res.error };
+  const read = "read" in res ? (res.read ?? 0) : 0;
+  const created = "created" in res ? (res.created ?? 0) : 0;
+  return {
+    ok: true,
+    message: `Caixa ${mailboxUser()} conectada. ${read ? `${read} e-mails novos, ${created} viraram lead novo.` : "Nenhum e-mail novo agora."} A caixa é lida a cada 2 minutos.`,
+  };
 }
 
 /** The last 30 days of every form against the CRM: how many leads came and which never got here. */

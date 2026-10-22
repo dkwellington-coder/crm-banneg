@@ -631,10 +631,11 @@ export async function testIntegrationAction(_: TestState, form: FormData): Promi
     meta_audit: () => integrations.checkMissingMetaLeads(),
     meta_bring: () => integrations.bringMissingFormLeads(),
     meta_ads: () => integrations.checkMetaAds(),
+    email_leads: () => integrations.checkEmailLeads(),
   }[kind];
   if (!run) return { kind, ok: false, message: "Teste desconhecido." };
   const res = await run();
-  if (kind === "whatsapp" || kind.startsWith("webhook_copy") || kind.startsWith("meta_")) revalidatePath("/integracoes");
+  if (kind === "whatsapp" || kind === "email_leads" || kind.startsWith("webhook_copy") || kind.startsWith("meta_")) revalidatePath("/integracoes");
   if (kind.startsWith("templates")) {
     revalidatePath("/configuracoes");
     revalidatePath("/integracoes");
@@ -654,6 +655,16 @@ export async function setFormFunnelAction(formId: string, form: FormData) {
   const names = state.names?.[formId] ? { ...state.names, [formId]: { ...state.names[formId], funnel: slug || null } } : state.names;
   const value = JSON.parse(JSON.stringify({ ...state, forms, names }));
   await db.setting.upsert({ where: { key: "meta_leads" }, create: { key: "meta_leads", value }, update: { value } });
+  revalidatePath("/integracoes");
+}
+
+/** The funnel the e-mails of the leads box go to (Integrações); empty = the default funnel. */
+export async function setEmailLeadsFunnelAction(form: FormData) {
+  await requireManager();
+  const id = String(form.get("pipelineId") ?? "");
+  const pipeline = id ? await db.pipeline.findUnique({ where: { id }, select: { id: true } }) : null;
+  const { setEmailLeadsFunnel } = await import("@/lib/email-leads");
+  await setEmailLeadsFunnel(pipeline?.id ?? null);
   revalidatePath("/integracoes");
 }
 

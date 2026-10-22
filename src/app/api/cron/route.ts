@@ -9,6 +9,7 @@ import { bearerMatches } from "@/lib/auth";
 import { syncAdSpend } from "@/lib/meta-ads";
 import { forwardTarget } from "@/lib/whatsapp-forward";
 import { backfillCapi, runCapi } from "@/lib/meta-capi";
+import { pullEmailLeads } from "@/lib/email-leads";
 
 // Called every minute by the server's scheduler (cron, Vercel Cron, or the worker script).
 export async function GET(request: Request) {
@@ -32,6 +33,10 @@ export async function GET(request: Request) {
   if (minute % 2 === 1 && (process.env.META_LEADS_TOKEN || process.env.WHATSAPP_TOKEN)) {
     // New Facebook and Instagram form leads, read straight from the forms
     meta.forms = await pullMetaLeads().catch((e: Error) => ({ error: e.message }));
+  }
+  if (minute % 2 === 0 && process.env.LEADS_IMAP_PASSWORD) {
+    // E-mails sent to the leads box (leads@banneg.com.br) become leads
+    meta.emails = await pullEmailLeads().catch((e: Error) => ({ error: e.message }));
   }
   if (minute % 30 === 15 && (process.env.META_LEADS_TOKEN || process.env.WHATSAPP_TOKEN)) {
     // Twice a day: the last 30 days of every form against the CRM, so no campaign lead is lost on the way
