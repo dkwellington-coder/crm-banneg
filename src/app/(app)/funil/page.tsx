@@ -7,7 +7,7 @@ import { db } from "@/lib/db";
 import { teamAlerts } from "@/lib/alerts";
 import { lastMessages } from "@/lib/inbox";
 import { leadSearch } from "@/lib/leads";
-import { Search, UserRound, Workflow } from "lucide-react";
+import { BellRing, Search, UserRound, Workflow } from "lucide-react";
 import { Loading, Tabs, btnGhostCls, inputCls, tabCls } from "@/components/ui";
 import { NewPipelineButton } from "./NewPipelineButton";
 import { Kanban, type KanbanColumn } from "./Kanban";
@@ -32,6 +32,7 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
   await connection();
   const q = typeof sp.q === "string" ? sp.q.trim() : "";
   const mine = sp.meus === "1";
+  const unread = sp.naolidos === "1";
   // Everything that does not depend on the chosen funnel goes in one round
   const [user, pipelines, allStages, alerts, users, sdrs] = await Promise.all([
     requireUser(),
@@ -41,12 +42,14 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
     db.user.findMany({ select: { id: true, name: true } }),
     db.sdrAgent.findMany({ select: { id: true, name: true } }),
   ]);
+  // Red marks: which funnel has someone new or waiting, and which card
+  const alertBy = new Map(alerts.items.map((a) => [a.leadId, a.kind]));
   const where: Prisma.LeadWhereInput = {
     ...(q && leadSearch(q)),
     ...(mine && { ownerId: user.id }),
+    // "Só não lidos": only the cards with a red mark, the ones that need someone
+    ...(unread && { id: { in: [...alertBy.keys()] } }),
   };
-  // Red marks: which funnel has someone new or waiting, and which card
-  const alertBy = new Map(alerts.items.map((a) => [a.leadId, a.kind]));
   const alertsIn = (pipelineId: string) => alerts.items.filter((a) => a.pipelineId === pipelineId).length;
   const pipeline = pipelines.find((p) => p.id === sp.f) ?? pipelines.find((p) => p.isDefault) ?? pipelines[0];
   if (!pipeline) return <p className="p-6 text-sm text-slate-500">Nenhum funil ainda. Rode o seed (npm run db:seed).</p>;
@@ -60,7 +63,7 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
   const countBy = new Map(counts.map((c) => [c.stageId, c._count]));
   const valueBy = new Map(counts.map((c) => [c.stageId, c._sum.value ?? 0]));
   const link = (extra: Record<string, string | null>) => {
-    const params = new URLSearchParams({ f: pipeline.id, ...(q && { q }), ...(mine && { meus: "1" }) });
+    const params = new URLSearchParams({ f: pipeline.id, ...(q && { q }), ...(mine && { meus: "1" }), ...(unread && { naolidos: "1" }) });
     for (const [k, v] of Object.entries(extra)) {
       if (v === null) params.delete(k);
       else params.set(k, v);
@@ -100,7 +103,9 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
         <div>
           <h1 className="text-[26px] font-bold tracking-tight text-slate-900">{pipeline.name}</h1>
           <p className="mt-0.5 text-sm text-slate-500">
-            {total} {total === 1 ? "lead" : "leads"} neste funil · arraste o card para mudar de etapa
+            {unread
+              ? `${total} ${total === 1 ? "lead precisa" : "leads precisam"} de atenção neste funil: novos sem abrir ou esperando resposta`
+              : `${total} ${total === 1 ? "lead" : "leads"} neste funil · arraste o card para mudar de etapa`}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -135,7 +140,14 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
             <input name="q" defaultValue={q} placeholder="Buscar nome, telefone, cidade" className={`${inputCls} w-72! pl-9`} />
           </div>
           {mine && <input type="hidden" name="meus" value="1" />}
+          {unread && <input type="hidden" name="naolidos" value="1" />}
         </form>
+        <Link href={link({ naolidos: unread ? null : "1" })} className={tabCls(unread)} title="Só os leads novos que ninguém abriu e os que esperam resposta">
+          <BellRing size={16} /> Só não lidos
+          {alertsIn(pipeline.id) > 0 && (
+            <span className="ml-1 rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">{alertsIn(pipeline.id)}</span>
+          )}
+        </Link>
         <Link href={link({ meus: mine ? null : "1" })} className={tabCls(mine)}>
           <UserRound size={16} /> Só os meus
         </Link>
