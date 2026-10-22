@@ -215,6 +215,7 @@ model Lead {
   meetings         Meeting[]
   cofDeliveries    CofDelivery[]
   jobs             Job[]
+  documents        LeadDocument[]
 
   @@index([stageId])
   @@index([status])
@@ -423,4 +424,23 @@ model CofDelivery {
   confirmAgent String?
 
   @@index([leadId, sentAt])
+}
+
+// A file attached to a lead (the policy of a won quote), uploaded in pieces from the lead's page
+model LeadDocument {
+  id         String   @id @default(cuid())
+  leadId     String
+  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  // APOLICE: the policy that lets a quote be marked as won
+  kind       String   @default("APOLICE")
+  name       String
+  mimeType   String
+  size       Int
+  // Set when the upload finished; until then the file is still arriving in parts
+  sha256     String?
+  data       Bytes
+  uploadedBy String
+  createdAt  DateTime @default(now())
+
+  @@index([leadId])
 }

@@ -18,6 +18,9 @@ import { METRICS } from "@/lib/goals";
 import { sendCof } from "@/lib/cof";
 import { inviteGuestsToUpcoming } from "@/lib/calendar";
 import { scheduleResends } from "@/lib/resend";
+import { checkStageMove, isReopenChoice, needsApolice, type MoveResult, type ReopenChoice } from "@/lib/stage-move";
+import { hasApolice } from "@/lib/lead-documents";
+import { inReferralFunnel, storeRefs } from "@/lib/portal";
 
 export async function loginAction(_: unknown, form: FormData) {
   const user = await login(String(form.get("email") ?? ""), String(form.get("password") ?? ""));
@@ -31,11 +34,49 @@ export async function logoutAction() {
   redirect("/login");
 }
 
-export async function moveLeadAction(leadId: string, stageId: string) {
+/**
+ * A person moving a lead (the board or the lead's page). A loss needs its reason, a won quote its policy, and a won sale
+ * a store follows, taken back to an open stage of the store's funnel, what happened to it (reopen): then nothing moves
+ * and the screen asks for what is missing.
+ */
+export async function moveLeadAction(leadId: string, stageId: string, reason?: string, reopen?: ReopenChoice): Promise<MoveResult> {
   const user = await requireUser();
-  await moveLead(leadId, stageId, user.name);
+  const [lead, stage] = await Promise.all([
+    db.lead.findUnique({
+      where: { id: leadId },
+      select: {
+        id: true,
+        stageId: true,
+        stageEnteredAt: true,
+        externalId: true,
+        pipelineId: true,
+        qualification: true,
+        pipeline: { select: { slug: true } },
+        stage: { select: { kind: true } },
+      },
+    }),
+    db.stage.findUnique({ where: { id: stageId }, select: { id: true, kind: true, pipelineId: true, pipeline: { select: { slug: true } } } }),
+  ]);
+  if (!lead || !stage) return { error: "Lead ou etapa não encontrados. Recarregue a página." };
+  // Already there (someone moved it first): nothing to ask, but a stale screen still reloads to show where it is
+  if (lead.stageId !== stageId) {
+    const motivo = typeof reason === "string" ? reason.trim().slice(0, 500) : "";
+    // Into another funnel's open stage a won sale stays the store's (a new deal): nothing to ask, no answer taken
+    const toReferralFunnel = inReferralFunnel({ pipelineId: stage.pipelineId, qualification: lead.qualification });
+    const answer = isReopenChoice(reopen) && toReferralFunnel ? reopen : undefined;
+    // Only a won quote looks for its policy: the other funnels never read the documents. Out of a loss a referral found,
+    // the Ganho is a new sale and needs a policy from after it arrived; between won stages the sale goes on
+    const apolice = stage.kind === "WON" && needsApolice(lead, stage) && (await hasApolice(lead, lead.stage.kind === "LOST"));
+    // Only a won sale some store sees as closed asks what happened to it
+    const storeFollows = lead.stage.kind === "WON" && stage.kind === "OPEN" && toReferralFunnel && !answer && (await storeRefs(lead)).length > 0;
+    const blocked = checkStageMove(lead, stage, { reason: motivo, hasApolice: apolice, storeFollows, reopen: answer });
+    if (blocked) return blocked;
+    await moveLead(leadId, stageId, user.name, stage.kind === "LOST" ? { lostReason: motivo, aiPaused: true } : {}, { reopen: answer });
+  }
   await clearAlerts(leadId);
   revalidatePath("/funil");
+  revalidatePath(`/leads/${leadId}`);
+  return {};
 }
 
 /** "Marcar como visto": the lead stops alerting until it writes again. */
@@ -152,18 +193,21 @@ export async function completeTaskAction(taskId: string) {
   if (task.leadId) revalidatePath(`/leads/${task.leadId}`);
 }
 
-export async function markLostAction(leadId: string, form: FormData) {
+/** The "Perdido" card of the lead's page; an empty reason is refused with a message, never silently. */
+export async function markLostAction(leadId: string, _prev: unknown, form: FormData): Promise<{ error?: string }> {
   const user = await requireUser();
-  const reason = String(form.get("reason") ?? "").trim();
-  if (!reason) return;
+  const reason = String(form.get("reason") ?? "").trim().slice(0, 500);
+  if (!reason) return { error: "Informe o motivo da perda." };
   const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId } });
   const stage =
     (await db.stage.findFirst({ where: { pipelineId: lead.pipelineId, key: "perdido" } })) ??
     (await db.stage.findFirst({ where: { pipelineId: lead.pipelineId, kind: "LOST" }, orderBy: { position: "asc" } }));
-  if (!stage) throw new Error("Este funil não tem etapa de perdido.");
+  if (!stage) return { error: "Este funil não tem etapa de perdido." };
   await moveLead(leadId, stage.id, user.name, { lostReason: reason, aiPaused: true });
   await clearAlerts(leadId);
   revalidatePath(`/leads/${leadId}`);
+  revalidatePath("/funil");
+  return {};
 }
 
 export async function importCsvAction(_: unknown, form: FormData) {

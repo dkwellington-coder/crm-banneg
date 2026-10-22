@@ -75,6 +75,8 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
     name: s.name,
     color: s.color,
     closed: s.kind !== "OPEN",
+    kind: s.kind,
+    key: s.key,
     total: countBy.get(s.id) ?? 0,
     value: valueBy.get(s.id) ?? 0,
     leads: columns[i].map((l) => {

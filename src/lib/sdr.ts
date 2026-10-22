@@ -24,7 +24,8 @@ export const SdrDecision = z.object({
   decision: z.enum(["continue", "offer_meeting", "book_meeting", "handoff", "nurture", "disqualify"]),
   slotIndex: z.number().int().nullable().describe("Com book_meeting: o número, na lista \"Horários livres\", do horário que o lead escolheu ou pediu."),
   sendCof: z.boolean().describe("true só quando o lead pediu a COF ou os documentos oficiais da franquia e o nome e o e-mail dele já são conhecidos (nos dados ou nesta conversa)."),
-  reason: z.string().describe("Uma frase explicando a decisão, para o histórico do lead."),
+  // A discard sends this sentence to the store that referred the lead (the loss reason it reads in the portal)
+  reason: z.string().describe("Uma frase explicando a decisão, para o histórico do lead. Se o lead foi indicado por uma loja parceira e a decisão é disqualify, a loja lê esta frase no portal: diga o motivo sem expor dados pessoais ou financeiros do lead."),
   summary: z.string().describe("Resumo atualizado do lead para o gerente de negócios, em até 5 linhas."),
 });
 
