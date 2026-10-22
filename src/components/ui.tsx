@@ -4,7 +4,7 @@ export function PageHeader({ title, subtitle, actions }: { title: string; subtit
   return (
     <div className="flex flex-wrap items-end justify-between gap-3 px-6 pb-4 pt-6">
       <div>
-        <h1 className="text-[26px] font-bold tracking-tight text-slate-900">{title}</h1>
+        <h1 className="text-[28px] font-normal tracking-tight text-slate-900">{title}</h1>
         {subtitle && <p className="mt-0.5 text-sm text-slate-500">{subtitle}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
@@ -26,8 +26,8 @@ export function Avatar({ name, size = 32 }: { name: string; size?: number }) {
   for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   return (
     <span
-      className="inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-white"
-      style={{ width: size, height: size, fontSize: size * 0.38, background: AVATAR_COLORS[h % AVATAR_COLORS.length] }}
+      className="inline-flex shrink-0 items-center justify-center rounded-full font-semibold"
+      style={{ width: size, height: size, fontSize: size * 0.38, color: "#ffffff", background: AVATAR_COLORS[h % AVATAR_COLORS.length] }}
     >
       {initials}
     </span>
@@ -53,7 +53,7 @@ export function tabCls(active: boolean) {
 
 /** Wraps tabCls links in a segmented control. */
 export function Tabs({ children }: { children: ReactNode }) {
-  return <div className="inline-flex flex-wrap gap-1 rounded-xl bg-slate-200/60 p-1">{children}</div>;
+  return <div className="inline-flex flex-wrap gap-1 rounded-xl bg-sunken p-1">{children}</div>;
 }
 
 export function relTime(d: Date | null | undefined) {

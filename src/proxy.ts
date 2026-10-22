@@ -9,5 +9,6 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!login|api|_next|materiais|cof|favicon.ico).*)"],
+  // The logo and the app icons also show on the login page, before anyone signs in
+  matcher: ["/((?!login|api|_next|materiais|cof|brand|icon.png|apple-icon.png|favicon.ico).*)"],
 };

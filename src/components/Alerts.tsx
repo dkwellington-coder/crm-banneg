@@ -194,7 +194,7 @@ export function Badge({ count, title }: { count: number; title?: string }) {
   return (
     <span
       title={title}
-      className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-brand"
+      className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white"
     >
       {count > 99 ? "99+" : count}
     </span>
@@ -214,7 +214,7 @@ export function AlertBell({ sound, permission, onClick }: { sound: boolean; perm
       type="button"
       onClick={onClick}
       title={title}
-      className="relative flex w-full flex-col items-center gap-1 rounded-xl px-2 py-2.5 text-[11px] font-medium text-white/70 transition hover:bg-white/10 hover:text-white"
+      className="relative flex w-full flex-col items-center gap-1 rounded-xl px-2 py-2.5 text-[11px] font-medium text-slate-500 transition hover:bg-brand-soft hover:text-brand"
     >
       <span className="relative">
         <Icon size={20} strokeWidth={1.8} />

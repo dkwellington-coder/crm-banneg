@@ -91,7 +91,7 @@ export function Kanban({ columns }: { columns: KanbanColumn[] }) {
           onDragLeave={() => setDragOver(null)}
           onDrop={(e) => drop(col.id, e)}
           className={`flex shrink-0 flex-col rounded-2xl transition ${col.closed ? "w-60" : "w-[290px]"} ${
-            dragOver === col.id ? "bg-brand-soft ring-2 ring-brand" : "bg-slate-200/50"
+            dragOver === col.id ? "bg-brand-soft ring-2 ring-brand" : "bg-sunken"
           }`}
         >
           <header className="px-3 pb-2 pt-3">

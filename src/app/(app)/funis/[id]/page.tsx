@@ -117,8 +117,8 @@ async function Editor({ params }: { params: PageProps<"/funis/[id]">["params"] }
         )}
         {canEdit && !pipeline.isDefault && pipeline._count.leads === 0 && <DeletePipelineButton pipelineId={pipeline.id} />}
       </div>
-      <div className="mt-4 flex items-start gap-3 rounded-2xl bg-gradient-to-r from-brand to-[#1f4fa8] p-4 text-white shadow">
-        <Sparkles size={20} className="mt-0.5 shrink-0" />
+      <div className="mt-4 flex items-start gap-3 rounded-2xl bg-brand p-4 text-white shadow">
+        <Sparkles size={20} className="mt-0.5 shrink-0 text-gold dark:text-current" />
         <div className="text-sm">
           <div className="font-semibold">
             {stages.length} etapas · {ruleCount} automações ligadas

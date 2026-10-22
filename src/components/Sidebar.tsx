@@ -1,10 +1,12 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { CalendarDays, Columns3, FlaskConical, LayoutDashboard, MessageCircle, Plug, Settings, Target, type LucideIcon } from "lucide-react";
 import { AlertBell, AlertToasts, Badge, useTeamAlerts } from "./Alerts";
+import { ThemeToggle } from "./ThemeToggle";
 
 type Item = { href: string; label: string; icon: LucideIcon; match?: string[] };
 
@@ -27,13 +29,13 @@ export function Sidebar() {
   const fresh = alerts.data?.newLeads ?? 0;
   const waiting = alerts.data?.waiting ?? 0;
 
-  // "(3) CRM Banneg" in the browser tab, so the alert shows even with another tab open
+  // "(3) BANNEG CRM" in the browser tab, so the alert shows even with another tab open
   useEffect(() => {
     const total = fresh + waiting;
     const apply = () => {
       // Mid-navigation the title can be empty for a moment. "(3) " would read back as "(3)" (the browser
       // trims it), never match, and set it again forever, freezing the tab: so never leave the name empty.
-      const base = document.title.replace(/^\(\d+\+?\)\s*/, "").trim() || "CRM Banneg";
+      const base = document.title.replace(/^\(\d+\+?\)\s*/, "").trim() || "BANNEG CRM";
       const want = total ? `(${total > 99 ? "99+" : total}) ${base}` : base;
       if (document.title !== want) document.title = want;
     };
@@ -58,11 +60,11 @@ export function Sidebar() {
         key={i.href}
         href={i.href}
         className={`group flex flex-col items-center gap-1 rounded-xl px-2 py-2.5 text-[11px] font-medium transition ${
-          active ? "bg-white text-brand shadow-sm" : alert ? "bg-red-600/90 text-white" : "text-white/70 hover:bg-white/10 hover:text-white"
+          active ? "bg-brand text-white" : alert ? "bg-red-600 text-white" : "text-slate-500 hover:bg-brand-soft hover:text-brand"
         }`}
       >
         <span className="relative">
-          <Icon size={20} strokeWidth={active ? 2.2 : 1.8} />
+          <Icon size={20} strokeWidth={active ? 2.2 : 1.8} className={active ? "text-gold dark:text-current" : undefined} />
           {badge && <Badge count={badge.count} title={badge.title} />}
         </span>
         {i.label}
@@ -70,12 +72,14 @@ export function Sidebar() {
     );
   };
   return (
-    <nav className="flex w-[84px] shrink-0 flex-col gap-1 bg-gradient-to-b from-brand to-brand-dark p-2">
-      <div className="mb-4 mt-2 flex justify-center">
-        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-lg font-black text-brand shadow">B</span>
-      </div>
+    <nav className="flex w-[88px] shrink-0 flex-col gap-1 border-r border-slate-200 bg-white p-2">
+      <Link href="/funil" className="mb-5 mt-3 flex justify-center" title="BANNEG CRM">
+        <Image src="/brand/monograma-azul.png" alt="BANNEG" width={44} height={23} priority className="dark:hidden" />
+        <Image src="/brand/monograma-dourado.png" alt="BANNEG" width={44} height={23} priority className="hidden dark:block" />
+      </Link>
       {ITEMS.map(item)}
       <div className="mt-auto space-y-1">
+        <ThemeToggle />
         <AlertBell sound={alerts.sound} permission={alerts.permission} onClick={alerts.toggle} />
         {item({ href: "/integracoes", label: "Integrar", icon: Plug })}
         {item({ href: "/configuracoes", label: "Ajustes", icon: Settings })}

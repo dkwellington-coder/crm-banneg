@@ -101,7 +101,7 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
     <>
       <div className="flex flex-wrap items-end justify-between gap-3 px-6 pb-3 pt-6">
         <div>
-          <h1 className="text-[26px] font-bold tracking-tight text-slate-900">{pipeline.name}</h1>
+          <h1 className="text-[28px] font-normal tracking-tight text-slate-900">{pipeline.name}</h1>
           <p className="mt-0.5 text-sm text-slate-500">
             {unread
               ? `${total} ${total === 1 ? "lead precisa" : "leads precisam"} de atenção neste funil: novos sem abrir ou esperando resposta`

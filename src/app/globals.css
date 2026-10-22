@@ -1,22 +1,111 @@
 @import "tailwindcss";
 
+/* The dark mode is a switch in the menu (data-theme on <html>), not the computer's setting */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* BANNEG identity (rebranding of October 2026): azul abissal and dourado imperial */
 :root {
-  --background: #f4f6fa;
-  --foreground: #0f172a;
+  --background: #f7f6f2;
+  --foreground: #000314;
+  --brand: #000314;
+  --brand-dark: #1a2142;
+  --brand-soft: #f1ede2;
+  --gold: #e2b124;
+  --gold-ink: #85670f;
+  --gold-soft: #fbf1d4;
+  --sunken: #efece4;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --color-brand: #12357a;
-  --color-brand-dark: #0c2557;
-  --color-brand-soft: #e8eefb;
+  --color-brand: var(--brand);
+  --color-brand-dark: var(--brand-dark);
+  --color-brand-soft: var(--brand-soft);
+  --color-gold: var(--gold);
+  --color-gold-ink: var(--gold-ink);
+  --color-gold-soft: var(--gold-soft);
+  --color-sunken: var(--sunken);
+}
+
+/*
+ * Dark mode: the same pages, with the colors they already use turned for a dark ground. White is the
+ * card, the slate greys flip, light tints become dark ones and dark text becomes light. The brand
+ * color becomes the gold, so a primary button is gold with dark text.
+ */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #000314;
+  --foreground: #ececea;
+  --brand: #e2b124;
+  --brand-dark: #f6d26b;
+  --brand-soft: #2a2412;
+  --gold: #e2b124;
+  --gold-ink: #e2b124;
+  --gold-soft: #2a2412;
+  --sunken: #060a24;
+
+  --color-white: #0a1030;
+  --color-slate-50: #0e1536;
+  --color-slate-100: #141b3d;
+  --color-slate-200: #222a4d;
+  --color-slate-300: #333c63;
+  --color-slate-400: #7b7f9c;
+  --color-slate-500: #a3a6bb;
+  --color-slate-600: #bcbecd;
+  --color-slate-700: #d3d4de;
+  --color-slate-800: #e3e4ea;
+  --color-slate-900: #ececea;
+  --color-slate-950: #ffffff;
+
+  --color-red-50: color-mix(in oklab, #ff6b5e 12%, #0a1030);
+  --color-red-100: color-mix(in oklab, #ff6b5e 18%, #0a1030);
+  --color-red-200: color-mix(in oklab, #ff6b5e 32%, #0a1030);
+  --color-red-300: color-mix(in oklab, #ff6b5e 55%, #0a1030);
+  --color-red-400: #ff8a7f;
+  --color-red-500: #ff7a6e;
+  --color-red-600: #ff6b5e;
+  --color-red-700: #ff9d94;
+  --color-red-800: #ffb8b1;
+
+  --color-emerald-50: color-mix(in oklab, #4fd69c 12%, #0a1030);
+  --color-emerald-100: color-mix(in oklab, #4fd69c 18%, #0a1030);
+  --color-emerald-200: color-mix(in oklab, #4fd69c 32%, #0a1030);
+  --color-emerald-500: #4fd69c;
+  --color-emerald-600: #4fd69c;
+  --color-emerald-700: #8fe6b7;
+  --color-emerald-800: #b2efcd;
+
+  --color-amber-50: color-mix(in oklab, #e2b124 12%, #0a1030);
+  --color-amber-100: color-mix(in oklab, #e2b124 18%, #0a1030);
+  --color-amber-200: color-mix(in oklab, #e2b124 32%, #0a1030);
+  --color-amber-300: color-mix(in oklab, #e2b124 50%, #0a1030);
+  --color-amber-400: #f0c24a;
+  --color-amber-500: #e2b124;
+  --color-amber-600: #e2b124;
+  --color-amber-700: #f6d26b;
+  --color-amber-900: #fae3a0;
+  --color-amber-950: #fff1c9;
+
+  --color-sky-50: color-mix(in oklab, #5cc8f0 12%, #0a1030);
+  --color-sky-100: color-mix(in oklab, #5cc8f0 18%, #0a1030);
+  --color-sky-700: #9bdcf5;
+  --color-blue-200: color-mix(in oklab, #6ea8ff 32%, #0a1030);
+  --color-violet-50: color-mix(in oklab, #a99cf5 12%, #0a1030);
+  --color-violet-700: #c8bffa;
+  --color-indigo-50: color-mix(in oklab, #8c9cf5 12%, #0a1030);
+  --color-indigo-500: #8c9cf5;
+  --color-indigo-700: #b7c1fa;
+  --color-teal-50: color-mix(in oklab, #4fd1c5 12%, #0a1030);
+  --color-teal-700: #8fe3da;
+  --color-pink-50: color-mix(in oklab, #f58cc4 12%, #0a1030);
+  --color-pink-700: #f9b6da;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  font-family: var(--font-montserrat), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
 }
 
 * {
@@ -28,7 +117,7 @@ body {
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: var(--color-slate-300);
   border-radius: 8px;
 }
 ::-webkit-scrollbar-track {
