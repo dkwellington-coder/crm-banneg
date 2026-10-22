@@ -626,6 +626,8 @@ export async function setFormFunnelAction(formId: string, form: FormData) {
 export async function resendBlockedAction() {
   const user = await requireUser();
   const count = await scheduleResends();
+  // A second click, after everyone was already scheduled, finds no one: the card keeps showing the real one
+  if (!count) return revalidatePath("/integracoes");
   const value = { at: new Date().toISOString(), by: user.name, count };
   await db.setting.upsert({ where: { key: "whatsapp_resend" }, create: { key: "whatsapp_resend", value }, update: { value } });
   revalidatePath("/integracoes");
