@@ -23,6 +23,10 @@ export const SdrDecision = z.object({
   temperature: z.enum(["frio", "morno", "quente"]),
   decision: z.enum(["continue", "offer_meeting", "book_meeting", "handoff", "nurture", "disqualify"]),
   slotIndex: z.number().int().nullable().describe("Com book_meeting: o número, na lista \"Horários livres\", do horário que o lead escolheu ou pediu."),
+  handoffTo: z
+    .string()
+    .nullable()
+    .describe("Com handoff, quando o funil lista etapas de atendimento por assunto: o nome exato da que combina com o assunto. Senão, null."),
   sendCof: z.boolean().describe("true só quando o lead pediu a COF ou os documentos oficiais da franquia e o nome e o e-mail dele já são conhecidos (nos dados ou nesta conversa)."),
   // A discard sends this sentence to the store that referred the lead (the loss reason it reads in the portal)
   reason: z.string().describe("Uma frase explicando a decisão, para o histórico do lead. Se o lead foi indicado por uma loja parceira e a decisão é disqualify, a loja lê esta frase no portal: diga o motivo sem expor dados pessoais ou financeiros do lead."),
@@ -36,7 +40,8 @@ export type SdrContext = {
   persona: string;
   settings: CrmSettings;
   // The funnel's own goal and questions (products, unions...); empty = franchise sales
-  funnel?: { id?: string; name: string; goal: string | null; questions: string[] };
+  // handoffStages: stages where a person takes over a subject (consórcio...), besides the funnel's default one
+  funnel?: { id?: string; name: string; goal: string | null; questions: string[]; handoffStages?: string[] };
   knowledge: { title: string; content: string }[];
   lead: {
     name: string | null;
@@ -64,6 +69,9 @@ export function buildSystemPrompt(ctx: Pick<SdrContext, "agentName" | "persona" 
     ctx.funnel?.goal?.trim() ||
     "Seu trabalho: responder rápido, entender se o lead tem perfil, coletar os dados de qualificação e, quando ele estiver qualificado, marcar uma reunião com o gerente de negócios. Você não fecha venda e não negocia condições.";
   const questions = ctx.funnel?.questions.length ? ctx.funnel.questions : ctx.settings.qualificationQuestions;
+  const subjects = ctx.funnel?.handoffStages?.length
+    ? ` Este funil tem etapas de atendimento por assunto: ${ctx.funnel.handoffStages.map((n) => `"${n}"`).join(", ")}. Se o assunto do lead for um destes, preencha handoffTo com o nome exato da etapa; se não, deixe null.`
+    : "";
   return `Você é ${ctx.agentName}, SDR (pré-vendedora) do ${ctx.settings.companyName}, conversando com leads pelo WhatsApp.${ctx.funnel ? ` Este lead está no funil "${ctx.funnel.name}".` : ""}
 
 ${ctx.persona}
@@ -77,7 +85,7 @@ Como decidir (campo "decision"):
 - continue: ainda faltam dados ou o lead está tirando dúvidas.
 - offer_meeting: o lead tem perfil (score >= ${ctx.settings.qualifyScore}). Ofereça 3 opções da lista "Horários livres" em dias ou períodos diferentes (manhã e tarde), numeradas 1, 2 e 3, e diga que ele pode sugerir outro dia ou horário.
 - book_meeting: o lead escolheu uma das opções ou pediu um dia e horário que está na lista "Horários livres", mesmo que você não tenha oferecido. Preencha slotIndex com o número desse horário na lista e confirme dia e hora na resposta. Se o horário pedido não está na lista, ofereça os livres mais próximos dele.
-- handoff: o lead pede para falar com uma pessoa, reclama, quer negociar valores ou faz uma pergunta que a base de conhecimento não responde. Diga que o gerente de negócios vai continuar o atendimento.
+- handoff: o lead pede para falar com uma pessoa, reclama, quer negociar valores ou faz uma pergunta que a base de conhecimento não responde. Diga que o gerente de negócios vai continuar o atendimento.${subjects}
 - nurture: o lead tem interesse mas não agora (prazo longo, sem capital no momento). Agradeça e diga que vai mandar materiais.
 - disqualify: fora do perfil, número errado ou pediu para não receber mensagens. Despeça-se com educação.
 

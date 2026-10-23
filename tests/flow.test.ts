@@ -108,6 +108,7 @@ describe.skipIf(!dbUrl)("lead flow", () => {
       temperature: "quente",
       decision: "offer_meeting",
       slotIndex: null,
+      handoffTo: null,
       sendCof: false,
       reason: "capital e região ok",
       summary: "Ana, Curitiba, R$ 300 mil.",
@@ -495,7 +496,7 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     const sdr = await import("@/lib/sdr");
     vi.mocked(sdr.runSdrTurn).mockImplementationOnce(async () => {
       await db.lead.update({ where: { id: lead.id }, data: { aiPaused: true } });
-      return { reply: "Resposta que não deve sair", extracted: empty, score: 50, temperature: "morno", decision: "continue", slotIndex: null, sendCof: false, reason: "", summary: "" };
+      return { reply: "Resposta que não deve sair", extracted: empty, score: 50, temperature: "morno", decision: "continue", slotIndex: null, handoffTo: null, sendCof: false, reason: "", summary: "" };
     });
     const results = await drain();
     expect(sent).toEqual([]);
@@ -543,7 +544,7 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     // Credit is back (the check every 10 minutes got an answer): the banner goes and Dani gets her answer
     expect(await health.aiAnswered()).toBe(1);
     expect(await health.getAiHealth()).toBeNull();
-    nextDecision.value = { reply: "Oi Dani! Desculpe a demora.", extracted: empty, score: 40, temperature: "morno", decision: "continue", slotIndex: null, sendCof: false, reason: "", summary: "" };
+    nextDecision.value = { reply: "Oi Dani! Desculpe a demora.", extracted: empty, score: 40, temperature: "morno", decision: "continue", slotIndex: null, handoffTo: null, sendCof: false, reason: "", summary: "" };
     await drain();
     expect(sent).toEqual([{ to: "5541999990007", type: "text", body: "Oi Dani! Desculpe a demora." }]);
     expect(await db.task.findMany({ where: { title: "Automação falhou (sdr.reply): verificar", doneAt: null }, select: { leadId: true } })).toEqual([{ leadId: b.id }]);

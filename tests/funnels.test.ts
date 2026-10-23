@@ -214,6 +214,7 @@ describe.skipIf(!dbUrl)("funnels", () => {
       temperature: "morno",
       decision: "continue",
       slotIndex: null,
+      handoffTo: null,
       sendCof: false,
       reason: "retomou interesse",
       summary: "Bia retomou.",
@@ -229,6 +230,48 @@ describe.skipIf(!dbUrl)("funnels", () => {
     l = await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } });
     expect(l.pipelineId).toBe(franchise.id);
     expect(l.stage.key).toBe("com_gerente");
+  });
+
+  it("a handoff about a subject with its own stage (consórcio) goes to that stage, others to the default one", async () => {
+    const sind = await db.pipeline.create({ data: { name: "Sindicatos", slug: "sindicatos", position: 3 } });
+    const ia = await db.stage.create({ data: { pipelineId: sind.id, key: "qualificando", name: "IA atendendo", position: 0 } });
+    const corretor = await db.stage.create({ data: { pipelineId: sind.id, key: "com_gerente", name: "Com o corretor", position: 1 } });
+    const consorcio = await db.stage.create({ data: { pipelineId: sind.id, key: "com_consorcio", name: "Consórcio: com consultor", position: 2 } });
+    const prompts: string[] = [];
+    const sdr = await import("@/lib/sdr");
+    vi.mocked(sdr.runSdrTurn).mockImplementation(async (ctx) => {
+      prompts.push(sdr.buildSystemPrompt(ctx));
+      return nextDecision.value!;
+    });
+    const base = {
+      extracted: { name: null, email: null, city: null, state: null, capital: null, timeline: null, experience: null, decisionMaker: null },
+      score: 50,
+      temperature: "morno" as const,
+      decision: "handoff" as const,
+      slotIndex: null,
+      sendCof: false,
+      reason: "Consórcio: carro de R$ 80 mil",
+      summary: "",
+    };
+
+    const { lead } = await leads.createLead({ name: "Rita", phone: "11944445555", source: "Sindicato", stageId: ia.id }, "teste");
+    await leads.handleInbound({ phone: "11944445555", body: "Quero um consórcio de carro", externalId: "s1", at: new Date() });
+    nextDecision.value = { ...base, reply: "Um consultor de consórcio continua com você.", handoffTo: "consorcio: com CONSULTOR" };
+    await drain();
+    // The AI was told which subject stages the funnel has
+    expect(prompts[0]).toContain('etapas de atendimento por assunto: "Consórcio: com consultor"');
+    let l = await db.lead.findUniqueOrThrow({ where: { id: lead.id } });
+    expect(l).toMatchObject({ stageId: consorcio.id, aiPaused: true });
+    expect(await db.task.findFirst({ where: { leadId: lead.id } })).toMatchObject({ title: "Assumir conversa: Consórcio: carro de R$ 80 mil" });
+
+    // No subject (or one the funnel does not have): the default "Com o corretor"
+    const other = await leads.createLead({ name: "Leo", phone: "11933334444", source: "Sindicato", stageId: ia.id }, "teste");
+    await leads.handleInbound({ phone: "11933334444", body: "Quero falar com alguém", externalId: "s2", at: new Date() });
+    nextDecision.value = { ...base, reply: "O corretor continua com você.", handoffTo: "Seguro viagem" };
+    await drain();
+    l = await db.lead.findUniqueOrThrow({ where: { id: other.lead.id } });
+    expect(l.stageId).toBe(corretor.id);
+    vi.mocked(sdr.runSdrTurn).mockImplementation(async () => nextDecision.value!);
   });
 
   it("daily rules are not scheduled per lead", async () => {

@@ -8,7 +8,7 @@ import { whatsappNumberFor } from "./integrations";
 import { getSettings, isTestContact, messageVars } from "./settings";
 import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
-import { NO_SHOW_STAGE, planFromDecision, STAGE_KEYS } from "./plan";
+import { isSubjectHandoffKey, NO_SHOW_STAGE, planFromDecision, STAGE_KEYS, subjectHandoffStage } from "./plan";
 import { ensureTask, funnelStart, moveLead, sdrFor, stageByKey } from "./leads";
 import { fillVariables, templateSlots, type RuleConfig } from "./rules";
 import { isGreeting, type RuleJobPayload } from "./automations";
@@ -32,22 +32,26 @@ async function sdrContext(lead: Lead) {
     db.knowledgeItem.findMany({ orderBy: { title: "asc" } }),
     // What never reached the lead stays out: the AI must not take a message lost to an account block as said
     db.message.findMany({ where: { leadId: lead.id, channel: "WHATSAPP", NOT: { direction: "OUT", status: "FAILED" } }, orderBy: { createdAt: "desc" }, take: 40 }),
-    db.pipeline.findUnique({ where: { id: lead.pipelineId } }),
+    db.pipeline.findUnique({ where: { id: lead.pipelineId }, include: { stages: { orderBy: { position: "asc" } } } }),
     db.meeting.findMany({ where: { leadId: lead.id }, orderBy: { startsAt: "desc" }, take: 3, select: { startsAt: true, status: true } }),
   ]);
   if (!agent) throw new Error("Lead sem SDR de IA atribuída.");
   const owner = lead.ownerId ? await db.user.findUnique({ where: { id: lead.ownerId } }) : await pickOwner();
   const slots: Slot[] = owner ? await freeSlotsFor(owner.id, settings.businessHours, settings.meetingMinutes) : [];
+  const subjectStages = pipeline?.stages.filter((s) => isSubjectHandoffKey(s.key)) ?? [];
   return {
     settings,
     agent,
     owner,
     slots,
+    subjectStages,
     ctx: {
       agentName: agent.name,
       persona: agent.persona,
       settings,
-      funnel: pipeline ? { id: pipeline.id, name: pipeline.name, goal: pipeline.aiGoal, questions: pipeline.aiQuestions } : undefined,
+      funnel: pipeline
+        ? { id: pipeline.id, name: pipeline.name, goal: pipeline.aiGoal, questions: pipeline.aiQuestions, handoffStages: subjectStages.map((s) => s.name) }
+        : undefined,
       knowledge,
       lead: {
         name: lead.name,
@@ -93,7 +97,7 @@ const handlers: Record<string, Handler> = {
   async "sdr.reply"(_job, l) {
     const lead = needLead(l);
     if (lead.aiPaused) return "Ignorado: IA pausada neste lead.";
-    const { ctx, slots, settings, agent, owner } = await sdrContext(lead);
+    const { ctx, slots, settings, agent, owner, subjectStages } = await sdrContext(lead);
     const decision = await runSdrTurn(ctx);
     // After a stop (no credit), the first answer clears the banner and answers the leads who waited
     await aiAnswered({ answering: lead.id });
@@ -150,7 +154,8 @@ const handlers: Record<string, Handler> = {
       }
       // Funnels the team built may not have the AI's stage: try the funnel this one hands leads to
       // (old leads go on to Vendas de Franquias once qualified), else only the status changes
-      const target = await aiTargetStage(plan.stageKey, lead.pipelineId);
+      // A handoff about a subject the funnel has its own stage for (consórcio...) goes to that stage
+      const target = subjectHandoffStage(decision, subjectStages) ?? (await aiTargetStage(plan.stageKey, lead.pipelineId));
       const discarded = target?.kind === "LOST" && target.id !== lead.stageId;
       if (target) await moveLead(lead.id, target.id, agent.name, discarded ? { lostReason: discardReason(decision) } : {});
       else await db.lead.update({ where: { id: lead.id }, data: { status: plan.status } });

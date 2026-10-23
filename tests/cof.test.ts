@@ -115,6 +115,7 @@ describe.skipIf(!dbUrl)("COF", () => {
       temperature: "morno",
       decision: "continue",
       slotIndex: null,
+      handoffTo: null,
       sendCof: true,
       reason: "pediu a COF",
       summary: "Rafa pediu a COF antes da reunião.",

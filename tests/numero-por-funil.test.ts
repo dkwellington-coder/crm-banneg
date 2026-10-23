@@ -44,6 +44,7 @@ const reply = (text: string): SdrDecision => ({
   temperature: "morno",
   decision: "continue",
   slotIndex: null,
+  handoffTo: null,
   sendCof: false,
   reason: "respondeu",
   summary: "Pediu cotação.",

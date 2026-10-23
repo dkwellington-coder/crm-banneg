@@ -18,6 +18,23 @@ export const STAGE_KEYS = {
 // and goes back to "Qualificado" for the AI to offer new times
 export const NO_SHOW_STAGE = { key: "nao_compareceu", name: "Não compareceu" } as const;
 
+// Stages where a person takes over one subject ("com_consorcio", "com_telemedicina"...), besides the default
+// "com_gerente": the AI names one in handoffTo and the lead goes there
+export const isSubjectHandoffKey = (key: string | null) => !!key && key.startsWith("com_") && key !== STAGE_KEYS.HANDED_OFF;
+
+const plain = (s: string) =>
+  s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+
+/** The subject stage the AI named for a handoff (case and accents aside), or null for the funnel's default one. */
+export function subjectHandoffStage<T extends { name: string }>(d: Pick<SdrDecision, "decision" | "handoffTo">, stages: T[]) {
+  if (d.decision !== "handoff" || !d.handoffTo) return null;
+  return stages.find((s) => plain(s.name) === plain(d.handoffTo!)) ?? null;
+}
+
 // In the lead's qualification next to "parceiro": the id of the funnel the store referred the lead to
 export const REFERRAL_FUNNEL = "parceiroFunil";
 

@@ -116,6 +116,7 @@ describe.skipIf(!dbUrl)("resend after an account block", () => {
       temperature: "morno",
       decision: "continue",
       slotIndex: null,
+      handoffTo: null,
       sendCof: false,
       reason: "quer conversar",
       summary: "Felipe quer conversar.",
