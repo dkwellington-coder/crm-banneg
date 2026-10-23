@@ -1,7 +1,7 @@
 import { runDueJobs } from "@/lib/jobs";
 import { db } from "@/lib/db";
 import { clearHealth, refreshWhatsAppNumbers, setHealth, submitTemplates, syncTemplateStatus } from "@/lib/whatsapp";
-import { checkCalendar, checkFunnelNumbers, checkTranscription, checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
+import { checkAi, checkCalendar, checkFunnelNumbers, checkTranscription, checkWhatsApp, whatsappSendStatus } from "@/lib/integrations";
 import { googleConfigured } from "@/lib/google";
 import { runDailyBatches } from "@/lib/batches";
 import { auditMetaLeadsIfDue, pullMetaLeads } from "@/lib/meta-leads";
@@ -10,6 +10,7 @@ import { syncAdSpend } from "@/lib/meta-ads";
 import { forwardTarget } from "@/lib/whatsapp-forward";
 import { backfillCapi, runCapi } from "@/lib/meta-capi";
 import { pullEmailLeads } from "@/lib/email-leads";
+import { getAiHealth } from "@/lib/ai-health";
 
 // Called every minute by the server's scheduler (cron, Vercel Cron, or the worker script).
 export async function GET(request: Request) {
@@ -62,6 +63,8 @@ export async function GET(request: Request) {
     meta.copyTo = await forwardTarget().catch((e: Error) => ({ error: e.message }));
     // The account's numbers, for each funnel's "Número do WhatsApp"; read from Meta at most once an hour, never throws
     meta.numbers = await refreshWhatsAppNumbers({ ifOlderThanMs: 3600_000 }).then((n) => n && { count: n.numbers.length, error: n.error ?? null });
+    // While the AI is stopped (no credit), one tiny call every 10 minutes: once it answers, the leads who waited get theirs
+    if (await getAiHealth()) meta.ai = await checkAi().catch((e: Error) => ({ ok: false, message: e.message }));
     // Lead audios are transcribed for the AI: proven once a day (and an hour after a failure)
     const last = (await db.setting.findUnique({ where: { key: "audio_check" } }))?.value as { ok?: boolean; at?: string } | undefined;
     const age = last?.at ? Date.now() - new Date(last.at).getTime() : Infinity;

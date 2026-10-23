@@ -24,6 +24,7 @@ import { forwardTarget, setWhatsAppCopy } from "./whatsapp-forward";
 import { templateFor } from "./messaging";
 import { transcribe } from "./audio";
 import { mailboxUser, pullEmailLeads } from "./email-leads";
+import { aiAccountProblem, aiAnswered, setAiHealth } from "./ai-health";
 
 export type CheckResult = { ok: boolean; message: string; details?: string[] };
 
@@ -43,11 +44,17 @@ export async function checkAi(): Promise<CheckResult> {
       max_tokens: 16,
       messages: [{ role: "user", content: "Responda apenas: ok" }],
     });
-    return { ok: true, message: `IA respondendo (${res.model}, ${((Date.now() - started) / 1000).toFixed(1)} s).` };
+    const resumed = await aiAnswered();
+    return {
+      ok: true,
+      message: `IA respondendo (${res.model}, ${((Date.now() - started) / 1000).toFixed(1)} s).${resumed ? ` Ela vai responder ${resumed} lead(s) que ficaram esperando.` : ""}`,
+    };
   } catch (e) {
+    const problem = aiAccountProblem(e);
+    if (problem) await setAiHealth(problem);
     const status = (e as { status?: number }).status;
     if (status === 401) return { ok: false, message: "Chave da IA inválida. Gere outra em console.anthropic.com > API Keys." };
-    if (status === 402 || status === 403) return { ok: false, message: "Conta da IA sem crédito ou sem permissão. Verifique o faturamento em console.anthropic.com." };
+    if (problem) return { ok: false, message: `IA parada: ${problem}` };
     return fail(e);
   }
 }

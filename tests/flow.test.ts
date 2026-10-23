@@ -509,4 +509,50 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(await db.job.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ status: "FAILED", dedupeKey: null });
     expect(await db.task.count({ where: { leadId: lead.id, title: { contains: "Automação interrompida" } } })).toBe(1);
   });
+
+  it("no credit at Anthropic: every screen says the AI stopped, and once it answers again it replies to who waited", async () => {
+    const health = await import("@/lib/ai-health");
+    const sdr = await import("@/lib/sdr");
+    const a = (await leads.createLead({ name: "Dani", phone: "41999990007", source: "site" }, "teste")).lead;
+    const b = (await leads.createLead({ name: "Edu", phone: "41999990008", source: "site" }, "teste")).lead;
+    await drain();
+    sent.length = 0;
+    await leads.handleInbound({ phone: "5541999990007", body: "Oi, quero saber da franquia", externalId: "nocredit1", at: new Date() });
+    await leads.handleInbound({ phone: "5541999990008", body: "Tenho interesse", externalId: "nocredit2", at: new Date() });
+    const noCredit = Object.assign(
+      new Error('400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}'),
+      { status: 400 },
+    );
+    vi.mocked(sdr.runSdrTurn).mockRejectedValue(noCredit);
+    try {
+      await drain();
+      expect(await health.getAiHealth()).toMatchObject({ message: expect.stringContaining("sem crédito") });
+      // The retries run out: each lead gets the usual task for the team
+      await db.job.updateMany({ where: { type: "sdr.reply", status: "PENDING" }, data: { attempts: 4, runAt: new Date() } });
+      await drain();
+      expect(await db.job.count({ where: { type: "sdr.reply", status: "FAILED" } })).toBe(2);
+      expect(await db.task.count({ where: { title: "Automação falhou (sdr.reply): verificar", doneAt: null } })).toBe(2);
+      expect(sent).toEqual([]);
+    } finally {
+      // Back to the stub's own answer (nextDecision)
+      vi.mocked(sdr.runSdrTurn).mockReset();
+    }
+    // Meanwhile someone took Edu's conversation over
+    await db.lead.update({ where: { id: b.id }, data: { aiPaused: true } });
+
+    // Credit is back (the check every 10 minutes got an answer): the banner goes and Dani gets her answer
+    expect(await health.aiAnswered()).toBe(1);
+    expect(await health.getAiHealth()).toBeNull();
+    nextDecision.value = { reply: "Oi Dani! Desculpe a demora.", extracted: empty, score: 40, temperature: "morno", decision: "continue", slotIndex: null, sendCof: false, reason: "", summary: "" };
+    await drain();
+    expect(sent).toEqual([{ to: "5541999990007", type: "text", body: "Oi Dani! Desculpe a demora." }]);
+    expect(await db.task.findMany({ where: { title: "Automação falhou (sdr.reply): verificar", doneAt: null }, select: { leadId: true } })).toEqual([{ leadId: b.id }]);
+    expect(await db.leadEvent.count({ where: { leadId: a.id, type: "ai.resumed" } })).toBe(1);
+
+    // Next time, the first lead the AI answers clears the banner itself
+    await health.setAiHealth("a conta da Anthropic está sem crédito.");
+    await leads.handleInbound({ phone: "5541999990007", body: "E quanto custa?", externalId: "nocredit3", at: new Date() });
+    await drain();
+    expect(await health.getAiHealth()).toBeNull();
+  });
 });

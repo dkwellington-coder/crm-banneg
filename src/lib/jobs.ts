@@ -15,6 +15,7 @@ import { isGreeting, type RuleJobPayload } from "./automations";
 import { attachMaterials, emailHtml, renderTemplate, sendEmail, withButton } from "./email";
 import { cofDocuments, sendCof } from "./cof";
 import { blockedByAccount, resendSame } from "./resend";
+import { aiAccountProblem, aiAnswered, setAiHealth } from "./ai-health";
 
 type Handler = (job: Job, lead: Lead | null) => Promise<string>;
 
@@ -93,6 +94,8 @@ const handlers: Record<string, Handler> = {
     if (lead.aiPaused) return "Ignorado: IA pausada neste lead.";
     const { ctx, slots, settings, agent, owner } = await sdrContext(lead);
     const decision = await runSdrTurn(ctx);
+    // After a stop (no credit), the first answer clears the banner and answers the leads who waited
+    await aiAnswered({ answering: lead.id });
     // Claude takes a while: meanwhile someone may have answered (which pauses the AI), closed or moved the lead,
     // or the lead asked to stop. Then this answer is stale and does not go
     const current = await db.lead.findUniqueOrThrow({ where: { id: lead.id } });
@@ -603,6 +606,9 @@ export async function runDueJobs(limit = 20) {
       results.push({ id: job.id, type: job.type, ok: true, result });
     } catch (e) {
       const message = (e as Error).message;
+      // The Anthropic account stopped (no credit, key revoked): every screen says so until the AI answers again
+      const aiProblem = job.type.startsWith("sdr.") ? aiAccountProblem(e) : null;
+      if (aiProblem) await setAiHealth(aiProblem);
       const attempts = job.attempts + 1;
       const failed = attempts >= job.maxAttempts;
       await db.job.update({
