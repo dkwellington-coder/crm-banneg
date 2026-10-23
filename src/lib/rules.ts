@@ -105,7 +105,8 @@ export function fillVariables(text: string, vars: Record<string, string>) {
     .replace(/,([.!?])/g, "$1")
     .replace(/^[,\s]+/, "")
     .trim()
-    .replace(/^\p{Ll}/u, (c) => c.toUpperCase());
+    // A text that opens with a material link keeps it as is, so it still goes as the video
+    .replace(/^(?!https?:\/\/)\p{Ll}/u, (c) => c.toUpperCase());
 }
 
 /** Same-delay rules run in the order shown on screen. */

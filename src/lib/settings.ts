@@ -29,8 +29,10 @@ export const DEFAULT_MATERIALS: Record<string, string> = {
   apresentacao: `${MATERIALS_BASE}/apresentacao-de-valor.pdf`,
   por_que_investir: `${MATERIALS_BASE}/por-que-investir.pdf`,
   simulacoes: `${MATERIALS_BASE}/simulacoes-de-rentabilidade.pdf`,
+  tabela_comissoes: `${MATERIALS_BASE}/tabela-de-comissoes.pdf`,
   catalogo_lojas: `${MATERIALS_BASE}/catalogo-lojas-3d.pdf`,
   video_ganhos: `${MATERIALS_BASE}/como-ganhar-dinheiro.mp4`,
+  video_quanto_ganha: `${MATERIALS_BASE}/quanto-da-para-ganhar.mp4`,
   video_bottini: `${MATERIALS_BASE}/ciro-bottini.mp4`,
   video_franqueado: `${MATERIALS_BASE}/depoimento-franqueado.mp4`,
   video_fundador: `${MATERIALS_BASE}/wellington-mensagem.mp4`,
@@ -44,6 +46,7 @@ const FILE_NAMES: Record<string, string> = {
   "apresentacao-de-valor.pdf": "Banneg - Apresentação de Valor.pdf",
   "por-que-investir.pdf": "Banneg - Por que investir.pdf",
   "simulacoes-de-rentabilidade.pdf": "Banneg - Simulações de rentabilidade.pdf",
+  "tabela-de-comissoes.pdf": "Banneg - Tabela de Comissões.pdf",
   "catalogo-lojas-3d.pdf": "Banneg - Catálogo de Lojas.pdf",
 };
 

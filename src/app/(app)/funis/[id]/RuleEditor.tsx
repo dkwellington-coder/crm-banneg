@@ -51,7 +51,7 @@ const PRESETS: { label: string; draft: Partial<Draft> }[] = [
   { label: "Mover quando tocar no botão", draft: { trigger: "answer", action: "move", config: { answers: ["Quero ver"] } } },
 ];
 
-const VARIABLES = ["nome", "empresa", "parceiro", "produto", "cidade", "sdr", "apresentacao", "video_ganhos", "simulacoes", "por_que_investir", "video_fundador", "video_bottini"];
+const VARIABLES = ["nome", "empresa", "parceiro", "produto", "cidade", "sdr", "apresentacao", "video_ganhos", "video_quanto_ganha", "simulacoes", "tabela_comissoes", "por_que_investir", "video_fundador", "video_bottini"];
 
 function fromRule(rule?: RuleData): Draft {
   if (!rule) return { trigger: "enter", when: "now", amount: 1, unit: "d", action: "whatsapp", config: {}, runAfterLeaving: false };

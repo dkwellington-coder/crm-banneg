@@ -30,6 +30,20 @@ describe("content kit", () => {
     expect(findMaterial("Sem material aqui", Object.values(DEFAULT_MATERIALS))).toBeNull();
   });
 
+  it("sends the new earnings video and the commission table, even when the rule opens with the link", () => {
+    const all = Object.values(DEFAULT_MATERIALS);
+    expect(findMaterial(fillVariables("{{video_quanto_ganha}}\n\nQual produto você venderia mais?", DEFAULT_MATERIALS), all)).toEqual({
+      url: DEFAULT_MATERIALS.video_quanto_ganha,
+      kind: "video",
+      caption: "Qual produto você venderia mais?",
+      filename: "quanto-da-para-ganhar.mp4",
+    });
+    expect(findMaterial(`Aqui está a tabela completa: ${DEFAULT_MATERIALS.tabela_comissoes}`, all)).toMatchObject({
+      kind: "document",
+      filename: "Banneg - Tabela de Comissões.pdf",
+    });
+  });
+
   it("attaches the PDFs to e-mails instead of linking them, and keeps videos as links", () => {
     const body = fillVariables("Aqui está a apresentação completa:\n{{apresentacao}}\n\nE o vídeo de 1 minuto:\n{{video_ganhos}}", DEFAULT_MATERIALS);
     expect(attachMaterials(body, Object.values(DEFAULT_MATERIALS))).toEqual({
