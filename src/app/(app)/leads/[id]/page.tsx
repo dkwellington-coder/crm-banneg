@@ -17,11 +17,13 @@ import {
   sendCofAction,
   completeTaskAction,
   markAlertSeenAction,
-  markLostAction,
   toggleAiAction,
   updateLeadAction,
 } from "../../../actions";
 import { StageSelect } from "./StageSelect";
+import { LostForm } from "./LostForm";
+import { ApoliceUpload } from "@/components/ApoliceUpload";
+import { needsApolice } from "@/lib/stage-move";
 import { Composer } from "./Composer";
 import { AudioRecorder } from "./AudioRecorder";
 import { ScheduleMeeting } from "./ScheduleMeeting";
@@ -29,7 +31,7 @@ import { LeadSplit } from "./LeadSplit";
 import { MeetingOutcome, OUTCOME_LABEL } from "@/components/MeetingOutcome";
 import { PendingButton, SaveButton } from "./SaveButton";
 import { googleConfigured, googleLinks } from "@/lib/google";
-import { cofDeadline, dateTimeBr } from "@/lib/cof";
+import { cofDeadline, dateTimeBr, sizeLabel } from "@/lib/cof";
 
 export default function LeadPage({ params }: PageProps<"/leads/[id]">) {
   return (
@@ -62,6 +64,7 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
       where: { id },
       include: {
         stage: true,
+        pipeline: { select: { slug: true } },
         sdr: true,
         owner: true,
         // The newest 300 (put back in order below): a long conversation shows its end, not its beginning
@@ -74,6 +77,12 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
           select: { id: true, to: true, sentAt: true, sentBy: true, openedAt: true, downloadedAt: true, confirmedAt: true, confirmIp: true },
         },
         jobs: { where: { status: { in: ["PENDING", "FAILED"] } }, orderBy: { runAt: "asc" }, take: 10 },
+        // Finished uploads only, and never their bytes
+        documents: {
+          where: { sha256: { not: null } },
+          orderBy: { createdAt: "asc" },
+          select: { id: true, name: true, size: true, uploadedBy: true, createdAt: true },
+        },
       },
     }),
     db.stage.findMany({ orderBy: [{ pipeline: { position: "asc" } }, { position: "asc" }], include: { pipeline: { select: { name: true } } } }),
@@ -138,7 +147,18 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
               </div>
             </div>
           </div>
-          <StageSelect key={lead.stageId} leadId={lead.id} stageId={lead.stageId} stages={stages.map((s) => ({ id: s.id, name: s.name, pipeline: s.pipeline.name }))} />
+          <StageSelect
+            key={lead.stageId}
+            leadId={lead.id}
+            lead={lead.name ?? ""}
+            stageId={lead.stageId}
+            stages={stages.map((s) => ({ id: s.id, name: s.name, pipeline: s.pipeline.name, kind: s.kind, key: s.key }))}
+          />
+          {lead.stage.kind === "LOST" && lead.lostReason && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+              <span className="font-semibold">Motivo da perda:</span> {lead.lostReason}
+            </div>
+          )}
           {alerting && (
             <form
               action={markAlertSeenAction.bind(null, lead.id)}
@@ -149,6 +169,25 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
                 Marcar como visto
               </button>
             </form>
+          )}
+
+          {/* Next to the stage: it is what a won quote asks for */}
+          {(needsApolice(lead) || lead.documents.length > 0) && (
+            <Card className="space-y-2">
+              <div className="text-sm font-bold">Apólice ou contrato</div>
+              {lead.documents.map((d) => (
+                <div key={d.id} className="text-sm">
+                  <a href={`/api/leads/${lead.id}/documentos/${d.id}`} className="text-brand underline">
+                    {d.name}
+                  </a>
+                  <div className="text-xs text-slate-500">
+                    {sizeLabel(d.size)} · enviado por {d.uploadedBy} em {dateTimeBr(d.createdAt)}
+                  </div>
+                </div>
+              ))}
+              {!lead.documents.length && <p className="text-xs text-slate-500">Nenhum documento anexado. Para marcar o lead como Ganho, anexe a apólice (no consórcio, o contrato).</p>}
+              <ApoliceUpload leadId={lead.id} />
+            </Card>
           )}
 
           <Card className="space-y-2">
@@ -344,10 +383,7 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
 
           {lead.stage.kind === "OPEN" && (
             <Card>
-              <form action={markLostAction.bind(null, lead.id)} className="flex gap-2">
-                <input name="reason" required placeholder="Motivo da perda" className={inputCls} />
-                <button className={btnGhostCls}>Perdido</button>
-              </form>
+              <LostForm leadId={lead.id} />
             </Card>
           )}
         </>
@@ -415,6 +451,7 @@ const JOB_LABEL: Record<string, string> = {
   "rule.run": "automação da etapa",
   "email.send": "e-mail automático",
   "meeting.reminder": "lembrete de reunião",
+  "portal.status": "aviso ao portal",
 };
 
 // Events about another lead (a store's referral that went on there, or came from there): one click to it

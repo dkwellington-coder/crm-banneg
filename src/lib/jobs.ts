@@ -16,6 +16,7 @@ import { attachMaterials, emailHtml, renderTemplate, sendEmail, withButton } fro
 import { cofDocuments, sendCof } from "./cof";
 import { blockedByAccount, resendSame } from "./resend";
 import { aiAccountProblem, aiAnswered, setAiHealth } from "./ai-health";
+import { sendPortalStatus, type PortalBody } from "./portal";
 
 type Handler = (job: Job, lead: Lead | null) => Promise<string>;
 
@@ -150,7 +151,8 @@ const handlers: Record<string, Handler> = {
       // Funnels the team built may not have the AI's stage: try the funnel this one hands leads to
       // (old leads go on to Vendas de Franquias once qualified), else only the status changes
       const target = await aiTargetStage(plan.stageKey, lead.pipelineId);
-      if (target) await moveLead(lead.id, target.id, agent.name);
+      const discarded = target?.kind === "LOST" && target.id !== lead.stageId;
+      if (target) await moveLead(lead.id, target.id, agent.name, discarded ? { lostReason: discardReason(decision) } : {});
       else await db.lead.update({ where: { id: lead.id }, data: { status: plan.status } });
       if (plan.handoffTask) await ensureTask(lead.id, lead.ownerId ?? owner?.id ?? null, plan.handoffTask);
     } catch (e) {
@@ -170,7 +172,8 @@ const handlers: Record<string, Handler> = {
     if (p.idle && lead.lastInboundAt && lead.lastInboundAt > new Date(p.since)) return "Ignorado: o lead respondeu.";
     // The greeting waits a few minutes for the lead to write first: it did, so the AI is already answering
     if (lead.lastInboundAt && lead.lastInboundAt > new Date(p.since) && (await isGreeting(rule, lead))) return "Ignorado: o lead já escreveu.";
-    const result = await runAction(lead, rule.action, rule.config as RuleConfig);
+    const origin = rule.trigger === "idle" ? `sem resposta em ${rule.stage.name}` : rule.stage.name;
+    const result = await runAction(lead, rule.action, rule.config as RuleConfig, origin);
     await logEvent(lead.id, "automation.ran", "Automação", `${rule.stage.name}: ${result}`, { ruleId: rule.id });
     return result;
   },
@@ -217,6 +220,11 @@ const handlers: Record<string, Handler> = {
     return result;
   },
 
+  async "portal.status"(job, l) {
+    // A close queued as it was (referralClosure) goes as it is; any other notice says the lead's stage now
+    return sendPortalStatus(needLead(l), (job.payload as { body?: PortalBody } | null)?.body);
+  },
+
   async "meeting.reminder"(job, l) {
     const lead = needLead(l);
     const { meetingId, label } = job.payload as { meetingId: string; label: string };
@@ -235,6 +243,15 @@ const handlers: Record<string, Handler> = {
     return `Lembrete ${sentHow(res)}.`;
   },
 };
+
+/**
+ * The reason a lead the AI discarded closes with (the store reads it in the portal): its justification, kept short.
+ * Never the summary, which is written for the manager and may carry what the lead told in private.
+ */
+export function discardReason(decision: { reason?: string }) {
+  const why = (decision.reason || "").replace(/\s+/g, " ").trim();
+  return why ? `Descartado pela IA: ${why.length > 200 ? `${why.slice(0, 199)}…` : why}` : "Descartado pela IA";
+}
 
 async function aiTargetStage(key: string, pipelineId: string) {
   const own = await stageByKey(key, pipelineId);
@@ -348,8 +365,11 @@ async function sendUndeliveredEmails(lead: Lead) {
   return results.join(" ");
 }
 
-/** Does what a rule says. Throws on a failure worth retrying (WhatsApp down, SMTP error). */
-export async function runAction(lead: Lead, action: string, config: RuleConfig): Promise<string> {
+/**
+ * Does what a rule says. Throws on a failure worth retrying (WhatsApp down, SMTP error). origin names the rule (its
+ * stage) in the reason of a lead it closes as lost.
+ */
+export async function runAction(lead: Lead, action: string, config: RuleConfig, origin?: string): Promise<string> {
   switch (action) {
     case "whatsapp": {
       if (!lead.phone) return "Ignorado: lead sem telefone.";
@@ -402,7 +422,11 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig):
     case "move": {
       const to = config.toStageId ? await db.stage.findUnique({ where: { id: config.toStageId } }) : null;
       if (!to) return "Ignorado: a etapa de destino foi removida.";
-      await moveLead(lead.id, to.id, "Automação");
+      // Only a close says why: a lead already in a lost stage (this one or another) keeps the reason it was closed with,
+      // maybe typed by a person
+      const closed = !!lead.lostReason && (await db.stage.findUnique({ where: { id: lead.stageId }, select: { kind: true } }))?.kind === "LOST";
+      const closing = to.kind === "LOST" && to.id !== lead.stageId && !closed;
+      await moveLead(lead.id, to.id, "Automação", closing ? { lostReason: `Automação: ${origin ?? to.name}` } : {});
       return `Movido para ${to.name}.`;
     }
     case "ai_on": {
@@ -555,24 +579,30 @@ export async function sendMeetingLink(lead: Lead, meeting: { startsAt: Date; mee
 const STUCK_MS = 15 * 60_000;
 // The cron call stops taking jobs after this, so the server is never killed in the middle of one
 const RUN_BUDGET_MS = 45_000;
+const PORTAL_JOB = "portal.status";
+// Each may wait PORTAL_TIMEOUT_MS for the portal
+const PORTAL_PER_RUN = 3;
 
 /**
  * Jobs cut off in the middle stay RUNNING with their dedupe key, and block the same job for the lead forever. They
- * fail with a task for the team instead of running again: the message may have gone before the cut.
+ * fail with a task for the team instead of running again: the message may have gone before the cut. A notice to the
+ * portal goes again instead, while it has attempts left: the portal takes the same notice twice harmlessly (by "em").
  */
 async function failStuckJobs() {
   const stuck = await db.job.findMany({
     // Meta CAPI jobs have their own recovery (runCapi)
     where: { status: "RUNNING", type: { not: "meta.capi" }, runAt: { lt: new Date(Date.now() - STUCK_MS) } },
-    select: { id: true, type: true, leadId: true, lead: { select: { ownerId: true } } },
+    select: { id: true, type: true, leadId: true, attempts: true, maxAttempts: true, lead: { select: { ownerId: true } } },
     take: 50,
   });
+  const cut = "Interrompida no meio (o servidor parou).";
   for (const job of stuck) {
+    const again = job.type === PORTAL_JOB && job.attempts < job.maxAttempts;
     const done = await db.job.updateMany({
       where: { id: job.id, status: "RUNNING" },
-      data: { status: "FAILED", lastError: "Interrompida no meio (o servidor parou).", finishedAt: new Date(), dedupeKey: null },
+      data: again ? { status: "PENDING", lastError: cut, runAt: new Date() } : { status: "FAILED", lastError: cut, finishedAt: new Date(), dedupeKey: null },
     });
-    if (done.count && job.leadId) {
+    if (done.count && job.leadId && !again) {
       await logEvent(job.leadId, "automation.failed", "Automação", `Interrompida no meio (${job.type}); não roda de novo sozinha.`);
       await ensureTask(job.leadId, job.lead?.ownerId ?? null, `Automação interrompida (${job.type}): verificar`);
     }
@@ -583,11 +613,16 @@ async function failStuckJobs() {
 export async function runDueJobs(limit = 20) {
   const deadline = Date.now() + RUN_BUDGET_MS;
   await failStuckJobs();
-  const due = await db.job.findMany({
-    where: { status: "PENDING", type: { not: "meta.capi" }, runAt: { lte: new Date() } },
-    orderBy: { runAt: "asc" },
-    take: limit,
-  });
+  const now = new Date();
+  // The portal's notices go after the rest, a few per run: a portal that hangs never holds the AI's replies back
+  const due = [
+    ...(await db.job.findMany({
+      where: { status: "PENDING", type: { notIn: ["meta.capi", PORTAL_JOB] }, runAt: { lte: now } },
+      orderBy: { runAt: "asc" },
+      take: limit,
+    })),
+    ...(await db.job.findMany({ where: { status: "PENDING", type: PORTAL_JOB, runAt: { lte: now } }, orderBy: { runAt: "asc" }, take: PORTAL_PER_RUN })),
+  ];
   const results: { id: string; type: string; ok: boolean; result: string }[] = [];
   for (const job of due) {
     if (Date.now() > deadline) break;
