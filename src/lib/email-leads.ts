@@ -32,6 +32,8 @@ export type EmailLeadsState = {
   lastUid?: number;
   // Funnel the e-mails go to (null = the default funnel)
   pipelineId?: string | null;
+  // Funnel the quote requests go to (the site's quote form): unset = the funnel named "Cotações"; null = the funnel above
+  quotePipelineId?: string | null;
   at?: string;
   error?: string | null;
   created?: number;
@@ -50,11 +52,24 @@ async function saveState(value: EmailLeadsState) {
   await db.setting.upsert({ where: { key: STATE_KEY }, create: { key: STATE_KEY, value: json }, update: { value: json } });
 }
 
-export async function setEmailLeadsFunnel(pipelineId: string | null) {
-  await saveState({ ...(await emailLeadsState()), pipelineId });
+export async function setEmailLeadsFunnel(pipelineId: string | null, quotePipelineId?: string | null) {
+  const state = await emailLeadsState();
+  await saveState({ ...state, pipelineId, quotePipelineId: quotePipelineId === undefined ? state.quotePipelineId : quotePipelineId });
+}
+
+/** The funnel quote requests go to: the one chosen, else the funnel named "Cotações"; null = the box's own funnel. */
+export async function quoteFunnel(state: EmailLeadsState): Promise<{ id: string; name: string } | null> {
+  if (state.quotePipelineId === null) return null;
+  const pipelines = await db.pipeline.findMany({ select: { id: true, name: true }, orderBy: { position: "asc" } });
+  return pipelines.find((p) => p.id === state.quotePipelineId) ?? pipelines.find((p) => QUOTE_FUNNEL.test(p.name)) ?? null;
 }
 
 // ---------- Reading one e-mail ----------
+
+// "Cotações/ Seguros e Consórcios"
+const QUOTE_FUNNEL = /cota[çc]/i;
+// The site's quote form says "Solicitação de cotação"; a person may ask for an "orçamento"
+const QUOTE_ASK = /cota[çc](?:[ãa]o|[õo]es)|or[çc]amento/i;
 
 const EMAIL_RE = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/;
 // A Brazilian phone written any way: +55 (17) 99999-0000, 17 999990000, (061) 9325-8573
@@ -213,6 +228,8 @@ export type ReadEmail =
       messageId: string;
       date: Date;
       body: string;
+      // Asks for a quote (insurance, consórcio): goes to the quotes funnel
+      quote: boolean;
       lead: { name: string | null; email: string | null; phone: string | null; city: string | null; state: string | null; qualification: Record<string, string> };
     };
 
@@ -277,6 +294,7 @@ export function readLeadEmail(mail: ParsedMail, opts: { mailbox: string; ownPhon
     messageId: (mail.messageId || `${from?.address ?? "?"}:${date.toISOString()}:${subject}`).replace(/^<|>$/g, "").slice(0, 300),
     date,
     body,
+    quote: QUOTE_ASK.test(`${subject}\n${text}`),
     lead: { name: fields.name ?? senderName, email, phone, city: fields.city ?? null, state: fields.state ?? null, qualification },
   };
 }
@@ -342,7 +360,11 @@ function friendlyError(e: unknown) {
 }
 
 /** Turns one e-mail into a lead (or adds it to the lead it came from); returns what became of it. */
-async function takeEmail(source: Buffer, pipelineId: string | null, opts: Parameters<typeof readLeadEmail>[1]): Promise<{ entry: EmailLog; created: boolean }> {
+async function takeEmail(
+  source: Buffer,
+  funnels: { leads: string | null; quotes: string | null },
+  opts: Parameters<typeof readLeadEmail>[1],
+): Promise<{ entry: EmailLog; created: boolean }> {
   const read = readLeadEmail(await simpleParser(source), opts);
   const at = new Date().toISOString();
   if (read.skip !== undefined)
@@ -356,7 +378,7 @@ async function takeEmail(source: Buffer, pipelineId: string | null, opts: Parame
       source: "E-mail",
       campaign: read.subject.slice(0, 120) || "E-mail",
       externalId,
-      pipelineId,
+      pipelineId: (read.quote && funnels.quotes) || funnels.leads,
       createdAt: read.date,
     },
     "E-mail de leads",
@@ -398,11 +420,12 @@ export async function pullEmailLeads(now = new Date(), opts: { force?: boolean; 
     uidValidity = box.uidValidity;
     const uids = (await box.newSince(lastUid, new Date(now.getTime() - BACKFILL_DAYS * 86_400_000))).slice(0, MAX_PER_RUN);
     const pipeline = state.pipelineId ? await db.pipeline.findUnique({ where: { id: state.pipelineId }, select: { id: true } }) : null;
+    const funnels = { leads: pipeline?.id ?? null, quotes: (await quoteFunnel(state))?.id ?? null };
     const read = { mailbox: mailboxUser(), ownPhones: await ownPhones(), ownDomains: ownDomains() };
     for (const uid of uids) {
       const raw = await box.read(uid);
       if (raw) {
-        const r = await takeEmail(raw.source, pipeline?.id ?? null, read).catch((e: Error) => ({
+        const r = await takeEmail(raw.source, funnels, read).catch((e: Error) => ({
           entry: { at: new Date().toISOString(), from: "?", subject: "", result: `erro: ${e.message}` },
           created: false,
         }));

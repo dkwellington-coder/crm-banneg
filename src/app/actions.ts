@@ -661,10 +661,14 @@ export async function setFormFunnelAction(formId: string, form: FormData) {
 /** The funnel the e-mails of the leads box go to (Integrações); empty = the default funnel. */
 export async function setEmailLeadsFunnelAction(form: FormData) {
   await requireManager();
-  const id = String(form.get("pipelineId") ?? "");
-  const pipeline = id ? await db.pipeline.findUnique({ where: { id }, select: { id: true } }) : null;
+  const funnel = async (key: string) => {
+    const id = String(form.get(key) ?? "");
+    return id ? ((await db.pipeline.findUnique({ where: { id }, select: { id: true } }))?.id ?? null) : null;
+  };
+  // "O mesmo funil dos leads" is null; a form without the field keeps what was chosen
+  const quote = form.has("quotePipelineId") ? await funnel("quotePipelineId") : undefined;
   const { setEmailLeadsFunnel } = await import("@/lib/email-leads");
-  await setEmailLeadsFunnel(pipeline?.id ?? null);
+  await setEmailLeadsFunnel(await funnel("pipelineId"), quote);
   revalidatePath("/integracoes");
 }
 

@@ -30,6 +30,7 @@ describe("reading an e-mail", () => {
     if (r.skip !== undefined) return;
     expect(r.lead).toMatchObject({ name: "Maria Silva", email: "maria.silva@gmail.com", phone: "5517991234567" });
     expect(r.lead.qualification).toEqual({ "Assunto do e-mail": "Franquia", "E-mail do lead": expect.stringContaining("quero saber da franquia") });
+    expect(r.quote).toBe(false);
   });
 
   it("a site form sent by the site: the contact comes from the answers, the rest goes to the AI", async () => {
@@ -42,6 +43,7 @@ describe("reading an e-mail", () => {
     if (r.skip !== undefined) throw new Error(r.skip);
     expect(r.lead).toMatchObject({ name: "João Lima", email: "joao@x.com", phone: "5511988887777", city: "Campinas" });
     expect(r.lead.qualification).toEqual({ Produto: "Seguro auto", Mensagem: "Quero uma cotação", "Assunto do e-mail": "Novo contato pelo site" });
+    expect(r.quote).toBe(true);
   });
 
   it("a lead forwarded by the team: the contact is the forwarded sender, never the person who forwarded it", async () => {
@@ -92,6 +94,8 @@ describe("reading an e-mail", () => {
     expect(classic.lead).toMatchObject({ name: "João da Silva", email: "joao@x.com", phone: "5511988887777" });
     expect(classic.lead.qualification).toMatchObject({ "Comment or Message": "Quero uma cotação de seguro auto" });
     expect(classic.body).toContain("Quero uma cotação");
+    // The quote is in the answers, not in the subject
+    expect(classic.quote).toBe(true);
 
     // Newer template: label and answer in the same cell
     const modern = await read(
@@ -212,6 +216,30 @@ describe.skipIf(!dbUrl)("reading the box", () => {
     expect(await db.message.count({ where: { leadId: rui.id } })).toBe(2);
     expect(await db.task.count({ where: { leadId: rui.id, doneAt: null } })).toBe(1);
     expect(await db.leadEvent.findFirst({ where: { leadId: rui.id, type: "lead.email" } })).toMatchObject({ summary: `Mandou um e-mail para ${BOX}: "Outra dúvida"` });
+  });
+
+  it("quote requests (the site's quote form) go to the quotes funnel, the rest to the box's funnel", async () => {
+    const quotes = await db.pipeline.create({ data: { name: "Cotações/ Seguros e Consórcios", slug: "parceiro-veiculos", position: 6 } });
+    await db.stage.create({ data: { pipelineId: quotes.id, key: "novo", name: "Novo", position: 0 } });
+    expect((await emailLeads.quoteFunnel(await emailLeads.emailLeadsState()))?.id).toBe(quotes.id);
+    box[1] = eml(
+      { From: `Website Demos <${BOX}>`, Subject: "New Entry: Simple Contact Form", "Message-ID": "<q1@x>" },
+      "Comment or Message: SOLICITAÇÃO DE COTAÇÃO - ALICE / SITE BANNEG\nProduto: Seguro auto\nNome: Lia\nWhatsApp: 17981600011\nE-mail: lia@x.com",
+    );
+    box[2] = eml({ From: "Téo <teo@x.com>", Subject: "Franquia", "Message-ID": "<q2@x>" }, "Quero abrir uma franquia. 11 98888-1111");
+    await emailLeads.pullEmailLeads(now(), { open });
+    expect((await db.lead.findFirstOrThrow({ where: { email: "lia@x.com" } })).pipelineId).toBe(quotes.id);
+    expect((await db.lead.findFirstOrThrow({ where: { email: "teo@x.com" } })).pipelineId).toBe(franchise.id);
+
+    // "O mesmo funil dos leads": quotes too go to the box's funnel
+    await emailLeads.setEmailLeadsFunnel(null, null);
+    expect(await emailLeads.quoteFunnel(await emailLeads.emailLeadsState())).toBeNull();
+    box[3] = eml({ From: "Ivo <ivo@x.com>", Subject: "Orçamento de seguro", "Message-ID": "<q3@x>" }, "Me mandem um orçamento. 11 97777-2222");
+    await emailLeads.pullEmailLeads(now("2026-10-22T21:02:00Z"), { open });
+    expect((await db.lead.findFirstOrThrow({ where: { email: "ivo@x.com" } })).pipelineId).toBe(franchise.id);
+    // Choosing the main funnel again keeps the quotes choice
+    await emailLeads.setEmailLeadsFunnel(quotes.id);
+    expect(await emailLeads.emailLeadsState()).toMatchObject({ pipelineId: quotes.id, quotePipelineId: null });
   });
 
   it("a refused password is shown on Integrações and not retried every 2 minutes", async () => {

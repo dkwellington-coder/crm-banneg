@@ -14,7 +14,7 @@ import type { MetaAdsState } from "@/lib/meta-ads";
 import { daysAgo } from "@/lib/time";
 import { getHealth, savedWhatsAppNumbers } from "@/lib/whatsapp";
 import { resendState } from "@/lib/resend";
-import { emailLeadsState, mailboxUser } from "@/lib/email-leads";
+import { emailLeadsState, mailboxUser, quoteFunnel } from "@/lib/email-leads";
 
 export default function IntegracoesPage({ searchParams }: PageProps<"/integracoes">) {
   return (
@@ -124,6 +124,7 @@ async function EmailLeads() {
     emailLeadsState(),
     db.pipeline.findMany({ select: { id: true, name: true, isDefault: true }, orderBy: { position: "asc" } }),
   ]);
+  const quotes = await quoteFunnel(state);
   const box = mailboxUser();
   const fallback = (pipelines.find((p) => p.isDefault) ?? pipelines[0])?.name ?? "funil padrão";
   const chosen = pipelines.find((p) => p.id === state.pipelineId);
@@ -131,7 +132,7 @@ async function EmailLeads() {
     <Block icon={Inbox} color="#0891b2" title="E-mail que vira lead" missing={has("LEADS_IMAP_PASSWORD")}>
       <p className="text-sm text-slate-600">
         Todo e-mail que chega em <span className="font-medium text-slate-800">{box}</span> vira um lead no funil escolhido, com o e-mail guardado na
-        conversa. Se o e-mail trouxer um telefone, as automações e a IA chamam no WhatsApp; sem telefone, o lead recebe os e-mails do funil e a equipe
+        conversa. Quem pede cotação ou orçamento (como o formulário de cotação do site) entra no funil de cotações. Se o e-mail trouxer um telefone, as automações e a IA chamam no WhatsApp; sem telefone, o lead recebe os e-mails do funil e a equipe
         ganha a tarefa de responder. Respostas automáticas, avisos de entrega e newsletters são ignorados. A caixa é lida a cada 2 minutos e nada é
         marcado como lido.
       </p>
@@ -147,6 +148,17 @@ async function EmailLeads() {
         </label>
         <select id="email-funnel" name="pipelineId" defaultValue={chosen?.id ?? ""} className={`${inputCls} w-auto!`}>
           <option value="">Funil padrão ({fallback})</option>
+          {pipelines.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+        <label htmlFor="email-quote-funnel" className="text-slate-600">
+          Pedidos de cotação:
+        </label>
+        <select id="email-quote-funnel" name="quotePipelineId" defaultValue={quotes?.id ?? "same"} className={`${inputCls} w-auto!`}>
+          <option value="same">O mesmo funil dos leads</option>
           {pipelines.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
