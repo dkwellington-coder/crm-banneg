@@ -45,7 +45,7 @@ async function nextInQueue(stageId: string, take: number) {
 export async function runDailyBatches(now = new Date()) {
   const rules = await db.automationRule.findMany({
     where: { trigger: "daily", active: true, action: "move" },
-    include: { stage: { select: { pipeline: { select: { whatsappNumberId: true } } } } },
+    include: { stage: { select: { name: true, kind: true, pipeline: { select: { whatsappNumberId: true } } } } },
   });
   if (!rules.length || !isSendingWindow(now)) return { released: 0 };
   // Account blocked at Meta (payment pending, banned, expired token): keep everyone in the queue.
@@ -81,7 +81,11 @@ export async function runDailyBatches(now = new Date()) {
           .filter((l) => (l.phone && isTestContact(settings, l.phone)) || (l.email && isTestContact(settings, l.email)))
           .slice(0, take)
       : await nextInQueue(rule.stageId, take);
-    for (const lead of leads) await moveLead(lead.id, config.toStageId, "Automação (lote do dia)");
+    // A batch into a lost stage still says why, as the store reads it in the portal; leads already lost keep their reason
+    const to = leads.length ? await db.stage.findUnique({ where: { id: config.toStageId }, select: { kind: true } }) : null;
+    const closing = to?.kind === "LOST" && config.toStageId !== rule.stageId && rule.stage.kind !== "LOST";
+    const extra = closing ? { lostReason: `Lote automático: ${rule.stage.name}` } : {};
+    for (const lead of leads) await moveLead(lead.id, config.toStageId, "Automação (lote do dia)", extra);
     if (leads.length) {
       const value = { count: done + leads.length };
       await db.setting.upsert({ where: { key }, create: { key, value }, update: { value } });

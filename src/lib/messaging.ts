@@ -5,6 +5,7 @@ import { isUndelivered, isWindowOpen, mediaKind, sendAudio, sendButtons, sendMed
 import { AUDIO_MARK, WHATSAPP_AUDIO, baseMime, transcribe, uploadWhatsAppMedia, webmToOgg } from "./audio";
 import { getSettings, materialFileName, whatsappIsReal } from "./settings";
 import { enqueue } from "./queue";
+import { SEND_ERROR_REASON } from "./portal-status";
 
 export type SendOptions = {
   // Picks the approved template by its use when the 24-hour window is closed (first_contact, reminder, reengagement)
@@ -239,6 +240,6 @@ export async function moveToSendError(leadId: string, reason: string) {
     }));
   // Imported here: leads.ts sends WhatsApp through this file
   const { moveLead } = await import("./leads");
-  await moveLead(lead.id, stage.id, "WhatsApp", { aiPaused: true, lostReason: `WhatsApp não chega neste contato: ${reason}` });
+  await moveLead(lead.id, stage.id, "WhatsApp", { aiPaused: true, lostReason: `${SEND_ERROR_REASON}: ${reason}` });
   return true;
 }

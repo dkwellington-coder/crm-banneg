@@ -1,4 +1,4 @@
-import type { Lead, LeadStatus, Prisma } from "@prisma/client";
+import type { Lead, LeadStatus, Prisma, Stage } from "@prisma/client";
 import { db } from "./db";
 import { logEvent } from "./events";
 import { cancelJobs, enqueueDebounced } from "./queue";
@@ -9,6 +9,9 @@ import { SEND_ERROR_STAGE, sendWhatsApp } from "./messaging";
 import { NO_SHOW_STAGE, REFERRAL_FUNNEL, STAGE_KEYS } from "./plan";
 import { formatSlot } from "./calendar";
 import { queueCapi } from "./meta-capi";
+import { DUPLICATE_MARK, NO_REASON } from "./portal-status";
+import { queuePortalStatus, referralClosure, reopenReferrals } from "./portal";
+import type { ReopenChoice } from "./stage-move";
 
 /** A stage of the given funnel by its AI key; null when that funnel has no such stage. */
 export async function stageByKey(key: string, pipelineId: string) {
@@ -385,9 +388,6 @@ function sameName(a: string | null | undefined, b: string | null | undefined) {
   return !!slugify(a ?? "") && slugify(a ?? "") === slugify(b ?? "");
 }
 
-/** Marks the ref of a referral's lead closed as a duplicate: never waiting for a code, still a referral's phone. */
-const DUPLICATE_MARK = "#duplicado";
-
 /**
  * A lead the CRM already had that wrote a referral's code is plainly that referral's client: a contact with the same first
  * name, or the client of an earlier referral with the same full name. Another referral's phone (the store's own, typed for
@@ -432,9 +432,19 @@ async function joinReferral(referral: Lead, into: Lead) {
   const q = referral.qualification as Record<string, unknown>;
   const text = (v: unknown) => (typeof v === "string" && v ? v : undefined);
   const store = text(q.parceiro);
-  if (store) await referExisting(into.id, referral.pipelineId, store, text(q.produto), "WhatsApp");
-  // The store's file on the client, and the e-mail it typed (the way in when WhatsApp does not reach)
+  // Before the referral reopens the lead: the referrals it had closed keep what the store saw (portalRefs)
+  const closure = await referralClosure(into.id, referral.externalId);
+  if (closure) {
+    const files = await db.leadEvent.findMany({ where: { leadId: referral.id, type: "lead.form" }, select: { id: true, data: true } });
+    for (const f of files) {
+      const data = f.data as Prisma.JsonObject | null;
+      if (typeof data?.ref === "string") await db.leadEvent.update({ where: { id: f.id }, data: { data: { ...data, ...closure } } });
+    }
+  }
+  // The store's file on the client, and the e-mail it typed (the way in when WhatsApp does not reach). Moved before the
+  // lead starts over, so the notice that move queues already knows which referrals it had closed
   await db.leadEvent.updateMany({ where: { leadId: referral.id, type: "lead.form" }, data: { leadId: into.id } });
+  if (store) await referExisting(into.id, referral.pipelineId, store, text(q.produto), "WhatsApp");
   const now = await db.lead.findUniqueOrThrow({ where: { id: into.id } });
   await db.lead.update({
     where: { id: into.id },
@@ -506,7 +516,10 @@ export async function referralOnClosedReferral(held: Lead, input: NewLeadInput, 
   // Another lead has the phone written with or without the 9: that contact is the one the store referred, as before
   const variants = input.phone ? phoneVariants(input.phone) : [];
   if (await db.lead.count({ where: { id: { not: held.id }, phone: { in: variants } } })) return null;
-  await db.lead.update({ where: { id: held.id }, data: { phone: null } });
+  // returning() just gave this lead the new referral's ref (it had none): the ref goes with the phone, so only the lead
+  // made for it tells the store anything
+  const stamped = !!input.externalId && held.externalId === input.externalId;
+  await db.lead.update({ where: { id: held.id }, data: { phone: null, ...(stamped && { externalId: null }) } });
   await logEvent(held.id, "lead.phone_changed", actor, `A loja fez a indicação de ${input.name ?? "outro cliente"} com o número ${held.phone ?? ""}, que passou para ela.`);
   const made = await createLead(input, actor);
   const optOut = held.whatsappOptOut;
@@ -776,9 +789,34 @@ async function markMeetingMissed(leadId: string, actor: string) {
   await logEvent(leadId, "meeting.no_show", actor, `O lead não compareceu à reunião de ${formatSlot(last.startsAt)}.`);
 }
 
+/**
+ * The lostReason a move into another stage writes, or undefined to leave it as extra (or the lead) has it. A loss
+ * always has a reason, since the store reads it in the portal; leaving the lost stages drops the old one.
+ */
+function closingReason(lead: Lead & { stage: Stage }, stage: Stage, extra: Prisma.LeadUncheckedUpdateInput, actor: string) {
+  const given = extra.lostReason;
+  if (stage.kind === "LOST") {
+    if (typeof given === "string" && given.trim()) return undefined;
+    // From one lost stage to another: the reason it was closed with still holds
+    if (given === undefined && lead.stage.kind === "LOST" && lead.lostReason) return undefined;
+    return `${NO_REASON} (${actor})`;
+  }
+  return lead.stage.kind === "LOST" && given === undefined ? null : undefined;
+}
+
 /** Moves a lead (drag and drop, the AI or a rule) and starts the new stage's automations. */
-/** rules: false moves without starting the new stage's automations (a stage being deleted hands its leads over). */
-export async function moveLead(leadId: string, stageId: string, actor: string, extra: Prisma.LeadUncheckedUpdateInput = {}, { rules = true } = {}) {
+/**
+ * rules: false moves without starting the new stage's automations (a stage being deleted hands its leads over). reopen:
+ * what a person said of a won sale the lead leaves for an open stage; without it (a rule, a message, the AI) a new deal
+ * starts and the store keeps the sale.
+ */
+export async function moveLead(
+  leadId: string,
+  stageId: string,
+  actor: string,
+  extra: Prisma.LeadUncheckedUpdateInput = {},
+  { rules = true, reopen }: { rules?: boolean; reopen?: ReopenChoice } = {},
+) {
   const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId }, include: { stage: true } });
   const stage = await db.stage.findUniqueOrThrow({ where: { id: stageId } });
   if (lead.stageId === stageId && Object.keys(extra).length === 0) return lead;
@@ -792,23 +830,36 @@ export async function moveLead(leadId: string, stageId: string, actor: string, e
     const funnel = await funnelStart(stage.pipelineId);
     start = { whatsappNumberId: funnel.whatsappNumberId, ...(funnel.sdr && extra.sdrId === undefined && { sdrId: funnel.sdr.id }) };
   }
+  const lostReason = entering ? closingReason(lead, stage, extra, actor) : undefined;
+  const enteredAt = new Date();
+  // What the person said of the won sale the lead leaves for an open stage
+  const choice = entering && lead.stage.kind === "WON" && stage.kind === "OPEN" ? reopen : undefined;
+  // Open again after a close, or won out of a loss: a won deal's referrals keep the sale (unless it was undone), and the
+  // ones that reached the lead closed follow it from now on. Written first, so the notice this move queues already
+  // knows (portalRefs)
+  const restarts = (stage.kind === "OPEN" && lead.stage.kind !== "OPEN") || (stage.kind === "WON" && lead.stage.kind === "LOST");
+  if (entering && restarts) await reopenReferrals(lead, enteredAt, actor, choice === "undone");
   const updated = await db.lead.update({
     where: { id: leadId },
     data: {
       stageId,
       pipelineId: stage.pipelineId,
       status,
-      ...(entering && { stageEnteredAt: new Date() }),
+      ...(entering && { stageEnteredAt: enteredAt }),
       ...(entering && stage.kind === "WON" && { wonAt: new Date() }),
       ...(entering && stage.kind !== "WON" && lead.stage.kind === "WON" && { wonAt: null }),
       ...start,
       ...extra,
+      ...(lostReason !== undefined && { lostReason }),
     },
   });
   if (entering) {
     await queueCapi(db, updated, stage).catch(() => console.error("Meta CAPI: falha ao registrar evento na fila."));
+    // The store follows its referral in the portal; a failure here must not undo a move already saved
+    await queuePortalStatus(updated).catch(() => console.error("Portal: falha ao registrar o aviso na fila."));
     const crossed = stage.pipelineId !== lead.pipelineId ? " (outro funil)" : "";
-    await logEvent(leadId, "stage.changed", actor, `${lead.stage.name} → ${stage.name}${crossed}`);
+    const said = choice === "undone" ? ": a venda foi desfeita" : choice === "new" ? ": novo atendimento" : "";
+    await logEvent(leadId, "stage.changed", actor, `${lead.stage.name} → ${stage.name}${crossed}${said}`);
     if (stage.kind !== "OPEN") {
       // Closing the deal stops everything that was still scheduled for this lead
       await cancelRuleJobs(leadId, "all");

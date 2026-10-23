@@ -4,6 +4,7 @@ import { adoptReferral, createLead, leadThatQuoted, pipelineByRef, referExisting
 import { cancelGreetings } from "@/lib/automations";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
+import { referralClosure } from "@/lib/portal";
 import { REFERRAL_FUNNEL } from "@/lib/plan";
 import { isWindowOpen, normalizePhone, phoneVariants } from "@/lib/whatsapp";
 
@@ -110,22 +111,40 @@ export async function POST(request: Request) {
   // anyone else gets a lead of her own
   if (!wrote && !found.created && b.parceiro) found = (await referralOnClosedReferral(found.lead, input, actor)) ?? found;
   const { lead, created } = found;
+  // Before the referral reopens the lead: the referrals it had closed keep what the store saw (portalRefs)
+  const closure = !created && b.ref ? await referralClosure(lead.id, b.ref) : null;
   if (wrote && !wrote.own) {
     const typed = phone ? normalizePhone(phone) : null;
     const elsewhere = typed && lead.phone && !phoneVariants(lead.phone).includes(typed) ? `; a loja informou o número ${typed}` : "";
     await logEvent(lead.id, "lead.duplicate", actor, `Entrou de novo pela origem "${source}": já tinha escrito com o código desta indicação${elsewhere}.`);
   }
   if (!created && b.produto) await logEvent(lead.id, "lead.form", "Formulário", `Pediu informações de ${b.produto} de novo.`);
+  // Logged before the lead starts over (referExisting), so the notice that move queues already knows which referrals it
+  // had closed
+  const form = b.ref ? { ref: b.ref, ...closure } : undefined;
+  const filed = b.observacao || b.ref ? await logEvent(lead.id, "lead.form", source, b.observacao || "Indicação recebida.", form) : null;
   let moved = false;
   let task = false;
   if (!created && b.parceiro) {
-    ({ moved } = await referExisting(lead.id, pipeline?.id, b.parceiro, b.produto, actor));
+    try {
+      ({ moved } = await referExisting(lead.id, pipeline?.id, b.parceiro, b.produto, actor));
+    } catch (e) {
+      // The store sends a failed referral again, which must find the work still to do: neither the ref on the timeline nor
+      // the one returning() gave a lead without one (no other lead had it, or the referral would be a repeat). Once the
+      // lead started over, the referral is in, with the closed referrals it found (which the lead, open now, could not
+      // tell again)
+      const still = await db.lead.findUnique({ where: { id: lead.id }, select: { stageId: true, externalId: true } });
+      if (still?.stageId === lead.stageId) {
+        if (filed) await db.leadEvent.delete({ where: { id: filed.id } }).catch(() => console.error("Indicação: falha ao desfazer o registro."));
+        if (still.externalId === b.ref) await db.lead.update({ where: { id: lead.id }, data: { externalId: null } }).catch(() => console.error("Indicação: falha ao desfazer o registro."));
+      }
+      throw e;
+    }
     // The client already wrote this referral's message and is still in Meta's window (maybe answered since): no greeting
     // waits for her. Written more than 24 h ago, the greeting is the only way back to her and goes
     if (wrote && isWindowOpen(wrote.lead.lastInboundAt)) await cancelGreetings(lead.id);
     task = true;
   }
-  if (b.observacao || b.ref) await logEvent(lead.id, "lead.form", source, b.observacao || "Indicação recebida.", b.ref ? { ref: b.ref } : undefined);
 
   // The member referred someone: that person becomes a lead too, credited to who referred
   let referral: string | undefined;

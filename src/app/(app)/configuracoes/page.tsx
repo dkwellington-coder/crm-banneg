@@ -50,7 +50,7 @@ const ENV_CHECKS: [string, string[]][] = [
   ["E-mail (SMTP)", ["SMTP_HOST", "SMTP_USER", "SMTP_PASS"]],
   ["Google Agenda", ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]],
   ["Formulários do site", ["LEADS_API_TOKEN"]],
-  ["Portal de indicações", ["PORTAL_LEADS_TOKEN"]],
+  ["Portal de indicações", ["PORTAL_LEADS_TOKEN", "PORTAL_URL"]],
   ["Agendador", ["CRON_SECRET"]],
 ];
 
