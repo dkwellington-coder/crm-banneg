@@ -25,46 +25,47 @@ function decision(over: Partial<SdrDecision>): SdrDecision {
 
 describe("planFromDecision", () => {
   it("keeps qualifying on continue", () => {
-    const p = planFromDecision(decision({}), slots, 60);
+    const p = planFromDecision(decision({}), slots);
     expect(p.status).toBe("AI_QUALIFYING");
     expect(p.stopAi).toBe(false);
   });
 
-  it("does not offer a meeting below the minimum score", () => {
-    const p = planFromDecision(decision({ decision: "offer_meeting", score: 40 }), slots, 60);
-    expect(p.status).toBe("AI_QUALIFYING");
+  it("goes to the meeting when the lead asks to talk, even before the score (the times already went in the reply)", () => {
+    expect(planFromDecision(decision({ decision: "offer_meeting", score: 40 }), slots)).toMatchObject({ status: "QUALIFIED", stageKey: "qualificado" });
+    // No free time to offer: it keeps talking
+    expect(planFromDecision(decision({ decision: "offer_meeting", score: 80 }), []).status).toBe("AI_QUALIFYING");
   });
 
   it("marks qualified when the score is high enough", () => {
-    const p = planFromDecision(decision({ decision: "offer_meeting", score: 80 }), slots, 60);
+    const p = planFromDecision(decision({ decision: "offer_meeting", score: 80 }), slots);
     expect(p.status).toBe("QUALIFIED");
     expect(p.stageKey).toBe("qualificado");
   });
 
   it("books the chosen slot and stops the AI", () => {
-    const p = planFromDecision(decision({ decision: "book_meeting", score: 85, slotIndex: 1 }), slots, 60);
+    const p = planFromDecision(decision({ decision: "book_meeting", score: 85, slotIndex: 1 }), slots);
     expect(p.status).toBe("MEETING_BOOKED");
     expect(p.slot).toEqual(slots[1]);
     expect(p.stopAi).toBe(true);
   });
 
   it("creates a task instead of booking a slot that does not exist", () => {
-    const p = planFromDecision(decision({ decision: "book_meeting", score: 85, slotIndex: 7 }), slots, 60);
+    const p = planFromDecision(decision({ decision: "book_meeting", score: 85, slotIndex: 7 }), slots);
     expect(p.status).toBe("QUALIFIED");
     expect(p.slot).toBeNull();
     expect(p.handoffTask).toMatch(/horário/);
   });
 
   it("hands off to a human with the reason", () => {
-    const p = planFromDecision(decision({ decision: "handoff", reason: "quer desconto" }), slots, 60);
+    const p = planFromDecision(decision({ decision: "handoff", reason: "quer desconto" }), slots);
     expect(p.status).toBe("HANDED_OFF");
     expect(p.handoffTask).toContain("quer desconto");
     expect(p.stopAi).toBe(true);
   });
 
   it("starts nurturing and disqualifies", () => {
-    expect(planFromDecision(decision({ decision: "nurture" }), slots, 60).startNurture).toBe(true);
-    expect(planFromDecision(decision({ decision: "disqualify" }), slots, 60).stageKey).toBe("descartado");
+    expect(planFromDecision(decision({ decision: "nurture" }), slots).startNurture).toBe(true);
+    expect(planFromDecision(decision({ decision: "disqualify" }), slots).stageKey).toBe("descartado");
   });
 
   it("keeps only valid fields and drops an invalid email", () => {
@@ -73,7 +74,6 @@ describe("planFromDecision", () => {
         extracted: { name: "Ana Souza", email: "nao tenho", city: "Curitiba", state: "PR", capital: "R$ 300 mil", timeline: null, experience: null, decisionMaker: "ela" },
       }),
       slots,
-      60,
     );
     expect(p.fields).toEqual({ name: "Ana Souza", city: "Curitiba", state: "PR" });
     expect(p.qualification).toEqual({ capital: "R$ 300 mil", decisionMaker: "ela" });

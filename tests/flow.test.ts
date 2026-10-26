@@ -444,6 +444,8 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     await leads.handleInbound({ phone: "11922221111", body: "Pode enviar", externalId: "k1", at: new Date() });
     await db.lead.update({ where: { id: lead.id }, data: { aiPaused: true } });
     await db.job.updateMany({ where: { leadId: lead.id, type: "sdr.reply" }, data: { status: "CANCELLED" } });
+    // Duda answered and then the lead went quiet: the no-answer rule goes
+    await db.message.create({ data: { leadId: lead.id, channel: "WHATSAPP", direction: "OUT", body: "Claro!", author: "Duda", status: "SENT" } });
     const job = await db.job.findFirstOrThrow({ where: { leadId: lead.id, status: "PENDING", payload: { path: ["ruleId"], equals: rule.id } } });
     await db.job.update({ where: { id: job.id }, data: { runAt: new Date(Date.now() - 1000) } });
     raw.length = 0;
@@ -471,6 +473,44 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(await jobs.runAction(quiet, "whatsapp", { text: "Oi", templateName: "banneg_inexistente" })).toMatch(/não está cadastrado/);
     expect(raw).toHaveLength(0);
   });
+  it("a no-answer message never talks over the conversation: not while the lead waits, nor once a person took over", async () => {
+    const qualificando = await db.stage.findFirstOrThrow({ where: { key: "qualificando" } });
+    await db.automationRule.deleteMany({ where: { stageId: qualificando.id } });
+    await db.automationRule.create({ data: { stageId: qualificando.id, trigger: "idle", delayMinutes: 120, action: "whatsapp", config: { text: "Oi, {{nome}}! Ainda por aí?" } } });
+    const { lead } = await leads.createLead({ name: "Rafa Leite", phone: "11933330000", source: "site" }, "teste");
+    await drain();
+    const { sendWhatsApp } = await import("@/lib/messaging");
+    const nudge = async () => {
+      await db.job.updateMany({
+        where: { leadId: lead.id, type: "rule.run", status: "PENDING", payload: { path: ["idle"], equals: true } },
+        data: { runAt: new Date(Date.now() - 1000) },
+      });
+      await drain();
+      const job = await db.job.findFirstOrThrow({ where: { leadId: lead.id, type: "rule.run", status: "DONE" }, orderBy: { finishedAt: "desc" } });
+      return job.result;
+    };
+    const nudges = () => db.message.count({ where: { leadId: lead.id, body: "Oi, Rafa! Ainda por aí?" } });
+
+    // 1. The AI answered and the lead went quiet: the reminder goes
+    nextDecision.value = { reply: "Que bom, Rafa! De qual cidade você fala?", extracted: empty, score: 30, temperature: "morno", decision: "continue", slotIndex: null, handoffTo: null, sendCof: false, reason: "", summary: "" };
+    await leads.handleInbound({ phone: "11933330000", body: "Oi", externalId: "n1", at: new Date() });
+    await drain();
+    await nudge();
+    expect(await nudges()).toBe(1);
+
+    // 2. The lead wrote and nobody answered yet: no reminder over its message
+    await db.lead.update({ where: { id: lead.id }, data: { aiPaused: true } });
+    await leads.handleInbound({ phone: "11933330000", body: "Pode ser na segunda", externalId: "n2", at: new Date() });
+    expect(await nudge()).toMatch(/escreveu por último/);
+    expect(await nudges()).toBe(1);
+
+    // 3. A person of the team answered: the stage's automatic messages stay quiet
+    await leads.handleInbound({ phone: "11933330000", body: "Às 10h", externalId: "n3", at: new Date() });
+    await sendWhatsApp(await db.lead.findUniqueOrThrow({ where: { id: lead.id } }), "Combinado, Rafa! Segunda às 10h.", "Gerente");
+    expect(await nudge()).toBe("Ignorado: Gerente está atendendo este lead.");
+    expect(await nudges()).toBe(1);
+  });
+
   it("a returning lead fills only what was missing, and a lead without a phone is matched by e-mail", async () => {
     const { lead } = await leads.createLead({ name: "Rui", phone: "(061) 98765-0000", source: "site" }, "teste");
     // The leading 0 is the long-distance prefix

@@ -794,14 +794,14 @@ export async function simulateSdrAction(input: { agentId: string; messages: SimM
       slots,
       now,
     });
-    const plan = planFromDecision(d, slots, settings.qualifyScore);
+    const plan = planFromDecision(d, slots);
     const stage = await db.stage.findFirst({ where: { key: plan.stageKey, pipeline: { isDefault: true } } });
     const effects = [`Lead iria para "${stage?.name ?? plan.stageKey}".`];
     if (plan.slot) effects.push(`Marcaria reunião com ${owner?.name ?? "o gerente"} em ${formatSlot(plan.slot.startsAt)} e mandaria lembretes.`);
     if (plan.handoffTask) effects.push(`Criaria tarefa: ${plan.handoffTask}`);
     if (plan.stopAi) effects.push("A IA pararia de responder este lead.");
     if (d.decision === "offer_meeting" && !plan.slot && plan.stageKey !== "qualificado") {
-      effects.push(`A IA quis oferecer reunião, mas o score (${d.score}) está abaixo do mínimo (${settings.qualifyScore}): continua qualificando.`);
+      effects.push("A IA quis oferecer reunião, mas a agenda não tem horários livres: continua conversando.");
     }
     return {
       ok: true,

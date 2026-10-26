@@ -54,7 +54,7 @@ export type Plan = {
  * Turns the SDR's decision into concrete changes. Pure, so every branch is unit-tested;
  * the model only proposes, this function decides what the CRM actually does.
  */
-export function planFromDecision(d: SdrDecision, slots: Slot[], qualifyScore: number): Plan {
+export function planFromDecision(d: SdrDecision, slots: Slot[]): Plan {
   const { name, email, city, state, ...rest } = d.extracted;
   const fields: Plan["fields"] = {};
   if (name) fields.name = name;
@@ -77,8 +77,9 @@ export function planFromDecision(d: SdrDecision, slots: Slot[], qualifyScore: nu
 
   switch (d.decision) {
     case "offer_meeting":
-      // The model may think the lead is ready while the score says otherwise: keep qualifying.
-      if (d.score < qualifyScore || slots.length === 0) return base;
+      // The times already went in the reply, so the lead is where the AI says: a lead who asks to talk goes straight to
+      // the meeting, whatever the score (the stage's "sem resposta" messages would otherwise talk over the booking)
+      if (slots.length === 0) return base;
       return { ...base, status: "QUALIFIED", stageKey: STAGE_KEYS.QUALIFIED };
     case "book_meeting": {
       const slot = d.slotIndex !== null ? slots[d.slotIndex] : undefined;

@@ -97,7 +97,7 @@ const handlers: Record<string, Handler> = {
   async "sdr.reply"(_job, l) {
     const lead = needLead(l);
     if (lead.aiPaused) return "Ignorado: IA pausada neste lead.";
-    const { ctx, slots, settings, agent, owner, subjectStages } = await sdrContext(lead);
+    const { ctx, slots, agent, owner, subjectStages } = await sdrContext(lead);
     const decision = await runSdrTurn(ctx);
     // After a stop (no credit), the first answer clears the banner and answers the leads who waited
     await aiAnswered({ answering: lead.id });
@@ -106,7 +106,7 @@ const handlers: Record<string, Handler> = {
     const current = await db.lead.findUniqueOrThrow({ where: { id: lead.id } });
     if (current.aiPaused || current.whatsappOptOut || isClosed(current) || current.stageId !== lead.stageId)
       return "Ignorado: o lead mudou enquanto a IA respondia (atendido, pausado, encerrado, movido ou pediu para parar).";
-    const plan = planFromDecision(decision, slots, settings.qualifyScore);
+    const plan = planFromDecision(decision, slots);
 
     await db.lead.update({
       where: { id: lead.id },
@@ -177,6 +177,8 @@ const handlers: Record<string, Handler> = {
     if (p.idle && lead.lastInboundAt && lead.lastInboundAt > new Date(p.since)) return "Ignorado: o lead respondeu.";
     // The greeting waits a few minutes for the lead to write first: it did, so the AI is already answering
     if (lead.lastInboundAt && lead.lastInboundAt > new Date(p.since) && (await isGreeting(rule, lead))) return "Ignorado: o lead já escreveu.";
+    const talking = await conversationGoingOn(lead, rule, new Date(p.enteredAt));
+    if (talking) return talking;
     const origin = rule.trigger === "idle" ? `sem resposta em ${rule.stage.name}` : rule.stage.name;
     const result = await runAction(lead, rule.action, rule.config as RuleConfig, origin);
     await logEvent(lead.id, "automation.ran", "Automação", `${rule.stage.name}: ${result}`, { ruleId: rule.id });
@@ -256,6 +258,32 @@ const handlers: Record<string, Handler> = {
 export function discardReason(decision: { reason?: string }) {
   const why = (decision.reason || "").replace(/\s+/g, " ").trim();
   return why ? `Descartado pela IA: ${why.length > 200 ? `${why.slice(0, 199)}…` : why}` : "Descartado pela IA";
+}
+
+/**
+ * A stage's automatic WhatsApp never talks over a conversation: no "sem resposta" nudge while the lead waits for an
+ * answer (it wrote last), and none at all once a person of the team took the lead over in this stage. The answers to
+ * a tapped button are the conversation itself, so they always go.
+ */
+async function conversationGoingOn(lead: Lead, rule: { action: string; trigger: string }, enteredAt: Date) {
+  if (rule.action !== "whatsapp" || rule.trigger === "answer") return null;
+  if (rule.trigger === "idle") {
+    const last = await db.message.findFirst({
+      where: { leadId: lead.id, channel: "WHATSAPP", NOT: { direction: "OUT", status: "FAILED" } },
+      orderBy: { createdAt: "desc" },
+      select: { direction: true },
+    });
+    if (last?.direction === "IN") return "Ignorado: o lead escreveu por último e espera uma resposta, não um lembrete.";
+  }
+  if (!lead.aiPaused) return null;
+  const [users, agents] = await Promise.all([db.user.findMany({ select: { name: true } }), db.sdrAgent.findMany({ select: { name: true } })]);
+  const bots = new Set(agents.map((a) => a.name));
+  const team = users.map((u) => u.name).filter((n) => !bots.has(n));
+  const person = await db.message.findFirst({
+    where: { leadId: lead.id, channel: "WHATSAPP", direction: "OUT", author: { in: team }, createdAt: { gte: enteredAt } },
+    select: { author: true },
+  });
+  return person ? `Ignorado: ${person.author} está atendendo este lead.` : null;
 }
 
 async function aiTargetStage(key: string, pipelineId: string) {
