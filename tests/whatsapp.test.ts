@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { classifyError, isContactError, isUndelivered, isWindowOpen, normalizePhone, phoneVariants, verifySignature } from "@/lib/whatsapp";
+import { adReferral, classifyError, isContactError, isUndelivered, isWindowOpen, normalizePhone, phoneVariants, verifySignature } from "@/lib/whatsapp";
 import { renderTemplate } from "@/lib/email";
 import { createHmac } from "node:crypto";
 
@@ -20,6 +20,16 @@ describe("whatsapp helpers", () => {
     expect(isUndelivered(130472, "5511955554444")).toBe(true);
     expect(isUndelivered(131042, "5511955554444")).toBe(false);
     expect(isUndelivered(131009, "5511955554444")).toBe(false);
+  });
+
+  it("reads the click-to-WhatsApp ad a conversation came from", () => {
+    const m = { from: "5511999990000", id: "w1", timestamp: "1", type: "text", text: { body: "Quero saber mais" } };
+    expect(adReferral(m)).toBeNull();
+    expect(adReferral({ ...m, referral: { source_type: "post", source_id: "9" } })).toBeNull();
+    expect(
+      adReferral({ ...m, referral: { source_type: "ad", source_id: "1203", source_url: "https://fb.me/x", headline: " Franquia   Banneg ", ctwa_clid: "clid" } }),
+    ).toEqual({ campaign: "Anúncio: Franquia Banneg", adId: "1203", url: "https://fb.me/x", clickId: "clid" });
+    expect(adReferral({ ...m, referral: { source_type: "ad", source_id: "1203" } })?.campaign).toBe("Anúncio: 1203");
   });
 
   it("opens the 24h window only after a recent inbound message", () => {

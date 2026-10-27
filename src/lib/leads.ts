@@ -3,7 +3,7 @@ import { db } from "./db";
 import { logEvent } from "./events";
 import { cancelJobs, enqueueDebounced } from "./queue";
 import { cancelGreetings, cancelRuleJobs, scheduleAnswerRules, scheduleStageRules } from "./automations";
-import { isWindowOpen, normalizePhone, numberName, phoneVariants } from "./whatsapp";
+import { isWindowOpen, normalizePhone, numberName, phoneVariants, type AdReferral } from "./whatsapp";
 import { AUDIO_MARK, downloadWhatsAppMedia, transcribe } from "./audio";
 import { SEND_ERROR_STAGE, sendWhatsApp } from "./messaging";
 import { NO_SHOW_STAGE, REFERRAL_FUNNEL, STAGE_KEYS } from "./plan";
@@ -202,6 +202,8 @@ export async function handleInbound(input: {
   audio?: { id: string; mimeType?: string };
   // Meta's id of our number the lead wrote to (the webhook's metadata.phone_number_id)
   phoneNumberId?: string | null;
+  // The click-to-WhatsApp ad the lead came from
+  ad?: AdReferral | null;
 }) {
   const phone = normalizePhone(input.phone);
   const dup = await db.message.findUnique({ where: { externalId: input.externalId } });
@@ -241,7 +243,7 @@ export async function handleInbound(input: {
     // A number of the account that no funnel uses yet (still being set up): the team answers, not the default funnel's AI
     const unassigned = !!numberId && !funnel && !!process.env.WHATSAPP_PHONE_NUMBER_ID;
     const created = await createLead(
-      { phone, name: input.profileName, source: "whatsapp", pipelineId: funnel?.id, whatsappNumberId: numberId, byTeam: unassigned },
+      { phone, name: input.profileName, source: "whatsapp", campaign: input.ad?.campaign, pipelineId: funnel?.id, whatsappNumberId: numberId, byTeam: unassigned },
       "WhatsApp",
     );
     lead = created.lead;
@@ -281,6 +283,10 @@ export async function handleInbound(input: {
     where: { id: lead.id },
     data: { lastInboundAt: input.at, name: lead.name ?? input.profileName ?? null },
   });
+  if (input.ad) {
+    const { campaign, ...ad } = input.ad;
+    await logEvent(lead.id, "whatsapp.ad", "WhatsApp", `Escreveu pelo anúncio do WhatsApp (${campaign.replace(/^Anúncio: /, "")}).`, ad);
+  }
   // A greeting still waiting for the lead does not go: it wrote. Also when Meta's time of the message is older than the
   // greeting (the store's referral got here a moment after the client pressed send)
   await cancelGreetings(lead.id);

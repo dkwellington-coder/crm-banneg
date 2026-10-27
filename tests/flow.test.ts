@@ -543,6 +543,16 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(sent[0].body).toMatch(/^Mauro, conseguiu ver os horários\? Ainda tenho estes:\n1\) \S+, \d\d\/\d\d, às \d\d:\d\d\n2\) .+\n3\) .+\nQual fica melhor para você\?$/);
   });
 
+  it("a lead from a click-to-WhatsApp ad keeps the ad as its campaign", async () => {
+    nextDecision.value = null;
+    const ad = { campaign: "Anúncio: Franquia Banneg", adId: "1203", url: "https://fb.me/x", clickId: "clid" };
+    const lead = await leads.handleInbound({ phone: "11955550000", body: "Olá! Quero saber mais", externalId: "ad1", at: new Date(), ad });
+    expect(lead).toMatchObject({ source: "whatsapp", campaign: "Anúncio: Franquia Banneg" });
+    const event = await db.leadEvent.findFirstOrThrow({ where: { leadId: lead!.id, type: "whatsapp.ad" } });
+    expect(event.summary).toBe("Escreveu pelo anúncio do WhatsApp (Franquia Banneg).");
+    expect(event.data).toEqual({ adId: "1203", url: "https://fb.me/x", clickId: "clid" });
+  });
+
   it("a returning lead fills only what was missing, and a lead without a phone is matched by e-mail", async () => {
     const { lead } = await leads.createLead({ name: "Rui", phone: "(061) 98765-0000", source: "site" }, "teste");
     // The leading 0 is the long-distance prefix

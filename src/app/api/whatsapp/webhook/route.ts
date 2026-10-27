@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { handleInbound } from "@/lib/leads";
 import { afterUndelivered } from "@/lib/messaging";
-import { classifyError, clearHealth, messageText, problemNumber, setHealth, verifySignature, type WebhookPayload } from "@/lib/whatsapp";
+import { adReferral, classifyError, clearHealth, messageText, problemNumber, setHealth, verifySignature, type WebhookPayload } from "@/lib/whatsapp";
 import { forwardCopy } from "@/lib/whatsapp-forward";
 
 // Meta calls this once to confirm the webhook URL
@@ -37,6 +37,7 @@ export async function POST(request: Request) {
           at: new Date(Number(m.timestamp) * 1000),
           audio: m.audio && { id: m.audio.id, mimeType: m.audio.mime_type?.split(";")[0] },
           phoneNumberId: value.metadata?.phone_number_id,
+          ad: adReferral(m),
         });
       }
       for (const st of value.statuses ?? []) {

@@ -223,7 +223,24 @@ export type InboundMessage = {
   interactive?: { button_reply?: { title: string }; list_reply?: { title: string } };
   // Voice notes come with voice: true; both are files kept at Meta for a while
   audio?: { id: string; mime_type?: string; voice?: boolean };
+  // The click-to-WhatsApp ad (or post) that opened the conversation, on its first message
+  referral?: { source_type?: string; source_id?: string; source_url?: string; headline?: string; ctwa_clid?: string };
 };
+
+export type AdReferral = { campaign: string; adId: string | null; url: string | null; clickId: string | null };
+
+/** The ad behind a message sent from a click-to-WhatsApp ad: the lead's campaign is the ad's title. */
+export function adReferral(m: InboundMessage): AdReferral | null {
+  const r = m.referral;
+  if (r?.source_type !== "ad") return null;
+  const title = r.headline?.replace(/\s+/g, " ").trim();
+  return {
+    campaign: `Anúncio: ${title || r.source_id || "WhatsApp"}`.slice(0, 120),
+    adId: r.source_id ?? null,
+    url: r.source_url ?? null,
+    clickId: r.ctwa_clid ?? null,
+  };
+}
 
 // Shape of the parts of the Cloud API webhook we use
 export type WebhookPayload = {
