@@ -6,7 +6,7 @@ import { isClosed, moveToSendError, SEND_ERROR_STAGE, sendWhatsApp, type SendOut
 import { isUndelivered, isWindowOpen } from "./whatsapp";
 import { whatsappNumberFor } from "./integrations";
 import { getSettings, isTestContact, messageVars } from "./settings";
-import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, pickOwner, type Slot } from "./calendar";
+import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, meetingOptions, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
 import { isSubjectHandoffKey, NO_SHOW_STAGE, planFromDecision, STAGE_KEYS, subjectHandoffStage } from "./plan";
 import { ensureTask, funnelStart, moveLead, sdrFor, stageByKey } from "./leads";
@@ -408,10 +408,17 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig, 
       if (!lead.phone) return "Ignorado: lead sem telefone.";
       const settings = await getSettings();
       const sdr = lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null;
-      const vars = messageVars(settings, lead, sdr?.name ?? "");
+      const open = isWindowOpen(lead.lastInboundAt);
+      // {{horarios}}: the manager's next free times, fresh at the moment the message goes (a template carries its own text)
+      let horarios = "";
+      if (/\{\{\s*horarios\s*\}\}/.test(config.text ?? "") && (open || !config.templateName)) {
+        const owner = lead.ownerId ? await db.user.findUnique({ where: { id: lead.ownerId } }) : await pickOwner();
+        horarios = owner ? meetingOptions(await freeSlotsFor(owner.id, settings.businessHours, settings.meetingMinutes)) : "";
+        if (!horarios) return "Ignorado: a agenda não tem horários livres para oferecer.";
+      }
+      const vars = { ...messageVars(settings, lead, sdr?.name ?? ""), horarios };
       const text = fillVariables(config.text ?? "", vars);
       if (!text) return "Ignorado: mensagem vazia.";
-      const open = isWindowOpen(lead.lastInboundAt);
       // A referral's store and product have no stand-in: without them the sentence breaks ("corretora oficial da.")
       let missing = open ? [...new Set([...(config.text ?? "").matchAll(/\{\{\s*(parceiro|produto)\s*\}\}/g)].map((m) => m[1]))].filter((v) => !vars[v as "parceiro"]) : [];
       // Outside the 24 h window the template goes, each {{n}} filled with the variable the rule chose

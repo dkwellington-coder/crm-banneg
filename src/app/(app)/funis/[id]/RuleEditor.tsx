@@ -52,6 +52,8 @@ const PRESETS: { label: string; draft: Partial<Draft> }[] = [
 ];
 
 const VARIABLES = ["nome", "empresa", "parceiro", "produto", "cidade", "sdr", "apresentacao", "video_ganhos", "video_quanto_ganha", "simulacoes", "tabela_comissoes", "por_que_investir", "video_fundador", "video_bottini"];
+// {{horarios}} spans several lines, which a Meta template variable cannot carry: the text only
+const TEXT_VARIABLES = [...VARIABLES, "horarios"];
 
 function fromRule(rule?: RuleData): Draft {
   if (!rule) return { trigger: "enter", when: "now", amount: 1, unit: "d", action: "whatsapp", config: {}, runAfterLeaving: false };
@@ -255,8 +257,14 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
           />
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
             Inserir:
-            {VARIABLES.map((v) => (
-              <button key={v} type="button" onClick={() => insertVar(v)} className="rounded-md bg-white px-2 py-0.5 font-mono text-[11px] ring-1 ring-slate-200 hover:ring-brand">
+            {TEXT_VARIABLES.map((v) => (
+              <button
+                key={v}
+                type="button"
+                onClick={() => insertVar(v)}
+                title={v === "horarios" ? "Três horários livres da agenda, um por dia, na hora em que a mensagem sai" : undefined}
+                className="rounded-md bg-white px-2 py-0.5 font-mono text-[11px] ring-1 ring-slate-200 hover:ring-brand"
+              >
                 {`{{${v}}}`}
               </button>
             ))}

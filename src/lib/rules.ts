@@ -109,10 +109,31 @@ export function fillVariables(text: string, vars: Record<string, string>) {
     .replace(/^(?!https?:\/\/)\p{Ll}/u, (c) => c.toUpperCase());
 }
 
-/** Same-delay rules run in the order shown on screen. */
-export function ruleRunAt(base: Date, delayMinutes: number, position: number) {
-  return new Date(base.getTime() + delayMinutes * 60_000 + position * 1000);
+// Brazil has had no daylight saving time since 2019, so São Paulo is a fixed UTC-3.
+const SP_OFFSET = -3 * 3600_000;
+export const QUIET_HOURS = { from: 21, until: 8 };
+
+/** A time that falls at night in Brasília (21h to 8h) moves to the next 8h. */
+export function awakeTime(d: Date) {
+  const local = new Date(d.getTime() + SP_OFFSET);
+  const hour = local.getUTCHours();
+  if (hour >= QUIET_HOURS.until && hour < QUIET_HOURS.from) return d;
+  if (hour >= QUIET_HOURS.from) local.setUTCDate(local.getUTCDate() + 1);
+  local.setUTCHours(QUIET_HOURS.until, 0, 0, 0);
+  return new Date(local.getTime() - SP_OFFSET);
 }
+
+/**
+ * Same-delay rules run in the order shown on screen. A follow-up (`awake`) never lands at night:
+ * it waits for the morning.
+ */
+export function ruleRunAt(base: Date, delayMinutes: number, position: number, awake = false) {
+  const at = new Date(base.getTime() + delayMinutes * 60_000);
+  return new Date((awake ? awakeTime(at) : at).getTime() + position * 1000);
+}
+
+/** WhatsApp follow-ups an hour or more later wait for the morning; a reply right away, a first contact or an e-mail go at once. */
+export const isNudge = (rule: { action: string; delayMinutes: number }) => rule.action === "whatsapp" && rule.delayMinutes >= 60;
 
 /** How many {{1}}, {{2}}... a Meta template asks for. */
 export function templateSlots(body: string) {

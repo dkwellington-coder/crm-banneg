@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionLabel, delayLabel, fillVariables, splitDelay, templateSlots, triggerLabel } from "@/lib/rules";
+import { actionLabel, awakeTime, delayLabel, fillVariables, isNudge, ruleRunAt, splitDelay, templateSlots, triggerLabel } from "@/lib/rules";
 import { DEFAULT_SETTINGS, isTestContact, messageVars, whatsappIsReal } from "@/lib/settings";
 import { currentPeriod, pace, periodRange, shiftPeriod, todayRange, workingDays } from "@/lib/goals";
 
@@ -78,6 +78,22 @@ describe("test mode", () => {
     expect(isTestContact(s, "wellington@banneg.com.br")).toBe(true);
     expect(isTestContact(s, "5541999990001")).toBe(false);
     expect(isTestContact({ testContacts: [] }, "5541999990000")).toBe(false);
+  });
+
+  it("holds a follow-up that falls at night in Brasília until 8h", () => {
+    // 23h, 2h and 7h59 in São Paulo wait for 8h; 8h and 20h59 go as they are
+    expect(awakeTime(new Date("2026-10-27T02:00:00Z"))).toEqual(new Date("2026-10-27T11:00:00Z"));
+    expect(awakeTime(new Date("2026-10-27T05:00:00Z"))).toEqual(new Date("2026-10-27T11:00:00Z"));
+    expect(awakeTime(new Date("2026-10-27T10:59:00Z"))).toEqual(new Date("2026-10-27T11:00:00Z"));
+    expect(awakeTime(new Date("2026-10-27T11:00:00Z"))).toEqual(new Date("2026-10-27T11:00:00Z"));
+    expect(awakeTime(new Date("2026-10-27T23:59:00Z"))).toEqual(new Date("2026-10-27T23:59:00Z"));
+    // A lead who wrote at 22h: the 2 h nudge goes at 8h, still in order with the rest of the stage
+    const base = new Date("2026-10-27T01:00:00Z");
+    expect(ruleRunAt(base, 120, 2, true)).toEqual(new Date("2026-10-27T11:00:02Z"));
+    expect(ruleRunAt(base, 120, 2)).toEqual(new Date("2026-10-27T03:00:02Z"));
+    expect(isNudge({ action: "whatsapp", delayMinutes: 120 })).toBe(true);
+    expect(isNudge({ action: "whatsapp", delayMinutes: 5 })).toBe(false);
+    expect(isNudge({ action: "email", delayMinutes: 1440 })).toBe(false);
   });
 
   it("recognizes a released number that WhatsApp sends without the 9", () => {

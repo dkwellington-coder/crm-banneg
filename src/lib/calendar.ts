@@ -58,6 +58,34 @@ export function formatSlot(d: Date) {
   });
 }
 
+/** "terça, 28/10, às 10:00", the way the AI offers a time. */
+export function optionLabel(d: Date) {
+  const weekday = d.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "long" }).replace("-feira", "");
+  const date = d.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit" });
+  return `${weekday}, ${date}, às ${formatTime(d)}`;
+}
+
+/**
+ * Numbered times for an automatic message ({{horarios}}): one per day on the next days, morning and
+ * afternoon in turn, so the lead has real choice. Empty when the agenda has nothing free.
+ */
+export function meetingOptions(slots: Slot[], count = 3) {
+  const days = new Map<string, Slot[]>();
+  for (const s of slots) {
+    const day = formatDay(s.startsAt);
+    days.set(day, [...(days.get(day) ?? []), s]);
+  }
+  // Afternoon starts at 14h: nobody wants the lunch hour
+  const fits = (s: Slot, afternoon: boolean) => (afternoon ? localParts(s.startsAt).hour >= 14 : localParts(s.startsAt).hour < 12);
+  const picked = [...days.values()].slice(0, count).map((day, i) => day.find((s) => fits(s, i % 2 === 1)) ?? day[0]);
+  // Fewer free days than options: the other times of those days fill in
+  for (const s of slots) if (picked.length < count && !picked.includes(s)) picked.push(s);
+  return picked
+    .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
+    .map((s, i) => `${i + 1}) ${optionLabel(s.startsAt)}`)
+    .join("\n");
+}
+
 /** The business manager who receives the next meeting: the one with the fewest upcoming meetings. */
 export async function pickOwner() {
   const users = await db.user.findMany({

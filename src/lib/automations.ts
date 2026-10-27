@@ -1,7 +1,7 @@
 import type { AutomationRule, Lead, Prisma, Stage } from "@prisma/client";
 import { db } from "./db";
 import { enqueue } from "./queue";
-import { matchesAnswer, ruleRunAt, type RuleConfig } from "./rules";
+import { isNudge, matchesAnswer, ruleRunAt, type RuleConfig } from "./rules";
 import { REFERRAL_FUNNEL, STAGE_KEYS } from "./plan";
 
 export type RuleJobPayload = {
@@ -41,7 +41,7 @@ export async function scheduleStageRules(lead: Pick<Lead, "id" | "stageId" | "st
     await enqueue("rule.run", {
       leadId: lead.id,
       payload,
-      runAt: ruleRunAt(base, rule.delayMinutes, rule.position),
+      runAt: ruleRunAt(base, rule.delayMinutes, rule.position, isNudge(rule)),
       dedupeKey: `rule:${rule.id}:${lead.id}:${idle ? now.toISOString() : payload.enteredAt}`,
       maxAttempts: rule.action === "whatsapp" || rule.action === "email" ? 5 : 3,
     });

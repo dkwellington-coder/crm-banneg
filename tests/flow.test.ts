@@ -511,6 +511,38 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(await nudges()).toBe(1);
   });
 
+  it("a lead who got the times and went quiet gets fresh times later, never at night", async () => {
+    const qualificado = await db.stage.findFirstOrThrow({ where: { key: "qualificado" } });
+    await db.automationRule.deleteMany({ where: { stageId: qualificado.id } });
+    const retry = await db.automationRule.create({
+      data: {
+        stageId: qualificado.id,
+        trigger: "idle",
+        delayMinutes: 240,
+        action: "whatsapp",
+        config: { text: "{{nome}}, conseguiu ver os horários? Ainda tenho estes:\n{{horarios}}\nQual fica melhor para você?" },
+      },
+    });
+    const { lead } = await leads.createLead({ name: "Mauro Dias", phone: "11944440000", source: "site" }, "teste");
+    await drain();
+    nextDecision.value = { reply: "Que bom, Mauro! Qual destes horários fica melhor?", extracted: empty, score: 40, temperature: "quente", decision: "offer_meeting", slotIndex: null, handoffTo: null, sendCof: false, reason: "", summary: "" };
+    await leads.handleInbound({ phone: "11944440000", body: "Quero conhecer", externalId: "h1", at: new Date() });
+    await drain();
+    expect((await db.lead.findUniqueOrThrow({ where: { id: lead.id } })).stageId).toBe(qualificado.id);
+
+    // Due 4 h later, but never between 21h and 8h in Brasília
+    const job = await db.job.findFirstOrThrow({ where: { leadId: lead.id, type: "rule.run", status: "PENDING", payload: { path: ["ruleId"], equals: retry.id } } });
+    const hour = (job.runAt.getUTCHours() + 21) % 24;
+    expect(hour).toBeGreaterThanOrEqual(8);
+    expect(hour).toBeLessThan(21);
+
+    sent.length = 0;
+    await db.job.update({ where: { id: job.id }, data: { runAt: new Date(Date.now() - 1000) } });
+    await drain();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body).toMatch(/^Mauro, conseguiu ver os horários\? Ainda tenho estes:\n1\) \S+, \d\d\/\d\d, às \d\d:\d\d\n2\) .+\n3\) .+\nQual fica melhor para você\?$/);
+  });
+
   it("a returning lead fills only what was missing, and a lead without a phone is matched by e-mail", async () => {
     const { lead } = await leads.createLead({ name: "Rui", phone: "(061) 98765-0000", source: "site" }, "teste");
     // The leading 0 is the long-distance prefix
