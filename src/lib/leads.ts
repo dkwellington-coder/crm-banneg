@@ -6,7 +6,7 @@ import { cancelGreetings, cancelRuleJobs, scheduleAnswerRules, scheduleStageRule
 import { isWindowOpen, normalizePhone, numberName, phoneVariants, type AdReferral } from "./whatsapp";
 import { AUDIO_MARK, downloadWhatsAppMedia, transcribe } from "./audio";
 import { SEND_ERROR_STAGE, sendWhatsApp } from "./messaging";
-import { NO_SHOW_STAGE, REFERRAL_FUNNEL, STAGE_KEYS } from "./plan";
+import { NO_SHOW_STAGE, PERSON_REFERRER, REFERRAL_FUNNEL, REFERRER_KIND, referredByPerson, referrerOf, STAGE_KEYS } from "./plan";
 import { formatSlot } from "./calendar";
 import { queueCapi } from "./meta-capi";
 import { DUPLICATE_MARK, NO_REASON } from "./portal-status";
@@ -367,9 +367,9 @@ const codeOf = (ref: string | null) => ref?.slice(-6).toUpperCase() ?? "";
 
 /**
  * The first name the portal's ready message gives ("Sou Bia, vim pela ...", or the quote link's "Sou Bia e quero seguir
- * com a minha cotação pela ..."); null for anything else.
+ * com a minha cotação pela ..."; a person's referral says "vim pela indicação de João Silva"); null for anything else.
  */
-function readyName(body: string) {
+export function readyName(body: string) {
   if (!referralCode(body)) return null;
   return /\bSou (\p{L}[\p{L}'-]*)(?:, vim pela | e quero seguir com a minha cotação pela )/iu.exec(body)?.[1] ?? null;
 }
@@ -450,7 +450,8 @@ async function joinReferral(referral: Lead, into: Lead) {
   // The store's file on the client, and the e-mail it typed (the way in when WhatsApp does not reach). Moved before the
   // lead starts over, so the notice that move queues already knows which referrals it had closed
   await db.leadEvent.updateMany({ where: { leadId: referral.id, type: "lead.form" }, data: { leadId: into.id } });
-  if (store) await referExisting(into.id, referral.pipelineId, store, text(q.produto), "WhatsApp");
+  // The kind of partner goes along with it: a person's referral stays a person's in the lead it goes on in
+  if (store) await referExisting(into.id, referral.pipelineId, store, text(q.produto), "WhatsApp", q[REFERRER_KIND]);
   const now = await db.lead.findUniqueOrThrow({ where: { id: into.id } });
   await db.lead.update({
     where: { id: into.id },
@@ -460,7 +461,7 @@ async function joinReferral(referral: Lead, into: Lead) {
     into.id,
     "lead.referral_joined",
     "WhatsApp",
-    `Escreveu com o código da indicação${store ? ` da ${store}` : ""} (pedido ${codeOf(referral.externalId)}), que tinha chegado com o número ${referral.phone ?? "sem número"}: a indicação segue neste lead.`,
+    `Escreveu com o código da indicação${store ? ` ${referrerOf(store, referredByPerson(q))}` : ""} (pedido ${codeOf(referral.externalId)}), que tinha chegado com o número ${referral.phone ?? "sem número"}: a indicação segue neste lead.`,
     { leadId: referral.id },
   );
   await closeDuplicate(referral, into);
@@ -595,22 +596,34 @@ async function entryStage(pipelineId: string) {
  * with this store and product, so the greeting goes out; one someone may be working (or a client already) stays where it
  * is. Either way a person decides, and a task tells them.
  */
-export async function referExisting(leadId: string, pipelineId: string | undefined, parceiro: string, produto: string | undefined, actor: string) {
+export async function referExisting(
+  leadId: string,
+  pipelineId: string | undefined,
+  parceiro: string,
+  produto: string | undefined,
+  actor: string,
+  // "PESSOA" when a person (an affiliate) referred, not a store
+  parceiroTipo?: unknown,
+) {
   const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId }, include: { stage: true } });
   const qualification = (lead.qualification ?? {}) as Record<string, unknown>;
   const closed = lead.stage.kind === "LOST" && lead.stage.key !== SEND_ERROR_STAGE.key;
   const entry = pipelineId && (closed || lead.stage.key === "fila") && !lead.whatsappOptOut ? await entryStage(pipelineId) : null;
+  const person = parceiroTipo === PERSON_REFERRER;
+  // Whoever is the lead's partner says what kind it is: a person's key, or none for a store
+  const kind = person ? { [REFERRER_KIND]: PERSON_REFERRER } : {};
   let moved = false;
   if (entry) {
     // Starts over like a new lead: this store and product (never an old product), an SDR and the AI on
     const rest = { ...qualification };
     delete rest.produto;
+    delete rest[REFERRER_KIND];
     // A new conversation, on the funnel's number with its SDR. Meta's 24 h window is per number: a lead who
     // wrote in the last 24 h stays on the number (and with the SDR) it is talking to
     const funnel = await funnelStart(entry.pipelineId);
     const talking = isWindowOpen(lead.lastInboundAt);
     const restarted = await moveLead(leadId, entry.id, actor, {
-      qualification: { ...rest, parceiro, ...(produto && { produto }), [REFERRAL_FUNNEL]: entry.pipelineId },
+      qualification: { ...rest, parceiro, ...kind, ...(produto && { produto }), [REFERRAL_FUNNEL]: entry.pipelineId },
       status: "NEW",
       lostReason: null,
       aiPaused: false,
@@ -626,21 +639,27 @@ export async function referExisting(leadId: string, pipelineId: string | undefin
     moved = true;
   } else if (!qualification.parceiro || (produto && !qualification.produto) || (pipelineId && !qualification[REFERRAL_FUNNEL])) {
     // Only fills what is missing: the lead's current conversation keeps the store and product it already has. The funnel
-    // the store referred it to goes along: in another funnel the AI keeps that funnel's talk while a person decides
+    // the store referred it to goes along: in another funnel the AI keeps that funnel's talk while a person decides.
+    // The kind of partner goes with the partner: kept with the one the lead has, this one's with this one
+    const next: Record<string, unknown> = { ...qualification, parceiro: qualification.parceiro ?? parceiro };
+    if (qualification.parceiro == null) {
+      delete next[REFERRER_KIND];
+      Object.assign(next, kind);
+    }
     await db.lead.update({
       where: { id: leadId },
       data: {
         qualification: {
-          ...qualification,
-          parceiro: qualification.parceiro ?? parceiro,
+          ...next,
           ...(produto && !qualification.produto && { produto }),
           ...(pipelineId && !qualification[REFERRAL_FUNNEL] && { [REFERRAL_FUNNEL]: pipelineId }),
         },
       },
     });
   }
-  // A person decides what to do with a contact the CRM already had, and the alert tells them
-  const title = `Nova indicação da ${parceiro}${produto ? `: cotar ${produto}` : ""}`;
+  // A person decides what to do with a contact the CRM already had, and the alert tells them. The same partner
+  // referring again finds this same title (a store's "da", a person's "de")
+  const title = `Nova indicação ${referrerOf(parceiro, person)}${produto ? `: cotar ${produto}` : ""}`;
   await ensureTask(leadId, lead.ownerId, title);
   // The same store referring again (a renewal next year): the open task rings again
   await db.task.updateMany({ where: { leadId, title, doneAt: null }, data: { dueAt: new Date() } });
@@ -692,7 +711,7 @@ export async function adoptReferral(lead: Lead, input: NewLeadInput, actor: stri
       source: input.source,
       campaign: input.campaign ?? lead.campaign,
       externalId: input.externalId ?? null,
-      qualification: { ...(lead.qualification as Prisma.JsonObject), ...input.qualification },
+      qualification: { ...withoutReferrerKind(lead.qualification, input.qualification), ...input.qualification },
     },
   });
   const typed = input.phone ? normalizePhone(input.phone) : null;
@@ -721,6 +740,13 @@ export async function adoptReferral(lead: Lead, input: NewLeadInput, actor: stri
     }
   }
   return db.lead.findUniqueOrThrow({ where: { id: lead.id } });
+}
+
+/** A lead's qualification without the kind of its partner when a new partner comes in: the new one says its own. */
+function withoutReferrerKind(qualification: Prisma.JsonValue, incoming: Record<string, string> | undefined) {
+  const q = { ...(qualification as Prisma.JsonObject) };
+  if (incoming?.parceiro) delete q[REFERRER_KIND];
+  return q;
 }
 
 /** The funnel that starts its conversations on this number (the lead's own funnel first), with its SDR; null when none does. */

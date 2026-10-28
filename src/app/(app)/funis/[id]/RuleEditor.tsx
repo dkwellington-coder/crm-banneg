@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { Wand2 } from "lucide-react";
-import { ACTIONS, UNITS, splitDelay, templateSlots, type ActionKey, type RuleConfig, type RuleTrigger } from "@/lib/rules";
+import { ACTIONS, UNITS, speaksOfPartner, splitDelay, templateSlots, type ActionKey, type PersonVersion, type RuleConfig, type RuleTrigger } from "@/lib/rules";
 import { saveRuleAction } from "../../../actions";
 import { btnCls, btnGhostCls, inputCls } from "@/components/ui";
 
@@ -97,6 +97,84 @@ function ListInput({ value, onChange, max = 10, ...props }: { value: string[]; o
   );
 }
 
+/** The {{variable}} buttons under a message: each one goes in where the cursor is. */
+function VariableBar({ onInsert }: { onInsert: (v: string) => void }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+      Inserir:
+      {TEXT_VARIABLES.map((v) => (
+        <button
+          key={v}
+          type="button"
+          onClick={() => onInsert(v)}
+          title={v === "horarios" ? "Três horários livres da agenda, um por dia, na hora em que a mensagem sai" : undefined}
+          className="rounded-md bg-white px-2 py-0.5 font-mono text-[11px] ring-1 ring-slate-200 hover:ring-brand"
+        >
+          {`{{${v}}}`}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** The Meta template that goes when the 24 h window is closed, and the variable that fills each of its {{1}}, {{2}}... */
+function TemplateFields({
+  names,
+  templates,
+  value,
+  params,
+  onTemplate,
+  onParam,
+}: {
+  names: { template: string; params: string };
+  templates: EditorOptions["waTemplates"];
+  value: string | undefined;
+  params: string[];
+  onTemplate: (name: string | undefined) => void;
+  onParam: (i: number, v: string) => void;
+}) {
+  const template = templates.find((t) => t.name === value);
+  return (
+    <>
+      <label className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+        Se o lead não escreveu nas últimas 24 h, mandar o modelo da Meta:
+        <select name={names.template} value={value ?? ""} onChange={(e) => onTemplate(e.target.value || undefined)} className={`${inputCls} w-auto!`}>
+          <option value="">nenhum (espera o lead escrever)</option>
+          {templates.map((t) => (
+            <option key={t.name} value={t.name}>
+              {t.name}
+              {t.status !== "APPROVED" ? " (aguardando a Meta)" : ""}
+            </option>
+          ))}
+        </select>
+      </label>
+      {template && params.length > 0 && (
+        <div className="space-y-1.5 rounded-lg bg-slate-50 p-2 text-xs text-slate-600">
+          <div className="whitespace-pre-line text-slate-500">{template.body}</div>
+          <div className="flex flex-wrap items-center gap-2">
+            No modelo, preencher:
+            {params.map((p, i) => (
+              <label key={i} className="flex items-center gap-1">
+                <span className="font-mono">{`{{${i + 1}}}`}</span>=
+                <select name={names.params} required value={p} onChange={(e) => onParam(i, e.target.value)} className={`${inputCls} w-auto! py-1`}>
+                  <option value="" disabled>
+                    escolha
+                  </option>
+                  {VARIABLES.map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 const sel = "rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm font-medium text-slate-800 outline-none focus:border-brand";
 const word = "text-sm font-medium text-slate-500";
 
@@ -104,17 +182,21 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
   const [d, setD] = useState<Draft>(() => fromRule(rule));
   const [saving, setSaving] = useState(false);
   const text = useRef<HTMLTextAreaElement>(null);
+  const personText = useRef<HTMLTextAreaElement>(null);
   const set = (patch: Partial<Draft>) => setD((cur) => ({ ...cur, ...patch }));
   const setConfig = (patch: RuleConfig) => setD((cur) => ({ ...cur, config: { ...cur.config, ...patch } }));
+  const setPessoa = (patch: PersonVersion) => setD((cur) => ({ ...cur, config: { ...cur.config, pessoa: { ...cur.config.pessoa, ...patch } } }));
   const daily = d.trigger === "daily";
   const answer = d.trigger === "answer";
   const later = !daily && !answer && (d.trigger === "idle" || d.when === "later");
 
-  function insertVar(v: string) {
-    const el = text.current;
-    const value = d.config.text ?? "";
+  function insertVar(v: string, into: "rule" | "pessoa" = "rule") {
+    const el = (into === "pessoa" ? personText : text).current;
+    const value = (into === "pessoa" ? d.config.pessoa?.text : d.config.text) ?? "";
     const at = el?.selectionStart ?? value.length;
-    setConfig({ text: `${value.slice(0, at)}{{${v}}}${value.slice(at)}` });
+    const next = `${value.slice(0, at)}{{${v}}}${value.slice(at)}`;
+    if (into === "pessoa") setPessoa({ text: next });
+    else setConfig({ text: next });
     requestAnimationFrame(() => el?.focus());
   }
 
@@ -123,6 +205,17 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
   const slots = template ? templateSlots(template.body) : 0;
   const params = Array.from({ length: slots }, (_, i) => d.config.templateParams?.[i] ?? ["nome", "sdr"][i] ?? "");
   const setParam = (i: number, v: string) => setConfig({ templateParams: params.map((p, j) => (j === i ? v : p)) });
+
+  // A message about the store ({{parceiro}}) has a version for a lead a person (an affiliate) referred
+  const pessoa = d.config.pessoa ?? {};
+  const aboutPartner = speaksOfPartner({ text: d.config.text, templateParams: template ? params : undefined });
+  const personTemplate = options.waTemplates.find((t) => t.name === pessoa.templateName);
+  // The same variables as the store's template unless someone picks others
+  const personParams = Array.from(
+    { length: personTemplate ? templateSlots(personTemplate.body) : 0 },
+    (_, i) => pessoa.templateParams?.[i] ?? d.config.templateParams?.[i] ?? ["nome", "sdr"][i] ?? "",
+  );
+  const setPersonParam = (i: number, v: string) => setPessoa({ templateParams: personParams.map((p, j) => (j === i ? v : p)) });
 
   const sameFunnel = options.stages.filter((s) => s.same);
   const otherFunnels = options.stages.filter((s) => !s.same);
@@ -255,20 +348,7 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
             placeholder="Escreva a mensagem. Use as variáveis para personalizar."
             className={inputCls}
           />
-          <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
-            Inserir:
-            {TEXT_VARIABLES.map((v) => (
-              <button
-                key={v}
-                type="button"
-                onClick={() => insertVar(v)}
-                title={v === "horarios" ? "Três horários livres da agenda, um por dia, na hora em que a mensagem sai" : undefined}
-                className="rounded-md bg-white px-2 py-0.5 font-mono text-[11px] ring-1 ring-slate-200 hover:ring-brand"
-              >
-                {`{{${v}}}`}
-              </button>
-            ))}
-          </div>
+          <VariableBar onInsert={insertVar} />
           <ListInput
             name="buttons"
             max={3}
@@ -277,45 +357,51 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
             placeholder="Botões (opcional, até 3, separados por |): Quero ver | Agora não"
             className={inputCls}
           />
-          <label className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-            Se o lead não escreveu nas últimas 24 h, mandar o modelo da Meta:
-            <select
-              name="templateName"
-              value={d.config.templateName ?? ""}
-              onChange={(e) => setConfig({ templateName: e.target.value || undefined, templateParams: undefined })}
-              className={`${inputCls} w-auto!`}
-            >
-              <option value="">nenhum (espera o lead escrever)</option>
-              {options.waTemplates.map((t) => (
-                <option key={t.name} value={t.name}>
-                  {t.name}
-                  {t.status !== "APPROVED" ? " (aguardando a Meta)" : ""}
-                </option>
-              ))}
-            </select>
-          </label>
-          {template && slots > 0 && (
-            <div className="space-y-1.5 rounded-lg bg-slate-50 p-2 text-xs text-slate-600">
-              <div className="whitespace-pre-line text-slate-500">{template.body}</div>
-              <div className="flex flex-wrap items-center gap-2">
-                No modelo, preencher:
-                {params.map((p, i) => (
-                  <label key={i} className="flex items-center gap-1">
-                    <span className="font-mono">{`{{${i + 1}}}`}</span>=
-                    <select name="templateParams" required value={p} onChange={(e) => setParam(i, e.target.value)} className={`${inputCls} w-auto! py-1`}>
-                      <option value="" disabled>
-                        escolha
-                      </option>
-                      {VARIABLES.map((v) => (
-                        <option key={v} value={v}>
-                          {v}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ))}
-              </div>
+          <TemplateFields
+            names={{ template: "templateName", params: "templateParams" }}
+            templates={options.waTemplates}
+            value={d.config.templateName}
+            params={params}
+            onTemplate={(templateName) => setConfig({ templateName, templateParams: undefined })}
+            onParam={setParam}
+          />
+          {/* The person version's fields always go with the form, so saving never drops it */}
+          <input type="hidden" name="pessoaForm" value="1" />
+          {aboutPartner ? (
+            <div className="space-y-1.5 rounded-lg bg-white p-3 ring-1 ring-slate-200">
+              <div className="text-xs font-semibold text-slate-700">Versão para indicação de pessoa (afiliado)</div>
+              <p className="text-xs text-slate-500">
+                A mensagem acima fala de {"{{parceiro}}"} como loja. Quando quem indicou é uma pessoa, vai esta versão (sem “corretora oficial da”). Sem ela,
+                esses leads não recebem esta mensagem.
+              </p>
+              <textarea
+                ref={personText}
+                name="pessoaText"
+                required={!!pessoa.templateName}
+                rows={3}
+                value={pessoa.text ?? ""}
+                onChange={(e) => setPessoa({ text: e.target.value })}
+                placeholder="Ex.: Oi, {{nome}}! Aqui é a {{sdr}}, do {{empresa}}. Recebi seu contato por indicação de {{parceiro}} para uma cotação de {{produto}}, pode ser?"
+                className={inputCls}
+              />
+              <VariableBar onInsert={(v) => insertVar(v, "pessoa")} />
+              <TemplateFields
+                names={{ template: "pessoaTemplateName", params: "pessoaTemplateParams" }}
+                templates={options.waTemplates}
+                value={pessoa.templateName}
+                params={personParams}
+                onTemplate={(templateName) => setPessoa({ templateName, templateParams: undefined })}
+                onParam={setPersonParam}
+              />
             </div>
+          ) : (
+            <>
+              <input type="hidden" name="pessoaText" value={pessoa.text ?? ""} />
+              <input type="hidden" name="pessoaTemplateName" value={pessoa.templateName ?? ""} />
+              {(pessoa.templateParams ?? []).map((p, i) => (
+                <input key={i} type="hidden" name="pessoaTemplateParams" value={p} />
+              ))}
+            </>
           )}
         </div>
       )}

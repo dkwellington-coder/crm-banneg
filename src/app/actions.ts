@@ -13,7 +13,7 @@ import { enqueue } from "@/lib/queue";
 import { getSettings, saveSettings } from "@/lib/settings";
 import { getHealth, savedWhatsAppNumbers } from "@/lib/whatsapp";
 import { importLeads, importSummary } from "@/lib/import";
-import { ACTIONS, UNITS, type RuleConfig } from "@/lib/rules";
+import { ACTIONS, UNITS, type PersonVersion, type RuleConfig } from "@/lib/rules";
 import { METRICS } from "@/lib/goals";
 import { sendCof } from "@/lib/cof";
 import { inviteGuestsToUpcoming } from "@/lib/calendar";
@@ -551,16 +551,15 @@ export async function saveRuleAction(form: FormData) {
   const unit = UNITS.find((u) => u.key === form.get("unit")) ?? UNITS[2];
   const amount = Math.max(0, Number(form.get("amount") ?? 0) || 0);
   const pick = (k: string) => String(form.get(k) ?? "").trim() || undefined;
+  const variables = (k: string) =>
+    form
+      .getAll(k)
+      .map((v) => String(v).trim())
+      .filter((v) => /^\w+$/.test(v));
   const config: RuleConfig = {
     text: action === "whatsapp" ? pick("text") : undefined,
     templateName: action === "whatsapp" ? pick("templateName") : undefined,
-    templateParams:
-      action === "whatsapp" && pick("templateName")
-        ? form
-            .getAll("templateParams")
-            .map((v) => String(v).trim())
-            .filter((v) => /^\w+$/.test(v))
-        : undefined,
+    templateParams: action === "whatsapp" && pick("templateName") ? variables("templateParams") : undefined,
     buttons:
       action === "whatsapp"
         ? String(form.get("buttons") ?? "")
@@ -574,6 +573,22 @@ export async function saveRuleAction(form: FormData) {
     toStageId: action === "move" ? pick("toStageId") : undefined,
     sdrId: action === "ai_on" ? pick("sdrId") : undefined,
   };
+  if (action === "whatsapp") {
+    // The version for a lead a person (an affiliate) referred. A form without its fields (an editor open from before they
+    // existed) keeps the one the rule has; one with them says what it is now, nothing when its text was cleared
+    const pessoa: PersonVersion | undefined = form.has("pessoaForm")
+      ? pick("pessoaText")
+        ? {
+            text: pick("pessoaText"),
+            templateName: pick("pessoaTemplateName"),
+            templateParams: pick("pessoaTemplateName") ? variables("pessoaTemplateParams") : undefined,
+          }
+        : undefined
+      : id
+        ? ((await db.automationRule.findUnique({ where: { id }, select: { config: true } }))?.config as RuleConfig | null)?.pessoa
+        : undefined;
+    if (pessoa) config.pessoa = pessoa;
+  }
   const rawTrigger = form.get("trigger");
   const trigger =
     rawTrigger === "idle" ? "idle" : rawTrigger === "daily" && action === "move" ? "daily" : rawTrigger === "answer" ? "answer" : "enter";

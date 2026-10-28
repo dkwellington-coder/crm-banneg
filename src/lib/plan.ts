@@ -38,6 +38,21 @@ export function subjectHandoffStage<T extends { name: string }>(d: Pick<SdrDecis
 // In the lead's qualification next to "parceiro": the id of the funnel the store referred the lead to
 export const REFERRAL_FUNNEL = "parceiroFunil";
 
+// Also next to "parceiro": "PESSOA" when whoever referred the lead is a person (an affiliate), not a store. A store's
+// lead has no such key, as before affiliates existed
+export const REFERRER_KIND = "parceiroTipo";
+export const PERSON_REFERRER = "PESSOA";
+
+/** A person (an affiliate of the Portal de indicações) referred the lead, not a partner store. */
+export function referredByPerson(qualification: unknown) {
+  return (qualification as Record<string, unknown> | null)?.[REFERRER_KIND] === PERSON_REFERRER;
+}
+
+/** "da Lotus Veículos" for a store, "de João Silva" for a person: Portuguese puts no article before a person's name here. */
+export function referrerOf(name: string, person: boolean) {
+  return `${person ? "de" : "da"} ${name}`;
+}
+
 export type Plan = {
   status: LeadStatus;
   stageKey: string;
