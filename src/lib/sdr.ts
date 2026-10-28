@@ -125,7 +125,7 @@ function referral(ctx: Pick<SdrContext, "lead" | "settings" | "funnel">) {
   const company = ctx.settings.companyName;
   if (referredByPerson(ctx.lead.qualification)) {
     return `
-Indicação: o lead veio por indicação de "${store}", parceiro do ${company}${product ? `, para uma cotação de ${product}` : ""}. Se ainda não se apresentou nesta conversa, diga que você é do ${company} e que ${store} indicou o ${company} para a cotação, e siga com a cotação. ${store} é uma pessoa, não uma loja: não diga que o ${company} é corretora oficial de ${store}.
+Indicação: o lead veio por indicação de "${store}", parceiro do ${company}${product ? `, para uma cotação de ${product}` : ""}. Se ainda não se apresentou nesta conversa, diga que você é do ${company} e que ${store} indicou o ${company} para a cotação, e siga com a cotação. ${store} é uma pessoa, não uma loja: não diga que o ${company} é corretora oficial de ${store}. Se a decisão for disqualify, ${store} lê o motivo (reason) no portal de indicações: diga o motivo sem expor dados pessoais ou financeiros do lead.
 `;
   }
   return `

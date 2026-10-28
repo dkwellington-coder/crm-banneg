@@ -87,7 +87,7 @@ describe("a person's referral, without the database", () => {
   it("the AI says a person referred the company, and never that it is that person's broker; a store's prompt is as it was", () => {
     const person = turn({ parceiro: "João Silva", parceiroTipo: "PESSOA", produto: "seguro auto", parceiroFunil: COTACOES });
     expect(person).toContain(
-      'Indicação: o lead veio por indicação de "João Silva", parceiro do Banneg, para uma cotação de seguro auto. Se ainda não se apresentou nesta conversa, diga que você é do Banneg e que João Silva indicou o Banneg para a cotação, e siga com a cotação. João Silva é uma pessoa, não uma loja: não diga que o Banneg é corretora oficial de João Silva.',
+      'Indicação: o lead veio por indicação de "João Silva", parceiro do Banneg, para uma cotação de seguro auto. Se ainda não se apresentou nesta conversa, diga que você é do Banneg e que João Silva indicou o Banneg para a cotação, e siga com a cotação. João Silva é uma pessoa, não uma loja: não diga que o Banneg é corretora oficial de João Silva. Se a decisão for disqualify, João Silva lê o motivo (reason) no portal de indicações: diga o motivo sem expor dados pessoais ou financeiros do lead.',
     );
     expect(person).not.toContain("corretora oficial da");
     expect(person).not.toContain("loja parceira");

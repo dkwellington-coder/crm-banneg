@@ -62,7 +62,7 @@ export function StageMoveDialog({
               Motivo da perda
             </h2>
             <p className="text-sm text-slate-500">
-              {ask.lead || "O lead"} vai para {ask.stage}.{ask.storeSees && " Se veio de uma loja parceira, a loja vê este motivo no portal de indicações."}
+              {ask.lead || "O lead"} vai para {ask.stage}.{ask.storeSees && " Se veio por indicação de uma loja parceira ou de um afiliado, quem indicou vê este motivo no portal de indicações."}
             </p>
             <textarea
               autoFocus
