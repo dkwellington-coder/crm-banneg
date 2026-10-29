@@ -553,6 +553,29 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(event.data).toEqual({ adId: "1203", url: "https://fb.me/x", clickId: "clid" });
   });
 
+  it("an automatic e-mail with {{link_whatsapp}} carries the Falar no WhatsApp button, and the tap lands in the lead's conversation", async () => {
+    nextDecision.value = null;
+    await db.emailTemplate.create({ data: { key: "reativacao_0", name: "r", subject: "Ainda pensa?", body: "Olá, {{nome}}!\n\nToque no botão:\n\n{{link_whatsapp}}\n\nAbraço" } });
+    await db.setting.create({ data: { key: "whatsapp_number", value: { number: "+55 11 92013-8123" } } });
+    const { lead } = await leads.createLead({ name: "Rui", phone: "11944443333", email: "rui@x.com", source: "importado" }, "teste");
+    await db.job.updateMany({ where: { leadId: lead.id }, data: { status: "CANCELLED" } });
+    sentEmails.length = 0;
+    expect(await jobs.runAction(lead, "email", { templateKey: "reativacao_0" })).toMatch(/enviado/);
+    const [mail] = sentEmails;
+    const code = lead.id.slice(-6).toUpperCase();
+    expect(mail.body).toContain("https://wa.me/5511920138123?text=");
+    expect(decodeURIComponent(mail.body)).toContain(`(código ${code})`);
+    expect(mail.html).toContain("Falar no WhatsApp");
+    // An e-mail without the variable stays as it was
+    await db.emailTemplate.create({ data: { key: "nutricao_7", name: "n", subject: "Por quê", body: "Olá, {{nome}}! Responda." } });
+    await jobs.runAction(lead, "email", { templateKey: "nutricao_7" });
+    expect(sentEmails[1].html).toBeUndefined();
+
+    await leads.handleInbound({ phone: "11944443333", body: `Oi! Recebi o e-mail do Banneg e quero conversar. (código ${code})`, externalId: "tap1", at: new Date() });
+    expect(await db.lead.count()).toBe(1);
+    expect(await db.job.count({ where: { leadId: lead.id, type: "sdr.reply", status: "PENDING" } })).toBe(1);
+  });
+
   it("a returning lead fills only what was missing, and a lead without a phone is matched by e-mail", async () => {
     const { lead } = await leads.createLead({ name: "Rui", phone: "(061) 98765-0000", source: "site" }, "teste");
     // The leading 0 is the long-distance prefix

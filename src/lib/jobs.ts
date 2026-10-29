@@ -325,6 +325,11 @@ async function sendTemplateEmail(lead: Lead, templateKey: string, opts: EmailOpt
   // The same e-mail never goes twice to a lead, even when two automations ask for it
   if (await db.message.count({ where: { leadId: lead.id, channel: "EMAIL", template: templateKey, status: { not: "FAILED" } } }))
     return `Ignorado: o e-mail "${t.name}" já foi enviado para este lead.`;
+  // {{link_whatsapp}} in any e-mail becomes the "Falar no WhatsApp" button: the lead's answer lands in this conversation
+  if (!opts.vars?.link_whatsapp && /\{\{\s*link_whatsapp\s*\}\}/.test(t.body)) {
+    const link = await whatsappLink(lead);
+    if (link) opts = { ...opts, vars: { ...opts.vars, ...link }, button: opts.button ?? { label: "Falar no WhatsApp", url: link.link_whatsapp } };
+  }
   const settings = await getSettings();
   // "A {{sdr}}, do nosso time de expansão": the e-mail names the SDR who is talking to this lead (or the funnel's own)
   const sdr = (lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null) ?? (await funnelStart(lead.pipelineId)).sdr;
@@ -365,6 +370,15 @@ function undelivered(res: Extract<SendOutcome, { ok: false }>, lead: Lead) {
 export const emailCode = (leadId: string) => leadId.slice(-6).toUpperCase();
 export const CONTACT_EMAIL = "whatsapp_nao_chegou";
 
+/** Our WhatsApp (the lead's own number of the CRM) opening with a message ready and the lead's code. */
+async function whatsappLink(lead: Lead) {
+  const number = await whatsappNumberFor(lead);
+  if (!number) return null;
+  const settings = await getSettings();
+  const text = `Oi! Recebi o e-mail do ${settings.companyName} e quero conversar. (código ${emailCode(lead.id)})`;
+  return { link_whatsapp: `https://wa.me/${number.replace(/\D/g, "")}?text=${encodeURIComponent(text)}`, numero_whatsapp: number };
+}
+
 /**
  * WhatsApp did not reach the lead: the welcome e-mail (if the funnel has one and it has not gone) and the
  * e-mail with a button that opens our WhatsApp with a message ready, so the lead can call us.
@@ -383,15 +397,12 @@ async function sendUndeliveredEmails(lead: Lead) {
     if (!coming) results.push(await sendTemplateEmail(lead, welcome, { evenInSendError: true }));
   }
   // The lead's own number: a client of the referral funnel calls Alice's number, not the main one
-  const number = await whatsappNumberFor(lead);
-  if (!number) return [...results, "E-mail de contato não enviado: o número do WhatsApp do CRM não foi encontrado na Meta."].join(" ");
-  const settings = await getSettings();
-  const text = `Oi! Recebi o e-mail do ${settings.companyName} e quero conversar. (código ${emailCode(lead.id)})`;
-  const url = `https://wa.me/${number.replace(/\D/g, "")}?text=${encodeURIComponent(text)}`;
+  const link = await whatsappLink(lead);
+  if (!link) return [...results, "E-mail de contato não enviado: o número do WhatsApp do CRM não foi encontrado na Meta."].join(" ");
   results.push(
     await sendTemplateEmail(lead, CONTACT_EMAIL, {
-      vars: { link_whatsapp: url, numero_whatsapp: number },
-      button: { label: "Chamar no WhatsApp", url },
+      vars: link,
+      button: { label: "Chamar no WhatsApp", url: link.link_whatsapp },
       evenInSendError: true,
     }),
   );
