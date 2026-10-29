@@ -33,7 +33,29 @@ export type RuleConfig = {
   answers?: string[];
   // answer: the AI also answers the message (by default the stage's own messages do)
   aiReplies?: boolean;
+  // WhatsApp: what goes instead when a person (an affiliate), not a store, referred the lead and the message speaks of
+  // {{parceiro}} ("corretora oficial da {{parceiro}}" would read wrong). Without it such a lead gets nothing
+  pessoa?: PersonVersion;
 };
+
+export type PersonVersion = { text?: string; templateName?: string; templateParams?: string[] };
+
+const PARTNER_VAR = /\{\{\s*parceiro\s*\}\}/;
+
+/** The message names the referrer: {{parceiro}} in its text or in what fills its Meta template. */
+export function speaksOfPartner(config: Pick<RuleConfig, "text" | "templateParams">) {
+  return PARTNER_VAR.test(config.text ?? "") || !!config.templateParams?.includes("parceiro");
+}
+
+/**
+ * The rule as it goes to a lead a person referred: the person version's text, template and variables in place of the
+ * store's (never the store's template as a fallback); null when the rule has no person version with a text.
+ */
+export function forPerson(config: RuleConfig): RuleConfig | null {
+  const p = config.pessoa;
+  if (!p?.text?.trim()) return null;
+  return { ...config, text: p.text, templateName: p.templateName, templateParams: p.templateParams };
+}
 
 const normalizeAnswer = (s: string) =>
   s
@@ -79,7 +101,7 @@ export function triggerLabel(trigger: string, delayMinutes: number, config: Rule
 export function actionLabel(action: string, config: RuleConfig, names: { stages?: Record<string, string>; emails?: Record<string, string> } = {}) {
   switch (action) {
     case "whatsapp":
-      return `Enviar WhatsApp: “${config.text ?? ""}”${config.buttons?.length ? ` [${config.buttons.join(" · ")}]` : ""}${config.templateName ? ` (fora das 24 h: modelo ${config.templateName})` : ""}`;
+      return `Enviar WhatsApp: “${config.text ?? ""}”${config.buttons?.length ? ` [${config.buttons.join(" · ")}]` : ""}${config.templateName ? ` (fora das 24 h: modelo ${config.templateName})` : ""}${config.pessoa?.text?.trim() ? " · com versão para indicação de pessoa" : ""}`;
     case "email":
       return `Enviar e-mail “${names.emails?.[config.templateKey ?? ""] ?? config.templateKey}”`;
     case "cof":
