@@ -3,7 +3,7 @@ import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
 import type { CrmSettings } from "./settings";
 import { formatDay, formatSlot, formatTime, type Slot } from "./calendar";
-import { REFERRAL_FUNNEL } from "./plan";
+import { REFERRAL_FUNNEL, referredByPerson } from "./plan";
 
 export const SDR_MODEL = process.env.SDR_MODEL ?? "claude-opus-5-5";
 
@@ -113,8 +113,9 @@ ${kb || "(vazia: use handoff para qualquer pergunta sobre o negócio)"}`;
 
 /**
  * A client a partner store referred (Portal de indicações): the AI says the company is that store's official broker.
- * Only in the funnel the store referred it to: a lead someone is working in another funnel keeps that funnel's talk
- * while a person decides about the referral.
+ * A person who referred (an affiliate) is no store: the AI says that person referred the company, never that it is
+ * their broker. Only in the funnel the partner referred it to: a lead someone is working in another funnel keeps that
+ * funnel's talk while a person decides about the referral.
  */
 function referral(ctx: Pick<SdrContext, "lead" | "settings" | "funnel">) {
   const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 160) : null);
@@ -122,6 +123,11 @@ function referral(ctx: Pick<SdrContext, "lead" | "settings" | "funnel">) {
   if (!store || !ctx.funnel?.id || ctx.lead.qualification[REFERRAL_FUNNEL] !== ctx.funnel.id) return "";
   const product = text(ctx.lead.qualification.produto);
   const company = ctx.settings.companyName;
+  if (referredByPerson(ctx.lead.qualification)) {
+    return `
+Indicação: o lead veio por indicação de "${store}", parceiro do ${company}${product ? `, para uma cotação de ${product}` : ""}. Se ainda não se apresentou nesta conversa, diga que você é do ${company} e que ${store} indicou o ${company} para a cotação, e siga com a cotação. ${store} é uma pessoa, não uma loja: não diga que o ${company} é corretora oficial de ${store}. Se a decisão for disqualify, ${store} lê o motivo (reason) no portal de indicações: diga o motivo sem expor dados pessoais ou financeiros do lead.
+`;
+  }
   return `
 Indicação: o lead veio pela loja parceira "${store}"${product ? ` para uma cotação de ${product}` : ""}. O ${company} é a corretora oficial dessa loja: se ainda não se apresentou nesta conversa, diga que você é do ${company}, a corretora oficial da ${store}, e siga com a cotação.
 `;

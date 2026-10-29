@@ -24,6 +24,7 @@ import { StageSelect } from "./StageSelect";
 import { LostForm } from "./LostForm";
 import { ApoliceUpload } from "@/components/ApoliceUpload";
 import { needsApolice } from "@/lib/stage-move";
+import { referredByPerson } from "@/lib/plan";
 import { Composer } from "./Composer";
 import { AudioRecorder } from "./AudioRecorder";
 import { ScheduleMeeting } from "./ScheduleMeeting";
@@ -214,7 +215,8 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
                 .filter(([k]) => qual[k])
                 .map(([k, label]) => (
                   <div key={k} className="contents">
-                    <dt className="text-slate-500">{label}</dt>
+                    {/* An affiliate is a person, not a store; the kind itself is never listed */}
+                    <dt className="text-slate-500">{k === "parceiro" && referredByPerson(qual) ? "Indicado por" : label}</dt>
                     <dd>{qual[k]}</dd>
                   </div>
                 ))}

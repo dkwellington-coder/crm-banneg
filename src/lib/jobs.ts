@@ -8,9 +8,9 @@ import { whatsappNumberFor } from "./integrations";
 import { getSettings, isTestContact, messageVars } from "./settings";
 import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, meetingOptions, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
-import { isSubjectHandoffKey, NO_SHOW_STAGE, planFromDecision, STAGE_KEYS, subjectHandoffStage } from "./plan";
+import { isSubjectHandoffKey, NO_SHOW_STAGE, planFromDecision, referredByPerson, STAGE_KEYS, subjectHandoffStage } from "./plan";
 import { ensureTask, funnelStart, moveLead, sdrFor, stageByKey } from "./leads";
-import { fillVariables, templateSlots, type RuleConfig } from "./rules";
+import { fillVariables, forPerson, speaksOfPartner, templateSlots, type RuleConfig } from "./rules";
 import { isGreeting, type RuleJobPayload } from "./automations";
 import { attachMaterials, emailHtml, renderTemplate, sendEmail, withButton } from "./email";
 import { cofDocuments, sendCof } from "./cof";
@@ -409,6 +409,8 @@ async function sendUndeliveredEmails(lead: Lead) {
   return results.join(" ");
 }
 
+export const PERSON_VERSION_MISSING = "Ignorado: indicação de pessoa (afiliado) e esta automação fala de loja; falta a versão para pessoa.";
+
 /**
  * Does what a rule says. Throws on a failure worth retrying (WhatsApp down, SMTP error). origin names the rule (its
  * stage) in the reason of a lead it closes as lost.
@@ -417,6 +419,13 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig, 
   switch (action) {
     case "whatsapp": {
       if (!lead.phone) return "Ignorado: lead sem telefone.";
+      // A person (an affiliate) referred the lead: a message about {{parceiro}} is written for a store ("corretora oficial
+      // da {{parceiro}}"), so the rule's person version goes instead, and without one nothing does
+      if (referredByPerson(lead.qualification) && speaksOfPartner(config)) {
+        const person = forPerson(config);
+        if (!person) return PERSON_VERSION_MISSING;
+        config = person;
+      }
       const settings = await getSettings();
       const sdr = lead.sdrId ? await db.sdrAgent.findUnique({ where: { id: lead.sdrId } }) : null;
       const open = isWindowOpen(lead.lastInboundAt);

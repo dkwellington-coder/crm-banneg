@@ -5,7 +5,7 @@ import { cancelGreetings } from "@/lib/automations";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { referralClosure } from "@/lib/portal";
-import { REFERRAL_FUNNEL } from "@/lib/plan";
+import { PERSON_REFERRER, REFERRAL_FUNNEL, REFERRER_KIND } from "@/lib/plan";
 import { isWindowOpen, normalizePhone, phoneVariants } from "@/lib/whatsapp";
 
 const text = (max: number) => z.union([z.string(), z.number(), z.boolean()]).transform((v) => String(v).trim().slice(0, max)).optional();
@@ -35,6 +35,8 @@ const LeadInput = z.object({
   indicado_whatsapp: text(40),
   // Portal de indicações: the partner store that referred the client ({{parceiro}}) and the client's file as text
   parceiro: text(160),
+  // Who the parceiro is: "LOJA" (a store, the default) or "PESSOA" (an affiliate, a person who refers)
+  parceiroTipo: text(20),
   observacao: text(4000),
   // The sender's id for this request ("portal:<id>"): the same referral sent again changes nothing
   ref: text(120),
@@ -62,11 +64,14 @@ export async function POST(request: Request) {
   const union = b.associado_sindicato === true || b.associado_sindicato === "true" || /sincomercio|sindicato/i.test(`${b.campanha ?? ""} ${b.funil ?? ""}`);
   const pipeline = (await pipelineByRef(b.pipeline || b.funil)) ?? (union ? await pipelineByRef("sindicatos") : null);
   const source = b.source || b.origem || "site";
+  const person = b.parceiroTipo?.toUpperCase() === PERSON_REFERRER;
   const qualification = Object.fromEntries(
     Object.entries({
       produto: b.produto,
       empresa: b.empresa,
       parceiro: b.parceiro,
+      // Only a person gets the key: a store's lead stays as it always was
+      [REFERRER_KIND]: b.parceiro && person ? PERSON_REFERRER : undefined,
       // The funnel the store referred the client to: the AI speaks for the store only there
       [REFERRAL_FUNNEL]: b.parceiro ? pipeline?.id : undefined,
       associado: union ? "associado do sindicato" : undefined,
@@ -127,7 +132,7 @@ export async function POST(request: Request) {
   let task = false;
   if (!created && b.parceiro) {
     try {
-      ({ moved } = await referExisting(lead.id, pipeline?.id, b.parceiro, b.produto, actor));
+      ({ moved } = await referExisting(lead.id, pipeline?.id, b.parceiro, b.produto, actor, person ? PERSON_REFERRER : undefined));
     } catch (e) {
       // The store sends a failed referral again, which must find the work still to do: neither the ref on the timeline nor
       // the one returning() gave a lead without one (no other lead had it, or the referral would be a repeat). Once the
