@@ -17,6 +17,7 @@ import { cofDocuments, sendCof } from "./cof";
 import { blockedByAccount, resendSame } from "./resend";
 import { aiAccountProblem, aiAnswered, setAiHealth } from "./ai-health";
 import { sendPortalStatus, type PortalBody } from "./portal";
+import { sendPortalEmail } from "./portal-email";
 
 type Handler = (job: Job, lead: Lead | null) => Promise<string>;
 
@@ -230,6 +231,10 @@ const handlers: Record<string, Handler> = {
   async "portal.status"(job, l) {
     // A close queued as it was (referralClosure) goes as it is; any other notice says the lead's stage now
     return sendPortalStatus(needLead(l), (job.payload as { body?: PortalBody } | null)?.body);
+  },
+
+  async "portal.email"(job) {
+    return sendPortalEmail(job.payload);
   },
 
   async "meeting.reminder"(job, l) {

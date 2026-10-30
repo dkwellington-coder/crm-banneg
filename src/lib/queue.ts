@@ -11,7 +11,8 @@ export type JobType =
   | "whatsapp.undelivered_emails"
   | "whatsapp.other_category"
   | "whatsapp.resend"
-  | "portal.status";
+  | "portal.status"
+  | "portal.email";
 
 /**
  * Schedules work. A dedupeKey makes the call idempotent: scheduling the same step twice
