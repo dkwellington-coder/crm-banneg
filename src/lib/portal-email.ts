@@ -87,6 +87,7 @@ const WELCOME_SUBJECTS = {
   LOJA: "Seu cadastro no portal de indicações do Banneg foi aprovado",
   AFILIADO: "Seu cadastro no portal de indicações do Banneg foi aprovado",
   INDICADOR: "Você foi cadastrado como indicador no portal do Banneg",
+  SUPERVISOR: "Seu acesso de supervisor no portal de indicações do Banneg",
 };
 const looksLikeLink = (v: string) => /@|:\/\/|www\.|[a-z0-9]\.[a-z]{2,}/i.test(v);
 const shortName = (min: number) =>
@@ -106,8 +107,9 @@ const optionalName = () =>
  * link must be a page of it. One schema, by tipo:
  * - PENDENCIA, RECADO, CANCELAMENTO: the Banneg left a pendência or a message for the partner, or cancelled a referral;
  * - BOAS_VINDAS: the welcome, once per partner, when the Banneg approves a signup or an account is created for it (by the
- *   admin, or an indicador by the partner above it). link is the login page; senhaLink, the one-time link to create the
- *   password, comes only for an account with no password of its own yet;
+ *   admin, or an indicador by the partner above it). perfil SUPERVISOR is the partner above stores and affiliates, paid by
+ *   the Banneg a % of their sales on top of their own commission. link is the login page; senhaLink, the one-time link to
+ *   create the password, comes only for an account with no password of its own yet;
  * - CRIAR_SENHA, REDEFINIR_SENHA: a one-time link to create the password (the admin sent it) or a new one ("Esqueci minha
  *   senha", any role of the portal). The job's payload keeps the link: it works once and expires.
  */
@@ -133,7 +135,7 @@ export function partnerNoticeInput(portal: string) {
     // sobre: "a indicação de Maria"
     z.object({ ...common, tipo: z.enum(["PENDENCIA", "RECADO", "CANCELAMENTO"]), sobre: optionalName() }),
     // quem: the name of whoever registered an indicador
-    z.object({ ...common, tipo: z.literal("BOAS_VINDAS"), perfil: z.enum(["LOJA", "AFILIADO", "INDICADOR"]), senhaLink: page.optional(), quem: optionalName() }),
+    z.object({ ...common, tipo: z.literal("BOAS_VINDAS"), perfil: z.enum(["LOJA", "AFILIADO", "INDICADOR", "SUPERVISOR"]), senhaLink: page.optional(), quem: optionalName() }),
     z.object({ ...common, tipo: z.enum(["CRIAR_SENHA", "REDEFINIR_SENHA"]) }),
   ]);
 }
@@ -153,20 +155,33 @@ const TALK_TO_US = `${AUTOMATIC} Para falar com a equipe, use "Falar com o Banne
 /**
  * The welcome: how to get in (the password the partner chose at signup, the one whoever registered an indicador gave it, or
  * a link to create one) and the first steps. An indicador has no quote link of its own and no Divulgar: its step is left out.
+ * A supervisor indicates no client herself (no quote link, no Indicar): her Divulgar has the signup link for the garages and
+ * affiliates she brings, and Parceiros shows their referrals and sales. A quem sent with her is not named, as for a store.
  */
 function welcome({ nome, para, perfil, link, senhaLink, quem }: Extract<PartnerNoticeText, { tipo: "BOAS_VINDAS" }>) {
   const indicador = perfil === "INDICADOR";
+  const supervisor = perfil === "SUPERVISOR";
   const opening = indicador
     ? `${quem ? `${quem} cadastrou você` : "Você foi cadastrado"} como indicador no portal de indicações do Banneg. Cada cliente que você indicar e fechar com o Banneg rende comissão para você.`
-    : "Seu cadastro no portal de indicações do Banneg foi aprovado. A partir de agora, cada cliente que você indicar e fechar com o Banneg rende comissão para você.";
+    : supervisor
+      ? "Você agora é supervisor no portal de indicações do Banneg. Em cada venda dos parceiros abaixo de você, o Banneg paga a você um % a mais, além da comissão deles."
+      : "Seu cadastro no portal de indicações do Banneg foi aprovado. A partir de agora, cada cliente que você indicar e fechar com o Banneg rende comissão para você.";
   const password = indicador ? `${quem ?? "quem cadastrou você"} te passou` : "você escolheu no cadastro";
   const access = senhaLink
     ? `Para entrar, crie sua senha por este link. Ele vale por 7 dias e só uma vez:\n${senhaLink}\n\nDepois, entre sempre com o e-mail ${para} e a senha que você criou:\n${link}`
     : `Entre com o e-mail ${para} e a senha que ${password}:\n${link}`;
+  const middle = supervisor
+    ? [
+        "Em Divulgar, pegue o link de cadastro para garagens e afiliados. Quem se cadastrar por ele fica abaixo de você depois da aprovação do Banneg.",
+        "Em Parceiros, acompanhe as indicações e as vendas da sua equipe e a sua parte.",
+      ]
+    : [
+        ...(indicador ? [] : ["Em Divulgar, pegue o seu link de cotação e as artes prontas para mandar aos clientes."]),
+        "Em Indicar, cadastre o cliente com as fotos dos documentos. O Banneg faz o atendimento e a cotação.",
+      ];
   const steps = [
     "Em Recebimento, cadastre a chave Pix que vai receber as comissões.",
-    ...(indicador ? [] : ["Em Divulgar, pegue o seu link de cotação e as artes prontas para mandar aos clientes."]),
-    "Em Indicar, cadastre o cliente com as fotos dos documentos. O Banneg faz o atendimento e a cotação.",
+    ...middle,
     "Em Treinamentos, veja o básico de cada produto e o manual do portal.",
   ].map((step, i) => `${i + 1}. ${step}`);
   return {
