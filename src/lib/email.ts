@@ -43,9 +43,11 @@ function getTransport() {
 
 /** Plain text to simple HTML: paragraphs, line breaks and clickable links. */
 export function emailHtml(body: string) {
-  const escaped = body.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // Quotes too: the text can be written by someone outside the team (the portal's notices), and a quote inside a link
+  // would end the href and add attributes
+  const escaped = body.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   return escaped
-    .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>')
+    .replace(/(https?:\/\/(?:(?!&quot;|&#39;)[^\s<])+)/g, '<a href="$1">$1</a>')
     .split(/\n{2,}/)
     .map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`)
     .join("");
@@ -60,10 +62,11 @@ export function withButton(html: string, button: { label: string; url: string })
 
 export const emailFrom = () => process.env.SMTP_FROM ?? process.env.SMTP_USER ?? "";
 
-export async function sendEmail(to: string, subject: string, body: string, attachments: EmailAttachment[] = [], html = emailHtml(body)) {
+/** replyTo: who the answer goes to when it is not the sender (the portal's notices answer the store). */
+export async function sendEmail(to: string, subject: string, body: string, attachments: EmailAttachment[] = [], html = emailHtml(body), replyTo?: string) {
   const t = getTransport();
   if (!t) throw new Error("E-mail não configurado (SMTP_HOST / SMTP_USER / SMTP_PASS).");
-  const info = await t.sendMail({ from: emailFrom(), to, subject, text: body, html, attachments });
+  const info = await t.sendMail({ from: emailFrom(), to, subject, text: body, html, attachments, ...(replyTo && { replyTo }) });
   return info.messageId as string;
 }
 
