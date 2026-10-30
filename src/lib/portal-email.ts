@@ -109,7 +109,9 @@ const optionalName = () =>
  * - BOAS_VINDAS: the welcome, once per partner, when the Banneg approves a signup or an account is created for it (by the
  *   admin, or an indicador by the partner above it). perfil SUPERVISOR is the partner above stores and affiliates, paid by
  *   the Banneg a % of their sales on top of their own commission. link is the login page; senhaLink, the one-time link to
- *   create the password, comes only for an account with no password of its own yet;
+ *   create the password, comes only for an account with no password of its own yet. convertido: the account already existed
+ *   (a store or an affiliate turned supervisor), so it signs in with the password it already uses, or creates one with
+ *   "Esqueci minha senha" (an account the admin created may never have chosen one);
  * - CRIAR_SENHA, REDEFINIR_SENHA: a one-time link to create the password (the admin sent it) or a new one ("Esqueci minha
  *   senha", any role of the portal). The job's payload keeps the link: it works once and expires.
  */
@@ -135,7 +137,14 @@ export function partnerNoticeInput(portal: string) {
     // sobre: "a indicação de Maria"
     z.object({ ...common, tipo: z.enum(["PENDENCIA", "RECADO", "CANCELAMENTO"]), sobre: optionalName() }),
     // quem: the name of whoever registered an indicador
-    z.object({ ...common, tipo: z.literal("BOAS_VINDAS"), perfil: z.enum(["LOJA", "AFILIADO", "INDICADOR", "SUPERVISOR"]), senhaLink: page.optional(), quem: optionalName() }),
+    z.object({
+      ...common,
+      tipo: z.literal("BOAS_VINDAS"),
+      perfil: z.enum(["LOJA", "AFILIADO", "INDICADOR", "SUPERVISOR"]),
+      senhaLink: page.optional(),
+      quem: optionalName(),
+      convertido: z.boolean().optional(),
+    }),
     z.object({ ...common, tipo: z.enum(["CRIAR_SENHA", "REDEFINIR_SENHA"]) }),
   ]);
 }
@@ -144,7 +153,7 @@ type NoticeOf<T extends PartnerNotice["tipo"]> = Extract<PartnerNotice, { tipo: 
 /** What the e-mail is written from: the notice without its ref. The Banneg's own notices never write the address. */
 export type PartnerNoticeText =
   | (Pick<NoticeOf<"PENDENCIA" | "RECADO" | "CANCELAMENTO">, "nome" | "tipo" | "link"> & { sobre?: string })
-  | (Omit<NoticeOf<"BOAS_VINDAS">, "ref" | "senhaLink" | "quem"> & { senhaLink?: string; quem?: string })
+  | (Omit<NoticeOf<"BOAS_VINDAS">, "ref" | "senhaLink" | "quem" | "convertido"> & { senhaLink?: string; quem?: string; convertido?: boolean })
   | Omit<NoticeOf<"CRIAR_SENHA" | "REDEFINIR_SENHA">, "ref">;
 
 const AUTOMATIC = "Este é um aviso automático do Banneg.";
@@ -153,12 +162,14 @@ const AUTOMATIC = "Este é um aviso automático do Banneg.";
 const TALK_TO_US = `${AUTOMATIC} Para falar com a equipe, use "Falar com o Banneg" no portal.`;
 
 /**
- * The welcome: how to get in (the password the partner chose at signup, the one whoever registered an indicador gave it, or
- * a link to create one) and the first steps. An indicador has no quote link of its own and no Divulgar: its step is left out.
- * A supervisor indicates no client herself (no quote link, no Indicar): her Divulgar has the signup link for the garages and
- * affiliates she brings, and Parceiros shows their referrals and sales. A quem sent with her is not named, as for a store.
+ * The welcome: how to get in (the password the partner chose at signup, the one whoever registered an indicador gave it, the
+ * one an account turned supervisor already uses, or a link to create one) and the first steps. An indicador has no quote link
+ * of its own and no Divulgar: its step is left out. A supervisor indicates no client herself (no quote link, no Indicar): her
+ * Divulgar has the signup link for the garages and affiliates she brings, and Parceiros shows their referrals and sales. A
+ * quem sent with her is not named, as for a store. A converted account that may never have chosen a password (the admin
+ * created it, and the link of its first welcome may have expired) is told how to create one, in place of the forgot line.
  */
-function welcome({ nome, para, perfil, link, senhaLink, quem }: Extract<PartnerNoticeText, { tipo: "BOAS_VINDAS" }>) {
+function welcome({ nome, para, perfil, link, senhaLink, quem, convertido }: Extract<PartnerNoticeText, { tipo: "BOAS_VINDAS" }>) {
   const indicador = perfil === "INDICADOR";
   const supervisor = perfil === "SUPERVISOR";
   const opening = indicador
@@ -167,9 +178,15 @@ function welcome({ nome, para, perfil, link, senhaLink, quem }: Extract<PartnerN
       ? "Você agora é supervisor no portal de indicações do Banneg. Em cada venda dos parceiros abaixo de você, o Banneg paga a você um % a mais, além da comissão deles."
       : "Seu cadastro no portal de indicações do Banneg foi aprovado. A partir de agora, cada cliente que você indicar e fechar com o Banneg rende comissão para você.";
   const password = indicador ? `${quem ?? "quem cadastrou você"} te passou` : "você escolheu no cadastro";
+  const sameAccount = Boolean(convertido) && !senhaLink;
   const access = senhaLink
     ? `Para entrar, crie sua senha por este link. Ele vale por 7 dias e só uma vez:\n${senhaLink}\n\nDepois, entre sempre com o e-mail ${para} e a senha que você criou:\n${link}`
-    : `Entre com o e-mail ${para} e a senha que ${password}:\n${link}`;
+    : sameAccount
+      ? `Entre com o mesmo e-mail ${para} e a senha que você já usa no portal:\n${link}`
+      : `Entre com o e-mail ${para} e a senha que ${password}:\n${link}`;
+  const forgot = sameAccount
+    ? 'Ainda não tem senha ou esqueceu a sua? Na tela de entrar, use "Esqueci minha senha".'
+    : 'Esqueceu a senha? Na tela de entrar, use "Esqueci minha senha".';
   const middle = supervisor
     ? [
         "Em Divulgar, pegue o link de cadastro para garagens e afiliados. Quem se cadastrar por ele fica abaixo de você depois da aprovação do Banneg.",
@@ -186,7 +203,7 @@ function welcome({ nome, para, perfil, link, senhaLink, quem }: Extract<PartnerN
   ].map((step, i) => `${i + 1}. ${step}`);
   return {
     assunto: WELCOME_SUBJECTS[perfil],
-    texto: `Olá, ${nome}.\n\n${opening}\n\n${access}\n\nPrimeiros passos:\n${steps.join("\n")}\n\nEsqueceu a senha? Na tela de entrar, use "Esqueci minha senha".\n\n${TALK_TO_US}`,
+    texto: `Olá, ${nome}.\n\n${opening}\n\n${access}\n\nPrimeiros passos:\n${steps.join("\n")}\n\n${forgot}\n\n${TALK_TO_US}`,
   };
 }
 

@@ -138,6 +138,8 @@ describe("partner notice input", () => {
     expect(input.parse(welcome)).toEqual({ ...welcome, para: "ana@lotus.com.br" });
     for (const perfil of ["LOJA", "AFILIADO", "INDICADOR", "SUPERVISOR"]) expect(input.parse({ ...welcome, perfil })).toMatchObject({ tipo: "BOAS_VINDAS", perfil });
     expect(input.parse({ ...welcome, perfil: "SUPERVISOR", senhaLink })).toEqual({ ...welcome, para: "ana@lotus.com.br", perfil: "SUPERVISOR", senhaLink });
+    // A store or an affiliate turned supervisor: the account already exists
+    expect(input.parse({ ...welcome, perfil: "SUPERVISOR", convertido: true })).toEqual({ ...welcome, para: "ana@lotus.com.br", perfil: "SUPERVISOR", convertido: true });
     expect(input.parse({ ...welcome, senhaLink: ` ${senhaLink} ` })).toEqual({ ...welcome, para: "ana@lotus.com.br", senhaLink });
     const indicador = input.parse({ ...welcome, perfil: "INDICADOR", quem: " Lotus\r\nVeículos " });
     expect(indicador).toMatchObject({ perfil: "INDICADOR", quem: "Lotus Veículos" });
@@ -186,6 +188,8 @@ describe("partner notice input", () => {
       { perfil: "INDICADOR", quem: "veja https://golpe" },
       { perfil: "INDICADOR", quem: "www.golpe" },
       { perfil: "INDICADOR", quem: "L".repeat(81) },
+      { perfil: "SUPERVISOR", convertido: "sim" },
+      { perfil: "SUPERVISOR", convertido: null },
       { nome: "Ana, pague em golpe.com" },
       { nome: "" },
       { para: "não é e-mail" },
@@ -312,7 +316,18 @@ describe("welcome and password texts", () => {
     });
     // A quem sent with her is not named, as for a store
     expect(partnerNotice({ nome: "Andressa", para, tipo: "BOAS_VINDAS", perfil: "SUPERVISOR", link: login, senhaLink, quem: "Lotus Veículos" })).toEqual(created);
-    for (const texto of [created.texto, approved.texto]) {
+    // A store or an affiliate turned supervisor: the same account, whose password she may never have chosen (the admin created
+    // it, and its welcome's link expired), so the e-mail says how to create one in place of the forgot line
+    const converted = partnerNotice({ nome: "Rede Sul Veículos", para, tipo: "BOAS_VINDAS", perfil: "SUPERVISOR", link: login, convertido: true });
+    expect(converted).toEqual({
+      assunto,
+      texto: `Olá, Rede Sul Veículos.\n\n${SUPERVISOR}\n\nEntre com o mesmo e-mail ${para} e a senha que você já usa no portal:\n${login}\n\n${SUPERVISOR_STEPS}\n\nAinda não tem senha ou esqueceu a sua? Na tela de entrar, use "Esqueci minha senha".\n\n${FOOTER}`,
+    });
+    expect(converted.texto).not.toContain("escolheu no cadastro");
+    expect(converted.texto).not.toContain(FORGOT);
+    // With a link to create the password, the link is what she uses
+    expect(partnerNotice({ nome: "Andressa", para, tipo: "BOAS_VINDAS", perfil: "SUPERVISOR", link: login, senhaLink, convertido: true })).toEqual(created);
+    for (const texto of [created.texto, approved.texto, converted.texto]) {
       expect(texto).not.toContain("Em Indicar");
       expect(texto).not.toContain("link de cotação");
       expect(texto).not.toContain("cliente que você indicar");
@@ -661,6 +676,18 @@ describe.skipIf(!dbUrl)("partner notice route", () => {
     expect(await (await post(supervisor)).json()).toMatchObject({ id, repeated: true, status: "DONE" });
     await drain();
     expect(mail.sent).toHaveLength(1);
+  });
+
+  it("queues a converted supervisor's welcome with the password she already uses", async () => {
+    const converted = { ...welcome, ref: "aviso6", para: "rede@sul.com.br", nome: "Rede Sul Veículos", perfil: "SUPERVISOR", convertido: true };
+    const res = await post(converted);
+    expect(res.status).toBe(202);
+    const { id } = await res.json();
+    const text = partnerNotice({ nome: "Rede Sul Veículos", para: "rede@sul.com.br", tipo: "BOAS_VINDAS", perfil: "SUPERVISOR", link: welcome.link, convertido: true });
+    expect(text.texto).toContain("a senha que você já usa no portal");
+    expect((await db.job.findUniqueOrThrow({ where: { id } })).payload).toEqual({ ref: "parceiro:aviso6", para: "rede@sul.com.br", ...text, responderPara: PORTAL_EMAIL_TO });
+    await drain();
+    expect(mail.sent).toEqual([{ to: "rede@sul.com.br", subject: text.assunto, body: text.texto, replyTo: PORTAL_EMAIL_TO }]);
   });
 
   it("refuses an unknown kind of partner, a quem with an address and a link to create the password outside the portal", async () => {
