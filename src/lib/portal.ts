@@ -17,7 +17,8 @@ import {
 } from "./portal-status";
 
 // Same secret the portal sends leads with, now also the way back (CRM_TOKEN on the portal's side)
-const portalUrl = () => process.env.PORTAL_URL?.trim().replace(/\/+$/, "");
+/** The portal's address, without the trailing slash; undefined when PORTAL_URL is not set. */
+export const portalUrl = () => process.env.PORTAL_URL?.trim().replace(/\/+$/, "");
 const portalToken = () => process.env.PORTAL_LEADS_TOKEN;
 // A portal that hangs must not hold the cron (and the AI's replies) back for long
 export const PORTAL_TIMEOUT_MS = 10_000;
