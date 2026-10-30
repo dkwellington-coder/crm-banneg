@@ -1,8 +1,9 @@
 // What the portal tells the CRM of a referral (a note, a cancellation, the cancellation taken back) and the e-mail it asks
 // the CRM to send a partner. Only with the portal's token; a cancellation closes the lead only when nobody else's deal
 // goes with it; each notice counts once. The partner's e-mail is the CRM's own text, with only the names and a link to
-// the portal from outside, so it is the one notice that may leave the company's domain. The validation and the texts
-// always run; the routes only when TEST_DATABASE_URL is set. The mail server and the portal (fetch) are stubbed, and
+// the portal from outside, so it is the one notice that may leave the company's domain. The same route sends the
+// partner's welcome and the one-time links to create a password or a new one, also in the CRM's own words. The validation
+// and the texts always run; the routes only when TEST_DATABASE_URL is set. The mail server and the portal (fetch) are stubbed, and
 // nothing leaves the machine.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Lead, Stage } from "@prisma/client";
@@ -26,7 +27,11 @@ vi.mock("@/lib/email", async (orig) => ({
 const PORTAL = "https://portal.banneg.com.br";
 const partner = { ref: "aviso1", para: "Ana@Lotus.com.br", nome: "Ana", tipo: "PENDENCIA", sobre: "a indicação de Maria", link: `${PORTAL}/loja/clientes/c1#conversa-banneg` };
 const note = { ref: "portal:cli1", aviso: "av1", acao: "NOTA", texto: "Dados corrigidos no portal pelo Banneg: Placa: ABC1D23 → ABC1D24", autor: "Wellington" };
-const FOOTER = "Este é um aviso automático do Banneg. Para falar com a equipe, responda pelo portal.";
+// The button and the link to the general conversation say "Falar com o Banneg" on the partner's screens (the portal's /loja)
+const FOOTER = 'Este é um aviso automático do Banneg. Para falar com a equipe, use "Falar com o Banneg" no portal.';
+const welcome = { ref: "aviso2", para: "Ana@Lotus.com.br", nome: "Ana", tipo: "BOAS_VINDAS", perfil: "LOJA", link: `${PORTAL}/login` };
+const senhaLink = `${PORTAL}/senha/q8Xr-3vT_k2LmN0pQ7sZbW4yHc9dF6gJ1aE5uR8iO2w`;
+const access = { ref: "aviso3", para: "ana@lotus.com.br", nome: "Ana", tipo: "CRIAR_SENHA", link: senhaLink };
 
 describe("referral notice input", () => {
   it("takes a note, a cancellation and a reopening, and only a reopening may come without a text", () => {
@@ -76,8 +81,12 @@ describe("partner notice input", () => {
     // Any partner's address: a store, an affiliate's gmail
     expect(input.parse({ ...partner, para: "joao.silva@gmail.com" }).para).toBe("joao.silva@gmail.com");
     // No sobre, or an empty one, is the same: the general conversation
-    expect(input.parse({ ...partner, sobre: undefined }).sobre).toBeUndefined();
-    expect(input.parse({ ...partner, sobre: "  " }).sobre).toBeUndefined();
+    const about = (sobre: string | undefined) => {
+      const notice = input.parse({ ...partner, sobre });
+      return "sobre" in notice ? notice.sobre : "(another tipo)";
+    };
+    expect(about(undefined)).toBeUndefined();
+    expect(about("  ")).toBeUndefined();
     for (const tipo of ["PENDENCIA", "RECADO", "CANCELAMENTO"]) expect(input.parse({ ...partner, tipo }).tipo).toBe(tipo);
   });
 
@@ -124,6 +133,71 @@ describe("partner notice input", () => {
       expect(input.safeParse({ ...partner, ...bad }).success, JSON.stringify(bad).slice(0, 60)).toBe(false);
     }
   });
+
+  it("takes the welcome of each kind of partner, with the link to create the password or without it", () => {
+    expect(input.parse(welcome)).toEqual({ ...welcome, para: "ana@lotus.com.br" });
+    for (const perfil of ["LOJA", "AFILIADO", "INDICADOR"]) expect(input.parse({ ...welcome, perfil })).toMatchObject({ tipo: "BOAS_VINDAS", perfil });
+    expect(input.parse({ ...welcome, senhaLink: ` ${senhaLink} ` })).toEqual({ ...welcome, para: "ana@lotus.com.br", senhaLink });
+    const indicador = input.parse({ ...welcome, perfil: "INDICADOR", quem: " Lotus\r\nVeículos " });
+    expect(indicador).toMatchObject({ perfil: "INDICADOR", quem: "Lotus Veículos" });
+    // No quem, or an empty one, is the same: the e-mail does not name who registered the indicador
+    for (const quem of [undefined, "", "  "]) expect(input.parse({ ...welcome, perfil: "INDICADOR", quem })).not.toHaveProperty("quem", expect.anything());
+  });
+
+  it("takes the links to create a password and a new one, and keeps no field of another notice", () => {
+    for (const tipo of ["CRIAR_SENHA", "REDEFINIR_SENHA"]) {
+      expect(input.parse({ ...access, tipo, para: "Ana@Lotus.com.br" }), tipo).toEqual({ ...access, tipo });
+      expect(input.parse({ ...access, tipo, sobre: "a indicação de Maria", senhaLink, perfil: "LOJA", quem: "Lotus" }), tipo).toEqual({ ...access, tipo });
+    }
+    // Nor does a pendência keep the welcome's fields
+    expect(input.parse({ ...partner, perfil: "LOJA", senhaLink: "https://golpe.com/senha", quem: "Lotus" })).toEqual({ ...partner, para: "ana@lotus.com.br" });
+  });
+
+  it("the link to create the password is a page of this portal too", () => {
+    for (const bad of [
+      "https://golpe.com/senha/abc",
+      "https://portal.banneg.com.br.golpe.com/senha/abc",
+      "http://portal.banneg.com.br/senha/abc",
+      PORTAL,
+      `${PORTAL}/senha/abc https://golpe.com`,
+      `${PORTAL}/senha/abc"onmouseover="x`,
+      `${PORTAL}/senha/<b>`,
+      `${PORTAL}/senha/'x`,
+      `${PORTAL}/${"x".repeat(500)}`,
+      "",
+      "javascript:alert(1)",
+    ]) {
+      expect(input.safeParse({ ...welcome, senhaLink: bad }).success, `senhaLink ${bad.slice(0, 60)}`).toBe(false);
+      for (const tipo of ["CRIAR_SENHA", "REDEFINIR_SENHA"]) expect(input.safeParse({ ...access, tipo, link: bad }).success, `${tipo} ${bad.slice(0, 60)}`).toBe(false);
+    }
+    expect(input.safeParse({ ...welcome, link: "https://golpe.com/login" }).success).toBe(false);
+  });
+
+  it("refuses an unknown kind of partner, a quem that carries a link or an address, and a notice without its link", () => {
+    for (const bad of [
+      { perfil: "SUPERVISORA" },
+      { perfil: "loja" },
+      { perfil: "" },
+      { perfil: undefined },
+      { perfil: "INDICADOR", quem: "Lotus @ana" },
+      { perfil: "INDICADOR", quem: "ana@golpe.com" },
+      { perfil: "INDICADOR", quem: "veja https://golpe" },
+      { perfil: "INDICADOR", quem: "www.golpe" },
+      { perfil: "INDICADOR", quem: "L".repeat(81) },
+      { nome: "Ana, pague em golpe.com" },
+      { nome: "" },
+      { para: "não é e-mail" },
+      { link: undefined },
+      { tipo: "BOAS VINDAS" },
+    ]) {
+      expect(input.safeParse({ ...welcome, ...bad }).success, JSON.stringify(bad).slice(0, 60)).toBe(false);
+    }
+    for (const tipo of ["CRIAR_SENHA", "REDEFINIR_SENHA"]) {
+      for (const bad of [{ link: undefined }, { para: undefined }, { nome: "veja https://x" }, { ref: "" }]) {
+        expect(input.safeParse({ ...access, tipo, ...bad }).success, `${tipo} ${JSON.stringify(bad)}`).toBe(false);
+      }
+    }
+  });
 });
 
 describe("partner notice texts", () => {
@@ -156,6 +230,86 @@ describe("partner notice texts", () => {
     const html = emailHtml(partnerNotice({ nome: "Ana", tipo: "RECADO", link }).texto);
     expect(html.match(/<a /g)).toHaveLength(1);
     expect(html).toContain(`<a href="${link}">`);
+  });
+});
+
+describe("welcome and password texts", () => {
+  const login = `${PORTAL}/login`;
+  const para = "ana@lotus.com.br";
+  const STEPS = [
+    "Primeiros passos:",
+    "1. Em Recebimento, cadastre a chave Pix que vai receber as comissões.",
+    "2. Em Divulgar, pegue o seu link de cotação e as artes prontas para mandar aos clientes.",
+    "3. Em Indicar, cadastre o cliente com as fotos dos documentos. O Banneg faz o atendimento e a cotação.",
+    "4. Em Treinamentos, veja o básico de cada produto e o manual do portal.",
+  ].join("\n");
+  // An indicador has no quote link nor Divulgar: the steps are renumbered without it
+  const INDICADOR_STEPS = [
+    "Primeiros passos:",
+    "1. Em Recebimento, cadastre a chave Pix que vai receber as comissões.",
+    "2. Em Indicar, cadastre o cliente com as fotos dos documentos. O Banneg faz o atendimento e a cotação.",
+    "3. Em Treinamentos, veja o básico de cada produto e o manual do portal.",
+  ].join("\n");
+  const FORGOT = 'Esqueceu a senha? Na tela de entrar, use "Esqueci minha senha".';
+  const APPROVED = "Seu cadastro no portal de indicações do Banneg foi aprovado.";
+  const COMMISSION = "cliente que você indicar e fechar com o Banneg rende comissão para você.";
+  const CREATE = `Para entrar, crie sua senha por este link. Ele vale por 7 dias e só uma vez:\n${senhaLink}\n\nDepois, entre sempre com o e-mail ${para} e a senha que você criou:\n${login}`;
+
+  it("a store or an affiliate approved: with the password chosen at signup, or a link to create one", () => {
+    for (const perfil of ["LOJA", "AFILIADO"] as const) {
+      expect(partnerNotice({ nome: "Ana", para, tipo: "BOAS_VINDAS", perfil, link: login }), perfil).toEqual({
+        assunto: "Seu cadastro no portal de indicações do Banneg foi aprovado",
+        texto: `Olá, Ana.\n\n${APPROVED} A partir de agora, cada ${COMMISSION}\n\nEntre com o e-mail ${para} e a senha que você escolheu no cadastro:\n${login}\n\n${STEPS}\n\n${FORGOT}\n\n${FOOTER}`,
+      });
+      expect(partnerNotice({ nome: "Ana", para, tipo: "BOAS_VINDAS", perfil, link: login, senhaLink }), perfil).toEqual({
+        assunto: "Seu cadastro no portal de indicações do Banneg foi aprovado",
+        texto: `Olá, Ana.\n\n${APPROVED} A partir de agora, cada ${COMMISSION}\n\n${CREATE}\n\n${STEPS}\n\n${FORGOT}\n\n${FOOTER}`,
+      });
+    }
+    // A quem sent for a store is not the store's business: its e-mail never names one
+    expect(partnerNotice({ nome: "Ana", para, tipo: "BOAS_VINDAS", perfil: "LOJA", link: login, quem: "Lotus Veículos" }).texto).not.toContain("Lotus");
+  });
+
+  it("an indicador: who registered it, without Divulgar, and the password whoever registered it gave", () => {
+    expect(partnerNotice({ nome: "Ana", para, tipo: "BOAS_VINDAS", perfil: "INDICADOR", link: login, senhaLink, quem: "Lotus Veículos" })).toEqual({
+      assunto: "Você foi cadastrado como indicador no portal do Banneg",
+      texto: `Olá, Ana.\n\nLotus Veículos cadastrou você como indicador no portal de indicações do Banneg. Cada ${COMMISSION}\n\n${CREATE}\n\n${INDICADOR_STEPS}\n\n${FORGOT}\n\n${FOOTER}`,
+    });
+    expect(partnerNotice({ nome: "Ana", para, tipo: "BOAS_VINDAS", perfil: "INDICADOR", link: login, quem: "Lotus Veículos" }).texto).toBe(
+      `Olá, Ana.\n\nLotus Veículos cadastrou você como indicador no portal de indicações do Banneg. Cada ${COMMISSION}\n\nEntre com o e-mail ${para} e a senha que Lotus Veículos te passou:\n${login}\n\n${INDICADOR_STEPS}\n\n${FORGOT}\n\n${FOOTER}`,
+    );
+    const nobody = partnerNotice({ nome: "Ana", para, tipo: "BOAS_VINDAS", perfil: "INDICADOR", link: login });
+    expect(nobody.texto).toContain("\n\nVocê foi cadastrado como indicador no portal de indicações do Banneg. Cada cliente");
+    expect(nobody.texto).toContain(`Entre com o e-mail ${para} e a senha que quem cadastrou você te passou:\n${login}`);
+    for (const texto of [nobody.texto, partnerNotice({ nome: "Ana", para, tipo: "BOAS_VINDAS", perfil: "INDICADOR", link: login, senhaLink }).texto]) {
+      expect(texto).not.toContain("Divulgar");
+      expect(texto).not.toContain("link de cotação");
+      expect(texto).not.toContain("4.");
+    }
+  });
+
+  it("the link to create the password, sent by the team", () => {
+    expect(partnerNotice({ nome: "Ana", para, tipo: "CRIAR_SENHA", link: senhaLink })).toEqual({
+      assunto: "Seu acesso ao portal de indicações do Banneg",
+      texto: `Olá, Ana.\n\nA equipe do Banneg mandou um link para você criar a senha do portal de indicações. Ele vale por 7 dias e só uma vez:\n${senhaLink}\n\nDepois, entre com o e-mail ${para} e a senha que você criou.\n\n${FOOTER}`,
+    });
+  });
+
+  it("a new password asked for: to anyone who logs in to the portal, so no button of the partner's screens", () => {
+    expect(partnerNotice({ nome: "Ana", para, tipo: "REDEFINIR_SENHA", link: senhaLink })).toEqual({
+      assunto: "Crie uma senha nova no portal de indicações do Banneg",
+      texto: `Olá, Ana.\n\nRecebemos um pedido para trocar a senha da sua conta no portal de indicações do Banneg. Para criar uma senha nova, abra este link. Ele vale por 2 horas e só uma vez:\n${senhaLink}\n\nSe não foi você que pediu, ignore este e-mail. Sua senha continua a mesma.\n\nEste é um aviso automático do Banneg.`,
+    });
+  });
+
+  it("the links are the e-mail's only clickable links, the one to create the password first", () => {
+    const html = emailHtml(partnerNotice({ nome: "Ana", para, tipo: "BOAS_VINDAS", perfil: "LOJA", link: login, senhaLink }).texto);
+    expect([...html.matchAll(/<a href="([^"]+)">/g)].map((m) => m[1])).toEqual([senhaLink, login]);
+    // The quotes of "Esqueci minha senha" and "Falar com o Banneg" are only text
+    expect(html).toContain("use &quot;Esqueci minha senha&quot;");
+    for (const tipo of ["CRIAR_SENHA", "REDEFINIR_SENHA"] as const) {
+      expect([...emailHtml(partnerNotice({ nome: "Ana", para, tipo, link: senhaLink }).texto).matchAll(/<a href="([^"]+)">/g)].map((m) => m[1]), tipo).toEqual([senhaLink]);
+    }
   });
 });
 
@@ -414,6 +568,58 @@ describe.skipIf(!dbUrl)("partner notice route", () => {
     expect(await (await post(partner)).json()).toMatchObject({ id, repeated: true, status: "DONE" });
     await drain();
     expect(mail.sent).toHaveLength(1);
+  });
+
+  it("queues the welcome and the links to create a password in the CRM's own words, and sends each ref once", async () => {
+    const indicador = { ...welcome, perfil: "INDICADOR", quem: "Lotus Veículos", senhaLink };
+    const first = await post(indicador);
+    expect(first.status).toBe(202);
+    const { id } = await first.json();
+    const text = partnerNotice({ nome: "Ana", para: "ana@lotus.com.br", tipo: "BOAS_VINDAS", perfil: "INDICADOR", link: welcome.link, senhaLink, quem: "Lotus Veículos" });
+    expect((await db.job.findUniqueOrThrow({ where: { id } })).payload).toEqual({ ref: "parceiro:aviso2", para: "ana@lotus.com.br", ...text, responderPara: PORTAL_EMAIL_TO });
+    // The same notice again (the portal never heard the answer) sends nothing new, whatever else comes with its ref
+    expect(await (await post(indicador)).json()).toMatchObject({ ok: true, id, repeated: true });
+    expect(await (await post(welcome)).json()).toMatchObject({ id, repeated: true });
+    const links: Record<string, string> = {};
+    for (const [ref, tipo] of [["aviso3", "CRIAR_SENHA"], ["aviso4", "REDEFINIR_SENHA"]]) {
+      const res = await post({ ...access, ref, tipo, link: `${senhaLink}${ref}` });
+      expect(res.status, tipo).toBe(202);
+      links[tipo] = (await res.json()).id;
+      expect((await post({ ...access, ref, tipo, link: `${senhaLink}${ref}` })).status, tipo).toBe(200);
+    }
+    await drain();
+    expect(mail.sent.map(({ to, subject, replyTo }) => ({ to, subject, replyTo })).sort((a, b) => a.subject.localeCompare(b.subject))).toEqual([
+      { to: "ana@lotus.com.br", subject: "Crie uma senha nova no portal de indicações do Banneg", replyTo: PORTAL_EMAIL_TO },
+      { to: "ana@lotus.com.br", subject: "Seu acesso ao portal de indicações do Banneg", replyTo: PORTAL_EMAIL_TO },
+      { to: "ana@lotus.com.br", subject: "Você foi cadastrado como indicador no portal do Banneg", replyTo: PORTAL_EMAIL_TO },
+    ]);
+    expect(mail.sent.find((m) => m.subject.startsWith("Você foi"))?.body).toBe(text.texto);
+    // Each one-time link reaches the person only in its own e-mail
+    for (const [tipo, ref] of [["CRIAR_SENHA", "aviso3"], ["REDEFINIR_SENHA", "aviso4"]]) {
+      expect(mail.sent.filter((m) => m.body.includes(`${senhaLink}${ref}`)), tipo).toHaveLength(1);
+      expect((await db.job.findUniqueOrThrow({ where: { id: links[tipo] } })).status, tipo).toBe("DONE");
+    }
+    expect(await (await post(indicador)).json()).toMatchObject({ id, repeated: true, status: "DONE" });
+    await drain();
+    expect(mail.sent).toHaveLength(3);
+  });
+
+  it("refuses an unknown kind of partner, a quem with an address and a link to create the password outside the portal", async () => {
+    for (const bad of [
+      { perfil: "SUPERVISORA" },
+      { perfil: undefined },
+      { perfil: "INDICADOR", quem: "ana@golpe.com" },
+      { perfil: "INDICADOR", quem: "Lotus @ golpe" },
+      { senhaLink: "https://golpe.com/senha/abc" },
+      { senhaLink: `${PORTAL}/senha/abc https://golpe.com` },
+    ]) {
+      const res = await post({ ...welcome, ...bad });
+      expect(res.status, JSON.stringify(bad)).toBe(400);
+    }
+    for (const tipo of ["CRIAR_SENHA", "REDEFINIR_SENHA"]) expect((await post({ ...access, tipo, link: "https://golpe.com/senha/abc" })).status, tipo).toBe(400);
+    expect((await post(welcome, "Bearer outro")).status).toBe(401);
+    expect((await post(access, "")).status).toBe(401);
+    expect(await db.job.count()).toBe(0);
   });
 
   it("the team's route still writes only to the company, and the two kinds of notice never take each other's ref", async () => {
