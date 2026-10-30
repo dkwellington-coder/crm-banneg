@@ -2,6 +2,7 @@
 // the company's own addresses, queued and sent once per ref. The validation always runs; the route and the queue only
 // when TEST_DATABASE_URL is set. The mail server is stubbed, and nothing leaves the machine.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { emailHtml } from "@/lib/email";
 import { PORTAL_EMAIL_TO, PortalEmailInput } from "@/lib/portal-email";
 
 const dbUrl = process.env.TEST_DATABASE_URL;
@@ -32,13 +33,29 @@ describe("portal notice input", () => {
     }
   });
 
-  it("keeps the subject on one line and refuses an empty notice or a bad reply address", () => {
+  it("keeps the subject on one line and refuses an empty notice", () => {
     expect(PortalEmailInput.parse({ ...notice, assunto: "Pedido\r\nBcc: x@y.com" }).assunto).toBe("Pedido Bcc: x@y.com");
     expect(PortalEmailInput.safeParse({ ...notice, assunto: " \n " }).success).toBe(false);
     expect(PortalEmailInput.safeParse({ ...notice, texto: "  " }).success).toBe(false);
     expect(PortalEmailInput.safeParse({ ...notice, ref: "" }).success).toBe(false);
-    expect(PortalEmailInput.safeParse({ ...notice, responderPara: "não é e-mail" }).success).toBe(false);
     expect(PortalEmailInput.safeParse({ ...notice, texto: "x".repeat(8001) }).success).toBe(false);
+  });
+
+  it("cuts a long subject and drops a reply address the mail server would refuse, and the notice still goes", () => {
+    expect(PortalEmailInput.parse({ ...notice, assunto: "Pedido: " + "L".repeat(400) }).assunto).toHaveLength(200);
+    for (const responderPara of ["não é e-mail", "fulano..silva@gmail.com", "fulano.@gmail.com", "a@b.c", "joão@loja.com.br", "x@loja.com?bcc=y%40z.com"]) {
+      const r = PortalEmailInput.safeParse({ ...notice, responderPara });
+      expect(r.success, responderPara).toBe(true);
+      expect(r.data?.responderPara, responderPara).toBeUndefined();
+    }
+    expect(PortalEmailInput.parse({ ...notice, responderPara: " Ana@Lotus.com.br " }).responderPara).toBe("ana@lotus.com.br");
+  });
+
+  it("turns links into links without letting a quote add attributes", () => {
+    const html = emailHtml('Veja https://banneg.com.br/"style="color:red e https://x.com/?a=1&b=2');
+    expect(html).toContain('<a href="https://banneg.com.br/">https://banneg.com.br/</a>&quot;style=&quot;color:red');
+    expect(html).toContain('<a href="https://x.com/?a=1&amp;b=2">');
+    expect(html).not.toMatch(/<a [^>]*style=/);
   });
 });
 
@@ -82,15 +99,18 @@ describe.skipIf(!dbUrl)("portal notice route and queue", () => {
   it("queues the notice, sends it to seguros@ with the store as reply-to, and sends a repeated ref once", async () => {
     const first = await post(notice);
     expect(first.status).toBe(202);
-    const { id } = await first.json();
+    const { id, status } = await first.json();
+    expect(status).toBe("PENDING");
     const again = await post(notice);
     expect(again.status).toBe(200);
-    expect((await again.json()).id).toBe(id);
+    expect(await again.json()).toMatchObject({ id, repeated: true, status: "PENDING" });
     await drain();
     expect(mail.sent).toEqual([{ to: "seguros@banneg.com.br", subject: notice.assunto, body: notice.texto, replyTo: "ana@lotus.com.br" }]);
     expect(await db.job.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: "DONE", dedupeKey: null });
-    // Sent already: the same ref after the job ran still sends nothing
-    expect((await post(notice)).status).toBe(200);
+    // Sent already: the same ref after the job ran still sends nothing, and the portal hears that it went
+    const sent = await post(notice);
+    expect(sent.status).toBe(200);
+    expect(await sent.json()).toMatchObject({ id, repeated: true, status: "DONE" });
     await drain();
     expect(mail.sent).toHaveLength(1);
     expect(await db.job.count()).toBe(1);

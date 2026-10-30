@@ -43,9 +43,11 @@ function getTransport() {
 
 /** Plain text to simple HTML: paragraphs, line breaks and clickable links. */
 export function emailHtml(body: string) {
-  const escaped = body.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // Quotes too: the text can be written by someone outside the team (the portal's notices), and a quote inside a link
+  // would end the href and add attributes
+  const escaped = body.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   return escaped
-    .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>')
+    .replace(/(https?:\/\/(?:(?!&quot;|&#39;)[^\s<])+)/g, '<a href="$1">$1</a>')
     .split(/\n{2,}/)
     .map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`)
     .join("");

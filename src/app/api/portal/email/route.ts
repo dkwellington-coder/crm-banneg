@@ -13,5 +13,5 @@ export async function POST(request: Request) {
   const parsed = PortalEmailInput.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: parsed.error.issues }, { status: 400 });
   const job = await queuePortalEmail(parsed.data);
-  return Response.json({ ok: true, id: job.id, repeated: job.repeated }, { status: job.repeated ? 200 : 202 });
+  return Response.json({ ok: true, id: job.id, repeated: job.repeated, status: job.status }, { status: job.repeated ? 200 : 202 });
 }

@@ -22,10 +22,19 @@ export const PortalEmailInput = z.object({
     .transform((v) => v.toLowerCase())
     .refine((v) => v.endsWith(TEAM_DOMAIN), { message: `O portal só manda e-mail para endereços ${TEAM_DOMAIN}.` })
     .optional(),
-  assunto: z.string().max(200).transform(oneLine).pipe(z.string().min(1)),
+  // Cut, not refused: a long store name must not hold the whole notice back
+  assunto: z.string().max(2000).transform((v) => oneLine(v).slice(0, 200).trim()).pipe(z.string().min(1)),
   texto: z.string().trim().min(1).max(8000),
-  // The store's e-mail: the team's answer goes straight to it
-  responderPara: z.email().max(200).optional(),
+  // The store's e-mail: the team's answer goes straight to it. One the mail server would not take is left out, and the
+  // notice still goes (the e-mail is also in the text).
+  responderPara: z
+    .string()
+    .max(2000)
+    .optional()
+    .transform((v) => {
+      const e = v?.trim().toLowerCase();
+      return e && z.email().max(200).safeParse(e).success ? e : undefined;
+    }),
 });
 export type PortalEmail = z.infer<typeof PortalEmailInput>;
 type Payload = { ref: string; para: string; assunto: string; texto: string; responderPara?: string };
@@ -38,12 +47,13 @@ type Payload = { ref: string; para: string; assunto: string; texto: string; resp
 export async function queuePortalEmail(input: PortalEmail) {
   const existing = await db.job.findFirst({
     where: { type: JOB, status: { notIn: ["FAILED", "CANCELLED"] }, payload: { path: ["ref"], equals: input.ref } },
-    select: { id: true },
+    select: { id: true, status: true },
   });
-  if (existing) return { id: existing.id, repeated: true };
+  // The status lets the portal tell "already sent" from "still in the queue" when it sends the same notice again
+  if (existing) return { id: existing.id, repeated: true, status: existing.status };
   const payload: Payload = { ref: input.ref, para: input.para ?? PORTAL_EMAIL_TO, assunto: input.assunto, texto: input.texto, ...(input.responderPara && { responderPara: input.responderPara }) };
   const job = await enqueue(JOB, { payload, dedupeKey: `${JOB}:${input.ref}`, maxAttempts: 6 });
-  return { id: job.id, repeated: false };
+  return { id: job.id, repeated: false, status: job.status };
 }
 
 /** The job: the notice goes to the team even in test mode, which only holds back messages to leads. */
