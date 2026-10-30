@@ -32,3 +32,26 @@ export function latestConversations(limit: number) {
       WHERE channel = 'WHATSAPP' ORDER BY "leadId", "createdAt" DESC
     ) last ORDER BY "createdAt" DESC LIMIT ${limit}`;
 }
+
+type MessageMark = { id: string; status: MessageStatus; body: string };
+
+/**
+ * A short mark of what the lead's page shows at the end of the conversation: the newest messages
+ * (with their status, so "entregue" and "lida" show up, and their size, so an audio's transcript does)
+ * and the newest AI and automation steps. It moves whenever there is something new to see.
+ */
+export function versionOf(messages: MessageMark[], events: { id: string }[]) {
+  return [...messages.map((m) => `${m.id}:${m.status}:${m.body.length}`), ...events.map((e) => e.id)].sort().join("|");
+}
+
+export const VERSION_MESSAGES = 5;
+export const VERSION_EVENTS = 3;
+
+/** The open conversation asks for this every few seconds and reloads only when it moves. */
+export async function conversationVersion(leadId: string) {
+  const [messages, events] = await Promise.all([
+    db.message.findMany({ where: { leadId }, orderBy: { createdAt: "desc" }, take: VERSION_MESSAGES, select: { id: true, status: true, body: true } }),
+    db.leadEvent.findMany({ where: { leadId }, orderBy: { createdAt: "desc" }, take: VERSION_EVENTS, select: { id: true } }),
+  ]);
+  return versionOf(messages, events);
+}

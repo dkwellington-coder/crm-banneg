@@ -33,6 +33,8 @@ import { MeetingOutcome, OUTCOME_LABEL } from "@/components/MeetingOutcome";
 import { PendingButton, SaveButton } from "./SaveButton";
 import { googleConfigured, googleLinks } from "@/lib/google";
 import { cofDeadline, dateTimeBr, sizeLabel } from "@/lib/cof";
+import { VERSION_EVENTS, VERSION_MESSAGES, versionOf } from "@/lib/inbox";
+import { LiveRefresh } from "@/components/LiveRefresh";
 
 export default function LeadPage({ params }: PageProps<"/leads/[id]">) {
   return (
@@ -393,6 +395,11 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
       // Right: one feed with WhatsApp, e-mails, notes and every AI/automation step
       chat={
         <>
+          {/* The lead answers while the page is open: the new message shows up on its own */}
+          <LiveRefresh
+            src={`/api/leads/${lead.id}/versao`}
+            version={versionOf(lead.messages.slice(-VERSION_MESSAGES), lead.events.slice(-VERSION_EVENTS))}
+          />
           {/* Reversed column: the feed opens at its end, on the newest message */}
           <div className="flex flex-1 flex-col-reverse overflow-y-auto p-4">
             <div className="space-y-2">

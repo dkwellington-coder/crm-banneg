@@ -576,6 +576,43 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(await db.job.count({ where: { leadId: lead.id, type: "sdr.reply", status: "PENDING" } })).toBe(1);
   });
 
+  it("the open conversation's version moves when the lead writes, a message is read or an audio is transcribed, and only then", async () => {
+    const { conversationVersion, versionOf, VERSION_EVENTS, VERSION_MESSAGES } = await import("@/lib/inbox");
+    nextDecision.value = null;
+    const { lead } = await leads.createLead({ name: "Lia", phone: "11955554444", source: "site" }, "teste");
+    await drain();
+    // What the lead's page computes from what it loaded is the same mark the page asks for
+    const onPage = async () => {
+      const l = await db.lead.findUniqueOrThrow({
+        where: { id: lead.id },
+        include: { messages: { orderBy: { createdAt: "desc" }, take: 300 }, events: { orderBy: { createdAt: "desc" }, take: 300 } },
+      });
+      l.messages.reverse();
+      l.events.reverse();
+      return versionOf(l.messages.slice(-VERSION_MESSAGES), l.events.slice(-VERSION_EVENTS));
+    };
+    const opened = await conversationVersion(lead.id);
+    expect(await onPage()).toBe(opened);
+    // Opening the lead marks it seen: nothing new to show, no reload
+    const { markSeen } = await import("@/lib/alerts");
+    await markSeen(lead.id);
+    expect(await conversationVersion(lead.id)).toBe(opened);
+
+    await leads.handleInbound({ phone: "5511955554444", body: "Oi, ainda tem vaga?", externalId: "live1", at: new Date() });
+    const answered = await conversationVersion(lead.id);
+    expect(answered).not.toBe(opened);
+    expect(await onPage()).toBe(answered);
+
+    const out = await db.message.findFirstOrThrow({ where: { leadId: lead.id, direction: "OUT" } });
+    await db.message.update({ where: { id: out.id }, data: { status: "READ" } });
+    const read = await conversationVersion(lead.id);
+    expect(read).not.toBe(answered);
+
+    const inbound = await db.message.findFirstOrThrow({ where: { externalId: "live1" } });
+    await db.message.update({ where: { id: inbound.id }, data: { body: "Oi, ainda tem vaga? Quero abrir em Campinas" } });
+    expect(await conversationVersion(lead.id)).not.toBe(read);
+  });
+
   it("a returning lead fills only what was missing, and a lead without a phone is matched by e-mail", async () => {
     const { lead } = await leads.createLead({ name: "Rui", phone: "(061) 98765-0000", source: "site" }, "teste");
     // The leading 0 is the long-distance prefix
