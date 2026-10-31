@@ -2,9 +2,9 @@
 // the CRM to send a partner. Only with the portal's token; a cancellation closes the lead only when nobody else's deal
 // goes with it; each notice counts once. The partner's e-mail is the CRM's own text, with only the names and a link to
 // the portal from outside, so it is the one notice that may leave the company's domain. The same route sends the
-// partner's welcome and the one-time links to create a password or a new one, also in the CRM's own words. The validation
-// and the texts always run; the routes only when TEST_DATABASE_URL is set. The mail server and the portal (fetch) are stubbed, and
-// nothing leaves the machine.
+// partner's welcome (a supervisor's too, who indicates no client herself) and the one-time links to create a password or
+// a new one, also in the CRM's own words. The validation and the texts always run; the routes only when TEST_DATABASE_URL
+// is set. The mail server and the portal (fetch) are stubbed, and nothing leaves the machine.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Lead, Stage } from "@prisma/client";
 import { emailHtml } from "@/lib/email";
@@ -136,7 +136,10 @@ describe("partner notice input", () => {
 
   it("takes the welcome of each kind of partner, with the link to create the password or without it", () => {
     expect(input.parse(welcome)).toEqual({ ...welcome, para: "ana@lotus.com.br" });
-    for (const perfil of ["LOJA", "AFILIADO", "INDICADOR"]) expect(input.parse({ ...welcome, perfil })).toMatchObject({ tipo: "BOAS_VINDAS", perfil });
+    for (const perfil of ["LOJA", "AFILIADO", "INDICADOR", "SUPERVISOR"]) expect(input.parse({ ...welcome, perfil })).toMatchObject({ tipo: "BOAS_VINDAS", perfil });
+    expect(input.parse({ ...welcome, perfil: "SUPERVISOR", senhaLink })).toEqual({ ...welcome, para: "ana@lotus.com.br", perfil: "SUPERVISOR", senhaLink });
+    // A store or an affiliate turned supervisor: the account already exists
+    expect(input.parse({ ...welcome, perfil: "SUPERVISOR", convertido: true })).toEqual({ ...welcome, para: "ana@lotus.com.br", perfil: "SUPERVISOR", convertido: true });
     expect(input.parse({ ...welcome, senhaLink: ` ${senhaLink} ` })).toEqual({ ...welcome, para: "ana@lotus.com.br", senhaLink });
     const indicador = input.parse({ ...welcome, perfil: "INDICADOR", quem: " Lotus\r\nVeículos " });
     expect(indicador).toMatchObject({ perfil: "INDICADOR", quem: "Lotus Veículos" });
@@ -176,6 +179,7 @@ describe("partner notice input", () => {
   it("refuses an unknown kind of partner, a quem that carries a link or an address, and a notice without its link", () => {
     for (const bad of [
       { perfil: "SUPERVISORA" },
+      { perfil: "supervisor" },
       { perfil: "loja" },
       { perfil: "" },
       { perfil: undefined },
@@ -184,6 +188,8 @@ describe("partner notice input", () => {
       { perfil: "INDICADOR", quem: "veja https://golpe" },
       { perfil: "INDICADOR", quem: "www.golpe" },
       { perfil: "INDICADOR", quem: "L".repeat(81) },
+      { perfil: "SUPERVISOR", convertido: "sim" },
+      { perfil: "SUPERVISOR", convertido: null },
       { nome: "Ana, pague em golpe.com" },
       { nome: "" },
       { para: "não é e-mail" },
@@ -254,6 +260,16 @@ describe("welcome and password texts", () => {
   const APPROVED = "Seu cadastro no portal de indicações do Banneg foi aprovado.";
   const COMMISSION = "cliente que você indicar e fechar com o Banneg rende comissão para você.";
   const CREATE = `Para entrar, crie sua senha por este link. Ele vale por 7 dias e só uma vez:\n${senhaLink}\n\nDepois, entre sempre com o e-mail ${para} e a senha que você criou:\n${login}`;
+  // A supervisor indicates no client herself: no quote link nor Indicar, but the signup link for her partners and Parceiros
+  const SUPERVISOR_STEPS = [
+    "Primeiros passos:",
+    "1. Em Recebimento, cadastre a chave Pix que vai receber as comissões.",
+    "2. Em Divulgar, pegue o link de cadastro para garagens e afiliados. Quem se cadastrar por ele fica abaixo de você depois da aprovação do Banneg.",
+    "3. Em Parceiros, acompanhe as indicações e as vendas da sua equipe e a sua parte.",
+    "4. Em Treinamentos, veja o básico de cada produto e o manual do portal.",
+  ].join("\n");
+  const SUPERVISOR =
+    "Você agora é supervisor no portal de indicações do Banneg. Em cada venda dos parceiros abaixo de você, o Banneg paga a você um % a mais, além da comissão deles.";
 
   it("a store or an affiliate approved: with the password chosen at signup, or a link to create one", () => {
     for (const perfil of ["LOJA", "AFILIADO"] as const) {
@@ -288,6 +304,44 @@ describe("welcome and password texts", () => {
     }
   });
 
+  it("a supervisor: paid on top of her partners' sales, with their signup link and Parceiros, never a client's steps", () => {
+    const assunto = "Seu acesso de supervisor no portal de indicações do Banneg";
+    const created = partnerNotice({ nome: "Andressa", para, tipo: "BOAS_VINDAS", perfil: "SUPERVISOR", link: login, senhaLink });
+    expect(created).toEqual({ assunto, texto: `Olá, Andressa.\n\n${SUPERVISOR}\n\n${CREATE}\n\n${SUPERVISOR_STEPS}\n\n${FORGOT}\n\n${FOOTER}` });
+    // Without the link: the password she chose at signup, as a store or an affiliate turned supervisor before approval
+    const approved = partnerNotice({ nome: "Andressa", para, tipo: "BOAS_VINDAS", perfil: "SUPERVISOR", link: login });
+    expect(approved).toEqual({
+      assunto,
+      texto: `Olá, Andressa.\n\n${SUPERVISOR}\n\nEntre com o e-mail ${para} e a senha que você escolheu no cadastro:\n${login}\n\n${SUPERVISOR_STEPS}\n\n${FORGOT}\n\n${FOOTER}`,
+    });
+    // A quem sent with her is not named, as for a store
+    expect(partnerNotice({ nome: "Andressa", para, tipo: "BOAS_VINDAS", perfil: "SUPERVISOR", link: login, senhaLink, quem: "Lotus Veículos" })).toEqual(created);
+    // A store or an affiliate turned supervisor: the same account, whose password she may never have chosen (the admin created
+    // it, and its welcome's link expired), so the e-mail says how to create one in place of the forgot line
+    const converted = partnerNotice({ nome: "Rede Sul Veículos", para, tipo: "BOAS_VINDAS", perfil: "SUPERVISOR", link: login, convertido: true });
+    expect(converted).toEqual({
+      assunto,
+      texto: `Olá, Rede Sul Veículos.\n\n${SUPERVISOR}\n\nEntre com o mesmo e-mail ${para} e a senha que você já usa no portal:\n${login}\n\n${SUPERVISOR_STEPS}\n\nAinda não tem senha ou esqueceu a sua? Na tela de entrar, use "Esqueci minha senha".\n\n${FOOTER}`,
+    });
+    expect(converted.texto).not.toContain("escolheu no cadastro");
+    expect(converted.texto).not.toContain(FORGOT);
+    // With a link to create the password, the link is what she uses
+    expect(partnerNotice({ nome: "Andressa", para, tipo: "BOAS_VINDAS", perfil: "SUPERVISOR", link: login, senhaLink, convertido: true })).toEqual(created);
+    for (const texto of [created.texto, approved.texto, converted.texto]) {
+      expect(texto).not.toContain("Em Indicar");
+      expect(texto).not.toContain("link de cotação");
+      expect(texto).not.toContain("cliente que você indicar");
+      expect(texto).not.toContain(APPROVED);
+      expect(texto).not.toContain("5.");
+    }
+    // Nor do a store's and an indicador's e-mails get any of hers
+    for (const perfil of ["LOJA", "AFILIADO", "INDICADOR"] as const) {
+      const { assunto: other, texto } = partnerNotice({ nome: "Ana", para, tipo: "BOAS_VINDAS", perfil, link: login, senhaLink });
+      expect(other, perfil).not.toBe(assunto);
+      for (const hers of ["supervisor", "Em Parceiros", "link de cadastro", "abaixo de você"]) expect(texto, `${perfil} ${hers}`).not.toContain(hers);
+    }
+  });
+
   it("the link to create the password, sent by the team", () => {
     expect(partnerNotice({ nome: "Ana", para, tipo: "CRIAR_SENHA", link: senhaLink })).toEqual({
       assunto: "Seu acesso ao portal de indicações do Banneg",
@@ -307,6 +361,10 @@ describe("welcome and password texts", () => {
     expect([...html.matchAll(/<a href="([^"]+)">/g)].map((m) => m[1])).toEqual([senhaLink, login]);
     // The quotes of "Esqueci minha senha" and "Falar com o Banneg" are only text
     expect(html).toContain("use &quot;Esqueci minha senha&quot;");
+    // A supervisor's too: her signup link is in the portal, never in the e-mail
+    const supervisor = emailHtml(partnerNotice({ nome: "Andressa", para, tipo: "BOAS_VINDAS", perfil: "SUPERVISOR", link: login, senhaLink }).texto);
+    expect([...supervisor.matchAll(/<a href="([^"]+)">/g)].map((m) => m[1])).toEqual([senhaLink, login]);
+    expect(supervisor).toContain("o Banneg paga a você um % a mais, além da comissão deles.");
     for (const tipo of ["CRIAR_SENHA", "REDEFINIR_SENHA"] as const) {
       expect([...emailHtml(partnerNotice({ nome: "Ana", para, tipo, link: senhaLink }).texto).matchAll(/<a href="([^"]+)">/g)].map((m) => m[1]), tipo).toEqual([senhaLink]);
     }
@@ -604,9 +662,38 @@ describe.skipIf(!dbUrl)("partner notice route", () => {
     expect(mail.sent).toHaveLength(3);
   });
 
+  it("queues a supervisor's welcome in the CRM's own words, once", async () => {
+    const supervisor = { ...welcome, ref: "aviso5", para: "Andressa@Gmail.com", nome: "Andressa", perfil: "SUPERVISOR", senhaLink };
+    const first = await post(supervisor);
+    expect(first.status).toBe(202);
+    const { id } = await first.json();
+    const text = partnerNotice({ nome: "Andressa", para: "andressa@gmail.com", tipo: "BOAS_VINDAS", perfil: "SUPERVISOR", link: welcome.link, senhaLink });
+    expect(text.assunto).toBe("Seu acesso de supervisor no portal de indicações do Banneg");
+    expect((await db.job.findUniqueOrThrow({ where: { id } })).payload).toEqual({ ref: "parceiro:aviso5", para: "andressa@gmail.com", ...text, responderPara: PORTAL_EMAIL_TO });
+    expect(await (await post(supervisor)).json()).toMatchObject({ ok: true, id, repeated: true });
+    await drain();
+    expect(mail.sent).toEqual([{ to: "andressa@gmail.com", subject: text.assunto, body: text.texto, replyTo: PORTAL_EMAIL_TO }]);
+    expect(await (await post(supervisor)).json()).toMatchObject({ id, repeated: true, status: "DONE" });
+    await drain();
+    expect(mail.sent).toHaveLength(1);
+  });
+
+  it("queues a converted supervisor's welcome with the password she already uses", async () => {
+    const converted = { ...welcome, ref: "aviso6", para: "rede@sul.com.br", nome: "Rede Sul Veículos", perfil: "SUPERVISOR", convertido: true };
+    const res = await post(converted);
+    expect(res.status).toBe(202);
+    const { id } = await res.json();
+    const text = partnerNotice({ nome: "Rede Sul Veículos", para: "rede@sul.com.br", tipo: "BOAS_VINDAS", perfil: "SUPERVISOR", link: welcome.link, convertido: true });
+    expect(text.texto).toContain("a senha que você já usa no portal");
+    expect((await db.job.findUniqueOrThrow({ where: { id } })).payload).toEqual({ ref: "parceiro:aviso6", para: "rede@sul.com.br", ...text, responderPara: PORTAL_EMAIL_TO });
+    await drain();
+    expect(mail.sent).toEqual([{ to: "rede@sul.com.br", subject: text.assunto, body: text.texto, replyTo: PORTAL_EMAIL_TO }]);
+  });
+
   it("refuses an unknown kind of partner, a quem with an address and a link to create the password outside the portal", async () => {
     for (const bad of [
       { perfil: "SUPERVISORA" },
+      { perfil: "supervisor" },
       { perfil: undefined },
       { perfil: "INDICADOR", quem: "ana@golpe.com" },
       { perfil: "INDICADOR", quem: "Lotus @ golpe" },
