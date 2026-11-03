@@ -140,6 +140,25 @@ describe.skipIf(!dbUrl)("resend after an account block", () => {
     expect(await resend.blockedByAccount(since)).toEqual([]);
   });
 
+  it("resends a first contact that failed the moment it moved the lead into the next stage (Meta 131042, 2026-11-01)", async () => {
+    await db.whatsAppTemplate.create({ data: { name: "banneg_cadastro_recebido", body: "Olá, {{1}}! Aqui é a Duda, do Banneg." } });
+    const sent = hoursAgo(20);
+    // The first contact goes, then moves the lead: the stage starts about a second after the message
+    const robson = await lead("Robson Guimaraes", "11955550008", { status: "AI_QUALIFYING", stageEnteredAt: new Date(sent.getTime() + 1_150) });
+    await out(robson.id, "Olá, Robson! Aqui é a Duda, do Banneg.", sent, { template: "banneg_cadastro_recebido", errorCode: 131042 });
+    // A message from before the lead really moved (minutes earlier) is still left out
+    const older = await lead("Benedito", "11955550009", { stageEnteredAt: hoursAgo(19) });
+    await out(older.id, "Oi, Benedito!", hoursAgo(20), { errorCode: 131042 });
+
+    const found = await resend.blockedByAccount(hoursAgo(resend.RESEND_HOURS));
+    expect(found.map((b) => [b.lead.name, b.messages.map((m) => m.body)])).toEqual([["Robson Guimaraes", ["Olá, Robson! Aqui é a Duda, do Banneg."]]]);
+    expect(await resend.scheduleResends()).toBe(1);
+    await db.job.updateMany({ where: { type: "whatsapp.resend" }, data: { runAt: new Date() } });
+    expect((await jobs.runDueJobs()).every((r) => r.ok)).toBe(true);
+    expect(raw).toHaveLength(1);
+    expect(raw[0]).toMatchObject({ to: "5511955550008", type: "template", template: { name: "banneg_cadastro_recebido", components: [{ parameters: [{ text: "Robson" }] }] } });
+  });
+
   it("an account block does not restart the not-delivered flow (it ran every minute during the block)", async () => {
     const paola = await lead("Paola", "11955550003");
     await out(paola.id, "Oi, faz tempo!", hoursAgo(3), { errorCode: 131049 });

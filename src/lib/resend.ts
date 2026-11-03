@@ -11,6 +11,8 @@ const SPACING_MS = 20_000;
 const REACHED = ["SENT", "DELIVERED", "READ"] as const;
 // How meeting.reminder starts its text (jobs.ts)
 const REMINDER = "Lembrete: nossa reunião";
+// A send that moves the lead (the first contact puts it in "IA qualificando") lands a moment before the move: it is this stage's
+const MOVED_BY_SEND_MS = 60_000;
 
 export type Blocked = { lead: Lead & { stage: Stage }; messages: Message[]; waitingForAi: boolean };
 
@@ -71,7 +73,7 @@ export async function blockedByAccount(since: Date, leadId?: string): Promise<Bl
     // Not a meeting reminder: its "amanhã" may no longer be true, and the one an hour before goes anyway
     const seen = new Set<string>();
     const messages = all
-      .filter((m) => m.createdAt >= lead.stageEnteredAt && !m.body.startsWith(REMINDER) && !seen.has(m.body) && seen.add(m.body))
+      .filter((m) => m.createdAt.getTime() >= lead.stageEnteredAt.getTime() - MOVED_BY_SEND_MS && !m.body.startsWith(REMINDER) && !seen.has(m.body) && seen.add(m.body))
       .slice(-3);
     if (waitingForAi || messages.length) blocked.push({ lead, messages: waitingForAi ? all.slice(-1) : messages, waitingForAi });
   }
