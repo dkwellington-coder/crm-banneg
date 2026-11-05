@@ -1,9 +1,10 @@
 import { db } from "./db";
+import { formatSlot } from "./calendar";
 
 export type Alert = {
   // Changes when there is something new to warn about (a new message from the same lead rings again)
   key: string;
-  kind: "new" | "waiting";
+  kind: "new" | "waiting" | "meeting";
   leadId: string;
   pipelineId: string;
   name: string;
@@ -14,14 +15,21 @@ export type Alert = {
 const WEEK = 7 * 86_400_000;
 
 /**
- * What needs a person right now: new leads nobody on the team has opened yet (not the ones waiting
- * in a queue or already closed), and leads waiting for an answer: they wrote and no AI is answering,
- * or the AI handed them over with a task that is due.
+ * Only what needs a person (Wellington, 2026-11-05): a lead the AI is taking care of does not light up.
+ * - waiting: the lead wrote and no AI is answering, or the AI handed it over with a task that is due;
+ * - meeting: a meeting was booked (by the AI) after the last time someone opened or handled the lead;
+ * - new: a new lead no AI takes (none in the funnel, or paused) that nobody on the team opened yet
+ *   (not the ones waiting in a queue or already closed).
  */
 export async function teamAlerts(now = new Date()) {
-  const [fresh, wrote, tasks] = await Promise.all([
+  const [fresh, wrote, tasks, booked] = await Promise.all([
     db.lead.findMany({
-      where: { seenAt: null, createdAt: { gte: new Date(now.getTime() - WEEK) }, stage: { kind: "OPEN", NOT: { key: "fila" } } },
+      where: {
+        seenAt: null,
+        createdAt: { gte: new Date(now.getTime() - WEEK) },
+        stage: { kind: "OPEN", NOT: { key: "fila" } },
+        OR: [{ sdrId: null }, { aiPaused: true }],
+      },
       orderBy: { createdAt: "desc" },
       take: 100,
       select: { id: true, pipelineId: true, name: true, phone: true, email: true, source: true, createdAt: true },
@@ -41,6 +49,18 @@ export async function teamAlerts(now = new Date()) {
       orderBy: { dueAt: "desc" },
       take: 100,
       select: { id: true, title: true, dueAt: true, lead: { select: { id: true, pipelineId: true, name: true, phone: true, alertsClearedAt: true } } },
+    }),
+    // Booked and not over yet; whoever booked it by hand already cleared the alert (scheduleMeetingAction)
+    db.meeting.findMany({
+      where: { status: "scheduled", createdAt: { gte: new Date(now.getTime() - WEEK) }, endsAt: { gt: now } },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      select: {
+        id: true,
+        startsAt: true,
+        createdAt: true,
+        lead: { select: { id: true, pipelineId: true, name: true, phone: true, email: true, seenAt: true, alertsClearedAt: true } },
+      },
     }),
   ]);
   const label = (l: { name: string | null; phone?: string | null; email?: string | null }) => l.name ?? l.phone ?? l.email ?? "Lead sem nome";
@@ -78,20 +98,40 @@ export async function teamAlerts(now = new Date()) {
       at: t.dueAt.toISOString(),
     });
   }
-  // A new lead that already wrote shows once, as waiting
-  const items = [...waiting, ...newLeads.filter((n) => !waitingIds.has(n.leadId))];
+  const after = (d: Date, mark: Date | null) => !mark || d > mark;
+  const meetings: Alert[] = [];
+  for (const m of booked) {
+    const l = m.lead;
+    if (waitingIds.has(l.id) || meetings.some((x) => x.leadId === l.id) || !after(m.createdAt, l.seenAt) || !after(m.createdAt, l.alertsClearedAt)) continue;
+    meetings.push({
+      key: `meeting:${m.id}`,
+      kind: "meeting",
+      leadId: l.id,
+      pipelineId: l.pipelineId,
+      name: label(l),
+      text: `Reunião marcada: ${formatSlot(m.startsAt)}`,
+      at: m.createdAt.toISOString(),
+    });
+  }
+  // One mark per lead: an answer it waits for first, then the meeting, then "new"
+  const marked = new Set([...waitingIds, ...meetings.map((m) => m.leadId)]);
+  const items = [...waiting, ...meetings, ...newLeads.filter((n) => !marked.has(n.leadId))];
   return {
     newLeads: items.filter((i) => i.kind === "new").length,
     waiting: waiting.length,
+    meetings: meetings.length,
     items,
   };
 }
 
 export type TeamAlerts = Awaited<ReturnType<typeof teamAlerts>>;
 
-/** The lead was opened by someone on the team: it stops counting as new. */
-export function markSeen(leadId: string) {
-  return db.lead.updateMany({ where: { id: leadId, seenAt: null }, data: { seenAt: new Date() } });
+/**
+ * The lead was opened by someone on the team: it stops counting as new. `again` moves the mark forward
+ * (the lead page does it when a meeting was booked since the last time someone opened it).
+ */
+export function markSeen(leadId: string, again = false) {
+  return db.lead.updateMany({ where: { id: leadId, ...(!again && { seenAt: null }) }, data: { seenAt: new Date() } });
 }
 
 /**

@@ -130,6 +130,47 @@ describe.skipIf(!dbUrl)("alerts, Google agenda and meetings booked by the team",
     expect((await alerts.teamAlerts()).items).toMatchObject([{ kind: "waiting", leadId: lead.id, text: "Ainda tem vaga?" }]);
   });
 
+  it("lights up only when a person must act: not while the AI takes the lead, yes when the AI books a meeting (2026-11-05)", async () => {
+    const owner = await db.user.create({ data: { name: "Wellington", email: "wellington@banneg.com.br", role: "OWNER", passwordHash: "x" } });
+    await db.sdrAgent.create({ data: { name: "Duda", persona: "SDR", active: true } });
+    const { lead } = await leads.createLead({ name: "Michel", phone: "41999990003", source: "Meta Ads" }, "Formulário");
+    expect(lead.sdrId).not.toBeNull();
+    // Duda is on it: no red mark, no sound, though nobody opened it
+    expect((await alerts.teamAlerts()).items).toEqual([]);
+    await db.message.create({ data: { leadId: lead.id, channel: "WHATSAPP", direction: "IN", body: "Quero saber mais", author: "Michel", createdAt: new Date(Date.now() - 60_000) } });
+    expect((await alerts.teamAlerts()).items).toEqual([]);
+
+    // Duda books it (as in sdr.reply: the meeting, then the AI stops on this lead): now a person must see it
+    const startsAt = new Date(Date.now() + 2 * 86_400_000);
+    const meeting = await jobs.bookMeeting(lead, owner.id, { startsAt, endsAt: new Date(startsAt.getTime() + 30 * 60_000) }, "Duda");
+    await db.message.create({ data: { leadId: lead.id, channel: "WHATSAPP", direction: "OUT", body: "Reunião marcada!", author: "Duda", createdAt: new Date(Date.now() - 50_000) } });
+    await db.lead.update({ where: { id: lead.id }, data: { aiPaused: true, status: "MEETING_BOOKED" } });
+    const a = await alerts.teamAlerts();
+    // Shown once, as the meeting, not also as a new lead without AI
+    expect(a.items).toMatchObject([{ kind: "meeting", key: `meeting:${meeting.id}`, leadId: lead.id, name: "Michel" }]);
+    expect(a.items[0].text).toMatch(/^Reunião marcada: /);
+    expect({ meetings: a.meetings, newLeads: a.newLeads, waiting: a.waiting }).toEqual({ meetings: 1, newLeads: 0, waiting: 0 });
+
+    // Opened by the team (the lead page moves the mark forward): read
+    await alerts.markSeen(lead.id, true);
+    expect((await alerts.teamAlerts()).items).toEqual([]);
+
+    // The lead writes after the booking: the AI is off, so it waits for a person's answer
+    await db.message.create({ data: { leadId: lead.id, channel: "WHATSAPP", direction: "IN", body: "Obrigado!", author: "Michel", createdAt: new Date(Date.now() - 40_000) } });
+    expect((await alerts.teamAlerts()).items).toMatchObject([{ kind: "waiting", leadId: lead.id, text: "Obrigado!" }]);
+
+    // A meeting the team books by hand does not ring for whoever booked it (scheduleMeetingAction clears after booking)
+    const later = new Date(startsAt.getTime() + 86_400_000);
+    await jobs.scheduleMeeting(await db.lead.findUniqueOrThrow({ where: { id: lead.id } }), {
+      userId: owner.id,
+      slot: { startsAt: later, endsAt: new Date(later.getTime() + 30 * 60_000) },
+      actor: "Wellington",
+      notify: false,
+    });
+    await alerts.clearAlerts(lead.id);
+    expect((await alerts.teamAlerts()).items).toEqual([]);
+  });
+
   it("does not light up for imported leads waiting in a queue", async () => {
     const { importLeads } = await import("@/lib/import");
     const pipeline = await leads.defaultPipeline();

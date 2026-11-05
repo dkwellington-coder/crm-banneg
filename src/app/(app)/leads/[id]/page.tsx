@@ -98,8 +98,10 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
   if (!lead) notFound();
   lead.messages.reverse();
   lead.events.reverse();
-  // Someone opened it: it stops lighting the "new lead" alert
-  if (!lead.seenAt) after(() => markSeen(lead.id));
+  // Someone opened it: it stops lighting the "new lead" alert, and the one for a meeting booked since the last look
+  const seenAt = lead.seenAt;
+  const meetingUnseen = !!seenAt && lead.meetings.some((m) => m.status === "scheduled" && m.createdAt > seenAt);
+  if (!seenAt || meetingUnseen) after(() => markSeen(lead.id, meetingUnseen));
   const managers = users.filter((u) => u.role === "OWNER" || u.role === "MANAGER");
   const meetingWith = managers.find((m) => m.id === lead.ownerId) ?? managers.find((m) => m.id === user.id) ?? managers[0];
   // Same rule as the red alerts: the lead wrote and no AI answers, or a task fell due, since the last time it was handled

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Bell, BellOff, BellRing, UserPlus, MessageCircle, X } from "lucide-react";
+import { Bell, BellOff, BellRing, CalendarCheck, UserPlus, MessageCircle, X } from "lucide-react";
 import type { Alert, TeamAlerts } from "@/lib/alerts";
 import { markAlertSeenAction } from "@/app/actions";
 
@@ -87,7 +87,8 @@ export function ding() {
   }
 }
 
-const TITLE: Record<Alert["kind"], string> = { new: "Lead novo", waiting: "Esperando resposta" };
+const TITLE: Record<Alert["kind"], string> = { new: "Lead novo", waiting: "Esperando resposta", meeting: "Reunião marcada" };
+const ICON = { new: UserPlus, waiting: MessageCircle, meeting: CalendarCheck } as const;
 
 /**
  * Polls what needs a person and warns when something new shows up: pop-up on the screen, a sound,
@@ -205,7 +206,7 @@ export function AlertBell({ sound, permission, onClick }: { sound: boolean; perm
   const ask = permission === "default";
   const Icon = ask ? BellRing : sound ? Bell : BellOff;
   const title = ask
-    ? "Ativar avisos: o navegador pede permissão para mostrar notificações, e o CRM toca um som quando chega lead novo ou mensagem esperando resposta."
+    ? "Ativar avisos: o navegador pede permissão para mostrar notificações, e o CRM toca um som quando um lead precisa de alguém do time: mensagem esperando resposta, reunião marcada ou lead novo sem IA."
     : sound
       ? "Som dos avisos ligado. Clique para silenciar."
       : "Som dos avisos desligado. Clique para ligar.";
@@ -230,7 +231,7 @@ export function AlertToasts({ toasts, dismiss, seen }: { toasts: Alert[]; dismis
   return (
     <div className="fixed bottom-24 right-4 z-[60] flex w-[340px] max-w-[calc(100vw-2rem)] flex-col gap-2 md:bottom-4">
       {toasts.map((a) => {
-        const Icon = a.kind === "new" ? UserPlus : MessageCircle;
+        const Icon = ICON[a.kind];
         return (
           <div key={a.key} className="flex gap-3 rounded-2xl border border-red-200 bg-white p-3 shadow-xl ring-1 ring-black/5">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-600 text-white">

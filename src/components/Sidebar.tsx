@@ -41,10 +41,11 @@ export function Sidebar() {
   });
   const fresh = alerts.data?.newLeads ?? 0;
   const waiting = alerts.data?.waiting ?? 0;
+  const meetings = alerts.data?.meetings ?? 0;
 
   // "(3) BANNEG CRM" in the browser tab, so the alert shows even with another tab open
   useEffect(() => {
-    const total = fresh + waiting;
+    const total = fresh + waiting + meetings;
     const apply = () => {
       // Mid-navigation the title can be empty for a moment. "(3) " would read back as "(3)" (the browser
       // trims it), never match, and set it again forever, freezing the tab: so never leave the name empty.
@@ -57,10 +58,13 @@ export function Sidebar() {
     const watch = new MutationObserver(apply);
     watch.observe(document.head, { subtree: true, childList: true, characterData: true });
     return () => watch.disconnect();
-  }, [fresh, waiting, path]);
+  }, [fresh, waiting, meetings, path]);
 
   const badges: Record<string, { count: number; title: string }> = {
-    "/funil": { count: fresh + waiting, title: `${fresh} lead(s) novo(s) e ${waiting} esperando resposta` },
+    "/funil": {
+      count: fresh + waiting + meetings,
+      title: `${waiting} esperando resposta, ${meetings} com reunião marcada e ${fresh} lead(s) novo(s) sem IA`,
+    },
     "/conversas": { count: waiting, title: `${waiting} esperando resposta de uma pessoa` },
   };
   const isActive = (i: Item) => path.startsWith(i.href) || !!i.match?.some((m) => path.startsWith(m));

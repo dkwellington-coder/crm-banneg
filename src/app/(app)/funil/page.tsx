@@ -42,7 +42,7 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
     db.user.findMany({ select: { id: true, name: true } }),
     db.sdrAgent.findMany({ select: { id: true, name: true } }),
   ]);
-  // Red marks: which funnel has someone new or waiting, and which card
+  // Red marks: which funnel has a lead that needs a person, and which card
   const alertBy = new Map(alerts.items.map((a) => [a.leadId, a.kind]));
   const where: Prisma.LeadWhereInput = {
     ...(q && leadSearch(q)),
@@ -106,7 +106,7 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
           <h1 className="text-2xl font-normal tracking-tight text-slate-900 md:text-[28px]">{pipeline.name}</h1>
           <p className="mt-0.5 text-sm text-slate-500 max-md:hidden">
             {unread
-              ? `${total} ${total === 1 ? "lead precisa" : "leads precisam"} de atenção neste funil: novos sem abrir ou esperando resposta`
+              ? `${total} ${total === 1 ? "lead precisa" : "leads precisam"} de uma pessoa neste funil: esperando resposta, reunião marcada ou novo sem IA`
               : `${total} ${total === 1 ? "lead" : "leads"} neste funil · arraste o card para mudar de etapa`}
           </p>
         </div>
@@ -125,7 +125,7 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
               {p.name}
               {alertsIn(p.id) > 0 && (
                 <span
-                  title="Leads novos ou esperando resposta neste funil"
+                  title="Leads que precisam de uma pessoa neste funil"
                   className="ml-1 rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white"
                 >
                   {alertsIn(p.id)}
@@ -144,7 +144,7 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
           {mine && <input type="hidden" name="meus" value="1" />}
           {unread && <input type="hidden" name="naolidos" value="1" />}
         </form>
-        <Link href={link({ naolidos: unread ? null : "1" })} className={tabCls(unread)} title="Só os leads novos que ninguém abriu e os que esperam resposta">
+        <Link href={link({ naolidos: unread ? null : "1" })} className={tabCls(unread)} title="Só os leads que precisam de uma pessoa: esperando resposta, tarefa vencida, reunião marcada pela IA ou lead novo sem IA. Os que a IA está levando não aparecem.">
           <BellRing size={16} /> Só não lidos
           {alertsIn(pipeline.id) > 0 && (
             <span className="ml-1 rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">{alertsIn(pipeline.id)}</span>

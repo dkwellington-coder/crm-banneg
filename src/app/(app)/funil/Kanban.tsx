@@ -24,7 +24,7 @@ export type KanbanCard = {
   lastActivity: string;
   value: number | null;
   // Needs a person: nobody opened it yet, or it is waiting for an answer
-  alert: "new" | "waiting" | null;
+  alert: "new" | "waiting" | "meeting" | null;
 };
 
 export type KanbanColumn = {
@@ -59,6 +59,8 @@ const TEMP: Record<string, string> = {
   morno: "bg-amber-100 text-amber-700",
   frio: "bg-sky-100 text-sky-700",
 };
+
+const ALERT_LABEL = { new: "Lead novo", waiting: "Esperando resposta", meeting: "Reunião marcada" } as const;
 
 type Move = { leadId: string; to: string };
 
@@ -202,7 +204,7 @@ export function Kanban({ columns }: { columns: KanbanColumn[] }) {
                           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500 opacity-75" />
                           <span className="relative inline-flex h-2 w-2 rounded-full bg-red-600" />
                         </span>
-                        {l.alert === "new" ? "Lead novo" : "Esperando resposta"}
+                        {ALERT_LABEL[l.alert]}
                         <span
                           role="button"
                           tabIndex={0}
