@@ -63,13 +63,15 @@ export type Plan = {
   handoffTask: string | null;
   startNurture: boolean;
   stopAi: boolean;
+  // The lead's meeting still on the agenda comes off it: desmarcada, or remarcada for plan.slot (after the new booking)
+  cancelMeeting: boolean;
 };
 
 /**
  * Turns the SDR's decision into concrete changes. Pure, so every branch is unit-tested;
  * the model only proposes, this function decides what the CRM actually does.
  */
-export function planFromDecision(d: SdrDecision, slots: Slot[]): Plan {
+export function planFromDecision(d: SdrDecision, slots: Slot[], { hasMeeting = false }: { hasMeeting?: boolean } = {}): Plan {
   const { name, email, city, state, ...rest } = d.extracted;
   const fields: Plan["fields"] = {};
   if (name) fields.name = name;
@@ -78,9 +80,11 @@ export function planFromDecision(d: SdrDecision, slots: Slot[]): Plan {
   if (state) fields.state = state;
   const qualification = Object.fromEntries(Object.entries(rest).filter(([, v]) => !!v)) as Record<string, string>;
 
+  // With a meeting on the agenda the AI keeps answering (questions, a new time, a cancel), and the lead stays in
+  // "Reunião marcada" while it talks: only a person moves it on, to "Com o gerente", where the AI stops
   const base: Plan = {
-    status: "AI_QUALIFYING",
-    stageKey: STAGE_KEYS.AI_QUALIFYING,
+    status: hasMeeting ? "MEETING_BOOKED" : "AI_QUALIFYING",
+    stageKey: hasMeeting ? STAGE_KEYS.MEETING_BOOKED : STAGE_KEYS.AI_QUALIFYING,
     reply: d.reply.trim(),
     fields,
     qualification,
@@ -88,26 +92,36 @@ export function planFromDecision(d: SdrDecision, slots: Slot[]): Plan {
     handoffTask: null,
     startNurture: false,
     stopAi: false,
+    cancelMeeting: false,
   };
 
   switch (d.decision) {
     case "offer_meeting":
       // The times already went in the reply, so the lead is where the AI says: a lead who asks to talk goes straight to
       // the meeting, whatever the score (the stage's "sem resposta" messages would otherwise talk over the booking)
-      if (slots.length === 0) return base;
+      // A lead with a meeting asking for another time keeps the one it has until it picks a new one
+      if (slots.length === 0 || hasMeeting) return base;
       return { ...base, status: "QUALIFIED", stageKey: STAGE_KEYS.QUALIFIED };
     case "book_meeting": {
       const slot = d.slotIndex !== null ? slots[d.slotIndex] : undefined;
       if (!slot) {
         return {
           ...base,
-          status: "QUALIFIED",
-          stageKey: STAGE_KEYS.QUALIFIED,
-          handoffTask: "Lead quis marcar reunião, mas o horário escolhido não está mais livre. Confirme um novo horário.",
+          ...(!hasMeeting && { status: "QUALIFIED", stageKey: STAGE_KEYS.QUALIFIED }),
+          handoffTask: hasMeeting
+            ? "Lead quis remarcar a reunião, mas o horário escolhido não está mais livre. Confirme um novo horário."
+            : "Lead quis marcar reunião, mas o horário escolhido não está mais livre. Confirme um novo horário.",
         };
       }
-      return { ...base, status: "MEETING_BOOKED", stageKey: STAGE_KEYS.MEETING_BOOKED, slot, stopAi: true };
+      // The AI goes on following the lead after booking: it may ask for another time or cancel. A new time
+      // replaces the meeting it had
+      return { ...base, status: "MEETING_BOOKED", stageKey: STAGE_KEYS.MEETING_BOOKED, slot, cancelMeeting: hasMeeting };
     }
+    case "cancel_meeting":
+      // Nothing to cancel: just a reply
+      if (!hasMeeting) return base;
+      // Back to "needs a meeting": the AI offers new times when the lead wants them
+      return { ...base, status: "QUALIFIED", stageKey: STAGE_KEYS.QUALIFIED, cancelMeeting: true };
     case "handoff":
       return {
         ...base,

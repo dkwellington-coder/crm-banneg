@@ -123,7 +123,7 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(l.qualification).toMatchObject({ capital: "R$ 300 mil" });
     expect(sent.at(-1)).toMatchObject({ type: "text" });
 
-    // 3. Lead picks a slot; meeting is booked, reminders scheduled and the AI steps back
+    // 3. Lead picks a slot; meeting is booked, reminders scheduled, and the AI keeps following the lead
     await leads.handleInbound({ phone: "5541999990000", body: "Pode ser o 0", externalId: "in2", at: new Date() });
     nextDecision.value = { ...nextDecision.value, decision: "book_meeting", slotIndex: 0, reply: "Combinado, reunião marcada!" };
     await drain();
@@ -131,18 +131,63 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(booked.stage.key).toBe("reuniao");
     expect(booked.meetings).toHaveLength(1);
     expect(booked.owner?.name).toBe("Gerente");
-    expect(booked.aiPaused).toBe(true);
+    expect(booked.aiPaused).toBe(false);
     // The confirmation carries the booked time itself, whatever the AI wrote
     expect(sent.map((m) => m.body)).toContainEqual(expect.stringMatching(/^Combinado, reunião marcada!\n\nReunião: .+ \(horário de Brasília\)/));
     expect(await db.job.count({ where: { leadId: lead.id, type: "meeting.reminder" } })).toBeGreaterThan(0);
     const timeline = await db.leadEvent.findMany({ where: { leadId: lead.id, type: "ai.decision" } });
     expect(timeline.map((e) => e.summary)).toEqual([expect.stringContaining("Ofereceu reunião"), expect.stringContaining("Marcou reunião")]);
 
-    // 4. The team cancels it: reminders stop and it no longer counts as booked
-    expect(await jobs.cancelMeeting(booked.meetings[0].id, "Gerente")).toBe("Reunião desmarcada.");
-    expect(await db.meeting.findUniqueOrThrow({ where: { id: booked.meetings[0].id } })).toMatchObject({ status: "canceled" });
+    // 4. The lead asks for another time: the AI answers, books it and the old meeting leaves the agenda
+    await leads.handleInbound({ phone: "5541999990000", body: "Vou precisar mudar, pode ser no outro horário?", externalId: "in3", at: new Date() });
+    nextDecision.value = { ...nextDecision.value, decision: "book_meeting", slotIndex: 1, reply: "Sem problema, remarquei!" };
+    await drain();
+    const moved = await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true, meetings: { orderBy: { createdAt: "asc" } } } });
+    expect(moved.stage.key).toBe("reuniao");
+    expect(moved.meetings.map((m) => m.status)).toEqual(["canceled", "scheduled"]);
+    expect(moved.meetings[1].startsAt).not.toEqual(moved.meetings[0].startsAt);
+    expect(sent.map((m) => m.body)).toContainEqual(expect.stringMatching(/^Sem problema, remarquei!\n\nReunião: /));
+    expect(await db.job.count({ where: { leadId: lead.id, type: "meeting.reminder", status: "PENDING", dedupeKey: { startsWith: `reminder:${moved.meetings[0].id}:` } } })).toBe(0);
+
+    // 5. A question in between: it answers and the lead stays in Reunião marcada
+    await leads.handleInbound({ phone: "5541999990000", body: "Precisa levar algum documento?", externalId: "in4", at: new Date() });
+    nextDecision.value = { ...nextDecision.value, decision: "continue", slotIndex: null, reply: "Não precisa, só entrar no link." };
+    await drain();
+    expect(sent.at(-1)?.body).toBe("Não precisa, só entrar no link.");
+    expect((await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } })).stage.key).toBe("reuniao");
+
+    // 6. The lead cancels: off the agenda, reminders stop, back to Qualificado for new times later
+    await leads.handleInbound({ phone: "5541999990000", body: "Vou ter que desmarcar", externalId: "in5", at: new Date() });
+    nextDecision.value = { ...nextDecision.value, decision: "cancel_meeting", reply: "Tudo bem, desmarquei. Quer ver outro dia?" };
+    await drain();
+    const canceled = await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true, meetings: true } });
+    expect(canceled.stage.key).toBe("qualificado");
+    expect(canceled.meetings.every((m) => m.status === "canceled")).toBe(true);
     expect(await db.job.count({ where: { leadId: lead.id, type: "meeting.reminder", status: "PENDING" } })).toBe(0);
-    expect(await jobs.cancelMeeting(booked.meetings[0].id, "Gerente")).toBe("Essa reunião já não estava marcada.");
+    expect(await jobs.cancelMeeting(moved.meetings[1].id, "Gerente")).toBe("Essa reunião já não estava marcada.");
+  });
+
+  it("stops following the lead once it is with the gerente", async () => {
+    const { lead } = await leads.createLead({ name: "Rita Melo", phone: "11955554444", source: "site" }, "teste");
+    const stage = (key: string) => db.stage.findFirstOrThrow({ where: { pipelineId: lead.pipelineId, key } });
+    await drain();
+    await leads.moveLead(lead.id, (await stage("reuniao")).id, "Duda");
+    expect((await db.lead.findUniqueOrThrow({ where: { id: lead.id } })).aiPaused).toBe(false);
+    const replies = () => db.job.count({ where: { leadId: lead.id, type: "sdr.reply" } });
+
+    // In Reunião marcada the AI answers
+    await leads.handleInbound({ phone: "5511955554444", body: "Confirmado!", externalId: "r1", at: new Date() });
+    expect(await replies()).toBe(1);
+    await db.job.deleteMany({ where: { leadId: lead.id, type: "sdr.reply" } });
+
+    // Dragged straight to a stage after it (the status still says "meeting booked"), or to the gerente: a person answers
+    await leads.moveLead(lead.id, (await stage("proposta")).id, "Gerente");
+    expect((await db.lead.findUniqueOrThrow({ where: { id: lead.id } })).status).toBe("MEETING_BOOKED");
+    await leads.handleInbound({ phone: "5511955554444", body: "Recebi a proposta", externalId: "r2", at: new Date() });
+    await leads.moveLead(lead.id, (await stage("com_gerente")).id, "Gerente");
+    await leads.handleInbound({ phone: "5511955554444", body: "Oi, alguma novidade?", externalId: "r3", at: new Date() });
+    expect(await replies()).toBe(0);
+    expect(await db.task.count({ where: { leadId: lead.id } })).toBeGreaterThan(0);
   });
 
   it("asks a lead who missed the meeting to book again, then nurtures it", async () => {

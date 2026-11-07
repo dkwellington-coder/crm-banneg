@@ -42,11 +42,45 @@ describe("planFromDecision", () => {
     expect(p.stageKey).toBe("qualificado");
   });
 
-  it("books the chosen slot and stops the AI", () => {
+  it("books the chosen slot and keeps the AI following the lead", () => {
     const p = planFromDecision(decision({ decision: "book_meeting", score: 85, slotIndex: 1 }), slots);
     expect(p.status).toBe("MEETING_BOOKED");
     expect(p.slot).toEqual(slots[1]);
-    expect(p.stopAi).toBe(true);
+    expect(p.stopAi).toBe(false);
+    expect(p.cancelMeeting).toBe(false);
+  });
+
+  describe("with a meeting already booked", () => {
+    const booked = { hasMeeting: true };
+
+    it("keeps the lead in Reunião marcada while it talks or asks for other times", () => {
+      expect(planFromDecision(decision({}), slots, booked)).toMatchObject({ status: "MEETING_BOOKED", stageKey: "reuniao", stopAi: false, cancelMeeting: false });
+      expect(planFromDecision(decision({ decision: "offer_meeting" }), slots, booked)).toMatchObject({ stageKey: "reuniao", cancelMeeting: false });
+    });
+
+    it("reschedules: books the new time and cancels the old meeting", () => {
+      const p = planFromDecision(decision({ decision: "book_meeting", slotIndex: 0 }), slots, booked);
+      expect(p).toMatchObject({ status: "MEETING_BOOKED", stageKey: "reuniao", slot: slots[0], cancelMeeting: true, stopAi: false });
+    });
+
+    it("keeps the meeting when the new time is no longer free", () => {
+      const p = planFromDecision(decision({ decision: "book_meeting", slotIndex: 9 }), slots, booked);
+      expect(p).toMatchObject({ stageKey: "reuniao", slot: null, cancelMeeting: false });
+      expect(p.handoffTask).toMatch(/remarcar/);
+    });
+
+    it("cancels: the meeting leaves the agenda and the lead goes back to Qualificado", () => {
+      const p = planFromDecision(decision({ decision: "cancel_meeting" }), slots, booked);
+      expect(p).toMatchObject({ status: "QUALIFIED", stageKey: "qualificado", cancelMeeting: true, stopAi: false });
+    });
+
+    it("still stops on a handoff to the gerente", () => {
+      expect(planFromDecision(decision({ decision: "handoff", reason: "quer falar com alguém" }), slots, booked)).toMatchObject({ stageKey: "com_gerente", stopAi: true });
+    });
+  });
+
+  it("ignores a cancel when there is no meeting", () => {
+    expect(planFromDecision(decision({ decision: "cancel_meeting" }), slots)).toMatchObject({ stageKey: "qualificando", cancelMeeting: false });
   });
 
   it("creates a task instead of booking a slot that does not exist", () => {

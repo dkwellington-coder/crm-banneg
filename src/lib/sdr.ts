@@ -21,7 +21,7 @@ export const SdrDecision = z.object({
   }),
   score: z.number().int().min(0).max(100),
   temperature: z.enum(["frio", "morno", "quente"]),
-  decision: z.enum(["continue", "offer_meeting", "book_meeting", "handoff", "nurture", "disqualify"]),
+  decision: z.enum(["continue", "offer_meeting", "book_meeting", "cancel_meeting", "handoff", "nurture", "disqualify"]),
   slotIndex: z.number().int().nullable().describe("Com book_meeting: o número, na lista \"Horários livres\", do horário que o lead escolheu ou pediu."),
   handoffTo: z
     .string()
@@ -84,13 +84,15 @@ ${questions.map((q) => `- ${q}`).join("\n")}
 Como decidir (campo "decision"):
 - continue: ainda faltam dados ou o lead está tirando dúvidas.
 - offer_meeting: o lead tem perfil (score >= ${ctx.settings.qualifyScore}) ou pediu para conversar ou marcar. Ofereça 3 opções da lista "Horários livres" em dias ou períodos diferentes (manhã e tarde), numeradas 1, 2 e 3, e diga que ele pode sugerir outro dia ou horário.
-- book_meeting: o lead escolheu uma das opções ou pediu um dia e horário que está na lista "Horários livres", mesmo que você não tenha oferecido. Preencha slotIndex com o número desse horário na lista e confirme dia e hora na resposta. Se o horário pedido não está na lista, ofereça os livres mais próximos dele.
+- book_meeting: o lead escolheu uma das opções ou pediu um dia e horário que está na lista "Horários livres", mesmo que você não tenha oferecido. Preencha slotIndex com o número desse horário na lista e confirme dia e hora na resposta. Se o horário pedido não está na lista, ofereça os livres mais próximos dele. Se o lead já tem reunião marcada, isto a remarca: a antiga sai da agenda sozinha.
+- cancel_meeting: o lead já tem reunião marcada e pediu para desmarcar, sem escolher outro horário. Confirme que desmarcou e pergunte, sem insistir, se ele quer marcar outro dia.
 - handoff: o lead pede para falar com uma pessoa, reclama, quer negociar valores ou faz uma pergunta que a base de conhecimento não responde. Diga que o gerente de negócios vai continuar o atendimento.${subjects}
 - nurture: o lead tem interesse mas não agora (prazo longo, sem capital no momento). Agradeça e diga que vai mandar materiais.
 - disqualify: fora do perfil, número errado ou pediu para não receber mensagens. Despeça-se com educação.
 
 Regras:
 - Lead que diz que quer conversar ou marcar (escrevendo, ou tocando num botão como "Quero conversar" ou "Marcar conversa") vai direto para a reunião: nesta mesma resposta, ofereça os horários (offer_meeting) ou marque o dia e a hora que ele pediu (book_meeting). Não mande antes outro material, vídeo ou pergunta de qualificação. O que faltar saber, o gerente pergunta na reunião.
+- Depois que a reunião está marcada, você continua acompanhando o lead até o gerente assumir. Se ele pedir para mudar o horário, ofereça os horários livres (offer_meeting) ou marque o que ele pediu (book_meeting); se pedir para desmarcar, use cancel_meeting. Se ele só confirmar, agradecer ou tirar uma dúvida, responda (continue) sem recomeçar a qualificação e sem oferecer outra reunião.
 - Use somente as informações da base de conhecimento abaixo. Nunca invente preço, prazo, retorno financeiro ou condição. Se não souber, use handoff.
 - Mensagens curtas (até 3 frases, ou o texto pronto da base quando houver um), tom cordial e humano, português do Brasil, sem emojis em excesso.
 - O nome ${ctx.settings.companyName} é sempre masculino: "o ${ctx.settings.companyName}", "no ${ctx.settings.companyName}", "do ${ctx.settings.companyName}". Nunca "a", "na" ou "da ${ctx.settings.companyName}".
@@ -160,7 +162,9 @@ ${ctx.meetings.map((m) => `- ${formatSlot(m.startsAt)}: ${MEETING_STATUS[m.statu
 ${
   ctx.meetings.at(-1)?.status === "no_show"
     ? "O lead faltou à última reunião. Não cobre o motivo: se ele quiser remarcar, ofereça novos horários da lista (offer_meeting).\n"
-    : ""
+    : ctx.meetings.some((m) => m.status === "scheduled")
+      ? "O lead já tem reunião marcada. Para mudar o horário use offer_meeting ou book_meeting; para desmarcar, cancel_meeting.\n"
+      : ""
 }`
     : "";
   // The funnel's id is for the CRM, not for the conversation
