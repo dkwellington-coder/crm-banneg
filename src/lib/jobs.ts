@@ -107,7 +107,9 @@ const handlers: Record<string, Handler> = {
     const current = await db.lead.findUniqueOrThrow({ where: { id: lead.id } });
     if (current.aiPaused || current.whatsappOptOut || isClosed(current) || current.stageId !== lead.stageId)
       return "Ignorado: o lead mudou enquanto a IA respondia (atendido, pausado, encerrado, movido ou pediu para parar).";
-    const plan = planFromDecision(decision, slots);
+    // The meetings still on the agenda: the AI follows the lead after booking and may move or cancel them
+    const scheduled = await db.meeting.findMany({ where: { leadId: lead.id, status: "scheduled" }, select: { id: true } });
+    const plan = planFromDecision(decision, slots, { hasMeeting: scheduled.length > 0 });
 
     await db.lead.update({
       where: { id: lead.id },
@@ -148,6 +150,8 @@ const handlers: Record<string, Handler> = {
     // From here the answer went out: a failure below must never run the turn again (a second, different answer)
     try {
       if (plan.stopAi) await db.lead.update({ where: { id: lead.id }, data: { aiPaused: true } });
+      // Remarcada (the new one is booked above) or desmarcada: the old meeting leaves the agenda and its reminders stop
+      if (plan.cancelMeeting) for (const m of scheduled) await cancelMeeting(m.id, agent.name);
       // The lead asked for the COF before the meeting: it goes by e-mail now, once for the same files
       if (decision.sendCof) {
         const result = await sendCof(await db.lead.findUniqueOrThrow({ where: { id: lead.id } }), agent.name, { once: true });
@@ -308,6 +312,7 @@ const decisionLabel: Record<string, string> = {
   continue: "Qualificando",
   offer_meeting: "Ofereceu reunião",
   book_meeting: "Marcou reunião",
+  cancel_meeting: "Desmarcou reunião",
   handoff: "Passou para o gerente",
   nurture: "Enviou para nutrição",
   disqualify: "Descartou",

@@ -12,6 +12,7 @@ const DECISION: Record<string, { label: string; cls: string }> = {
   continue: { label: "Continua qualificando", cls: "bg-sky-50 text-sky-700" },
   offer_meeting: { label: "Ofereceu reunião", cls: "bg-violet-50 text-violet-700" },
   book_meeting: { label: "Marcou reunião", cls: "bg-emerald-50 text-emerald-700" },
+  cancel_meeting: { label: "Desmarcou reunião", cls: "bg-amber-50 text-amber-700" },
   handoff: { label: "Passou para o gerente", cls: "bg-pink-50 text-pink-700" },
   nurture: { label: "Mandou para nutrição", cls: "bg-slate-100 text-slate-700" },
   disqualify: { label: "Descartou", cls: "bg-red-50 text-red-700" },

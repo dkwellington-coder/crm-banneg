@@ -308,13 +308,29 @@ export async function handleInbound(input: {
     await ensureTask(lead.id, lead.ownerId, forTeam);
     return lead;
   }
-  if (lead.sdrId && !lead.aiPaused && ["NEW", "AI_QUALIFYING", "QUALIFIED", "NURTURING"].includes(lead.status)) {
+  if (await aiFollows(lead)) {
     // Wait a few seconds so several short messages get one answer
     await enqueueDebounced("sdr.reply", lead.id, Number(process.env.SDR_DEBOUNCE_MS ?? 15_000));
   } else {
     await ensureTask(lead.id, lead.ownerId, ANSWER_TASK);
   }
   return lead;
+}
+
+// The stages the AI itself moves a lead through before a person takes it over
+const AI_STAGE_KEYS: string[] = [STAGE_KEYS.NEW, STAGE_KEYS.AI_QUALIFYING, STAGE_KEYS.QUALIFIED, STAGE_KEYS.MEETING_BOOKED];
+
+/**
+ * The AI answers the lead: while it qualifies and also after it booked the meeting, since the lead may ask to change
+ * the time or cancel. It stops once a person has the lead ("Com o gerente" and the stages after it) or answers it.
+ */
+async function aiFollows(lead: Lead) {
+  if (!lead.sdrId || lead.aiPaused) return false;
+  if (["NEW", "AI_QUALIFYING", "QUALIFIED", "NURTURING"].includes(lead.status)) return true;
+  if (lead.status !== "MEETING_BOOKED") return false;
+  // Moved on by the team to a stage of its own (Proposta enviada...) the status may still say "meeting booked"
+  const stage = await db.stage.findUnique({ where: { id: lead.stageId }, select: { key: true } });
+  return !!stage?.key && AI_STAGE_KEYS.includes(stage.key);
 }
 
 /**

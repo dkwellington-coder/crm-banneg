@@ -46,5 +46,9 @@ describe("SDR prompt", () => {
     expect(turn("no_show")).toContain("O lead faltou à última reunião");
     expect(turn("done")).toContain("20/10, 14:30: realizada");
     expect(turn("done")).not.toContain("faltou");
+    // Booked: the AI keeps following, and knows it can move or cancel it
+    expect(turn("scheduled")).toContain("O lead já tem reunião marcada");
+    expect(turn("scheduled")).toContain("cancel_meeting");
+    expect(turn("done")).not.toContain("já tem reunião marcada");
   });
 });
