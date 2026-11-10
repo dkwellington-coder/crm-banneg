@@ -6,7 +6,7 @@ import { isClosed, moveToSendError, SEND_ERROR_STAGE, sendWhatsApp, type SendOut
 import { isUndelivered, isWindowOpen } from "./whatsapp";
 import { whatsappNumberFor } from "./integrations";
 import { getSettings, isTestContact, messageVars } from "./settings";
-import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, meetingOptions, pickOwner, type Slot } from "./calendar";
+import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, meetingDescription, meetingOptions, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
 import { isSubjectHandoffKey, NO_SHOW_STAGE, planFromDecision, referredByPerson, STAGE_KEYS, subjectHandoffStage } from "./plan";
 import { ensureTask, funnelStart, moveLead, sdrFor, stageByKey } from "./leads";
@@ -515,12 +515,14 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig, 
 
 export async function bookMeeting(lead: Lead, userId: string, slot: Slot, actor: string) {
   const user = await db.user.findUniqueOrThrow({ where: { id: userId } });
+  // As it is now: the AI's turn that books has just written the summary
+  const current = await db.lead.findUnique({ where: { id: lead.id }, include: { pipeline: { select: { name: true } } } });
   let calendar: { id: string; meetLink: string | null } | null = null;
   try {
     calendar = await createCalendarEvent({
       user,
       summary: `Reunião Banneg · ${lead.name ?? lead.phone}`,
-      description: `Agendada por ${actor} pelo CRM.\n\n${lead.aiSummary ?? ""}`,
+      description: meetingDescription(current ?? lead, { actor, pipeline: current?.pipeline.name }),
       slot,
       attendeeEmail: lead.email,
       guests: (await getSettings()).meetingGuests,

@@ -146,6 +146,33 @@ const guestList = (emails: (string | null | undefined)[]) =>
  * manager invited). Google e-mails the invitation to the lead when the lead has an e-mail, and to the
  * guests set in Ajustes for every meeting.
  */
+const CRM_URL = (process.env.PUBLIC_BASE_URL ?? "https://crm-banneg-banneg.vercel.app").replace(/\/$/, "");
+
+/** 5531991084090 → (31) 99108-4090; anything else as it came. */
+export function phoneLabel(phone: string) {
+  const m = phone.replace(/\D/g, "").match(/^55(\d{2})(\d{4,5})(\d{4})$/);
+  return m ? `(${m[1]}) ${m[2]}-${m[3]}` : phone;
+}
+
+/**
+ * What the invitation says, so whoever runs the meeting (Wellington, Odair, the guests in Ajustes) has the client at hand:
+ * name, WhatsApp, e-mail, funnel, the lead's page in the CRM and the AI's summary (Wellington, 2026-11-10).
+ */
+export function meetingDescription(
+  lead: { id: string; name: string | null; phone: string | null; email: string | null; aiSummary: string | null },
+  opts: { actor: string; pipeline?: string | null },
+) {
+  const lines = [
+    `Cliente: ${lead.name ?? "sem nome"}`,
+    lead.phone && `WhatsApp: ${phoneLabel(lead.phone)} · https://wa.me/${lead.phone.replace(/\D/g, "")}`,
+    lead.email && `E-mail: ${lead.email}`,
+    opts.pipeline && `Funil: ${opts.pipeline}`,
+    `Ficha no CRM: ${CRM_URL}/leads/${lead.id}`,
+  ].filter(Boolean);
+  const summary = lead.aiSummary?.trim();
+  return [lines.join("\n"), summary && `Resumo:\n${summary}`, `Agendada por ${opts.actor} pelo CRM.`].filter(Boolean).join("\n\n");
+}
+
 export async function createCalendarEvent(input: {
   user: AgendaUser;
   summary: string;

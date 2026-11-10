@@ -257,6 +257,31 @@ describe.skipIf(!dbUrl)("alerts, Google agenda and meetings booked by the team",
     expect(eventAttendees).toEqual([{ email: "socio@banneg.com.br" }]);
     await book("Caio", "41999990002", "caio@x.com", new Date("2026-10-19T15:00:00Z"));
     expect(eventAttendees).toEqual([{ email: "caio@x.com" }, { email: "socio@banneg.com.br" }]);
+
+    // The invitation carries the client: name, WhatsApp, e-mail, funnel, the CRM page and the summary (2026-11-10)
+    const caio = await db.lead.findFirstOrThrow({ where: { name: "Caio" }, include: { pipeline: true } });
+    const created = googleCalls.filter((c) => c.method === "POST" && c.url.includes("/events?")).at(-1)!;
+    const description = (created.body as { description: string }).description;
+    expect(description).toContain("Cliente: Caio");
+    expect(description).toContain(`WhatsApp: (41) 99999-0002 · https://wa.me/${caio.phone}`);
+    expect(description).toContain("E-mail: caio@x.com");
+    expect(description).toContain(`Funil: ${caio.pipeline.name}`);
+    expect(description).toContain(`/leads/${caio.id}`);
+    expect(description).toContain("Agendada por Wellington pelo CRM.");
+  });
+
+  it("puts the AI's newest summary in the invitation", async () => {
+    const { meetingDescription, phoneLabel } = await import("@/lib/calendar");
+    expect(phoneLabel("5537991150080")).toBe("(37) 99115-0080");
+    expect(phoneLabel("553799115008")).toBe("(37) 9911-5008");
+    expect(phoneLabel("+1 555 0100")).toBe("+1 555 0100");
+    const text = meetingDescription(
+      { id: "l1", name: "Ana", phone: null, email: null, aiSummary: "Quer abrir em Curitiba." },
+      { actor: "Duda", pipeline: "Vendas de Franquias" },
+    );
+    expect(text).toBe(
+      "Cliente: Ana\nFunil: Vendas de Franquias\nFicha no CRM: https://crm-banneg-banneg.vercel.app/leads/l1\n\nResumo:\nQuer abrir em Curitiba.\n\nAgendada por Duda pelo CRM.",
+    );
   });
 
   it("outside the 24-hour window the link goes in the approved template with day, time and link", async () => {
