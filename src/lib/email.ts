@@ -62,11 +62,19 @@ export function withButton(html: string, button: { label: string; url: string })
 
 export const emailFrom = () => process.env.SMTP_FROM ?? process.env.SMTP_USER ?? "";
 
-/** replyTo: who the answer goes to when it is not the sender (the portal's notices answer the store). */
-export async function sendEmail(to: string, subject: string, body: string, attachments: EmailAttachment[] = [], html = emailHtml(body), replyTo?: string) {
+/** replyTo: who the answer goes to when it is not the sender (the portal's notices answer the store). cc: who gets a copy. */
+export async function sendEmail(
+  to: string,
+  subject: string,
+  body: string,
+  attachments: EmailAttachment[] = [],
+  html = emailHtml(body),
+  replyTo?: string,
+  cc?: string,
+) {
   const t = getTransport();
   if (!t) throw new Error("E-mail não configurado (SMTP_HOST / SMTP_USER / SMTP_PASS).");
-  const info = await t.sendMail({ from: emailFrom(), to, subject, text: body, html, attachments, ...(replyTo && { replyTo }) });
+  const info = await t.sendMail({ from: emailFrom(), to, subject, text: body, html, attachments, ...(replyTo && { replyTo }), ...(cc && { cc }) });
   return info.messageId as string;
 }
 

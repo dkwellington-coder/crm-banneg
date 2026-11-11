@@ -10,7 +10,8 @@ import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, mee
 import { runSdrTurn } from "./sdr";
 import { isSubjectHandoffKey, NO_SHOW_STAGE, planFromDecision, referredByPerson, STAGE_KEYS, subjectHandoffStage } from "./plan";
 import { ensureTask, funnelStart, moveLead, sdrFor, stageByKey } from "./leads";
-import { fillVariables, forPerson, speaksOfPartner, templateSlots, type RuleConfig } from "./rules";
+import { emailList, fillVariables, forPerson, speaksOfPartner, templateSlots, type RuleConfig } from "./rules";
+import { leadNotice } from "./notify";
 import { isGreeting, type RuleJobPayload } from "./automations";
 import { attachMaterials, emailHtml, renderTemplate, sendEmail, withButton } from "./email";
 import { cofDocuments, sendCof } from "./cof";
@@ -483,6 +484,22 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig, 
     case "task": {
       await ensureTask(lead.id, lead.ownerId, config.title || "Falar com o lead");
       return `Tarefa criada: ${config.title}`;
+    }
+    case "notify": {
+      const to = emailList(config.to);
+      if (!to) return "Ignorado: a automação não tem um e-mail válido para avisar.";
+      const cc = emailList(config.cc);
+      const [pipeline, stage, messages] = await Promise.all([
+        db.pipeline.findUnique({ where: { id: lead.pipelineId }, select: { name: true } }),
+        db.stage.findUnique({ where: { id: lead.stageId }, select: { name: true } }),
+        db.message.findMany({ where: { leadId: lead.id, channel: "WHATSAPP" }, orderBy: { createdAt: "desc" }, take: 8, select: { direction: true, body: true, createdAt: true } }),
+      ]);
+      const { subject, body } = leadNotice(lead, { pipeline: pipeline?.name ?? "", stage: stage?.name ?? "", messages: messages.reverse() });
+      const settings = await getSettings();
+      // Test mode writes nothing real to anyone, the team included
+      if (settings.testMode) return `Aviso para ${to} simulado (modo teste).`;
+      await sendEmail(to, subject, body, [], undefined, undefined, cc);
+      return `Aviso enviado por e-mail para ${to}${cc ? ` (cópia: ${cc})` : ""}.`;
     }
     case "move": {
       const to = config.toStageId ? await db.stage.findUnique({ where: { id: config.toStageId } }) : null;

@@ -433,6 +433,28 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
           className={inputCls}
         />
       )}
+      {d.action === "notify" && (
+        <div className="space-y-2">
+          <input
+            name="to"
+            required
+            value={d.config.to ?? ""}
+            onChange={(e) => setConfig({ to: e.target.value })}
+            placeholder="Quem recebe (ex.: consorcios@banneg.com.br)"
+            className={inputCls}
+          />
+          <input
+            name="cc"
+            value={d.config.cc ?? ""}
+            onChange={(e) => setConfig({ cc: e.target.value })}
+            placeholder="Com cópia para (opcional)"
+            className={inputCls}
+          />
+          <p className="text-xs text-slate-500">
+            Vai o nome, o WhatsApp, o e-mail, a cidade, o que o lead respondeu, as últimas mensagens e o link da ficha no CRM.
+          </p>
+        </div>
+      )}
       {d.action === "move" && (
         <select name="toStageId" required value={d.config.toStageId ?? ""} onChange={(e) => setConfig({ toStageId: e.target.value })} className={inputCls}>
           <option value="" disabled>

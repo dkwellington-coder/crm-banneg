@@ -14,7 +14,7 @@ import { enqueue } from "@/lib/queue";
 import { getSettings, saveSettings } from "@/lib/settings";
 import { getHealth, savedWhatsAppNumbers } from "@/lib/whatsapp";
 import { importLeads, importSummary } from "@/lib/import";
-import { ACTIONS, UNITS, type PersonVersion, type RuleConfig } from "@/lib/rules";
+import { ACTIONS, emailList, UNITS, type PersonVersion, type RuleConfig } from "@/lib/rules";
 import { METRICS } from "@/lib/goals";
 import { sendCof } from "@/lib/cof";
 import { inviteGuestsToUpcoming } from "@/lib/calendar";
@@ -589,6 +589,8 @@ export async function saveRuleAction(form: FormData) {
         : undefined,
     templateKey: action === "email" ? pick("templateKey") : undefined,
     title: action === "task" ? pick("title") : undefined,
+    to: action === "notify" ? pick("to") : undefined,
+    cc: action === "notify" ? pick("cc") : undefined,
     toStageId: action === "move" ? pick("toStageId") : undefined,
     sdrId: action === "ai_on" ? pick("sdrId") : undefined,
   };
@@ -612,6 +614,11 @@ export async function saveRuleAction(form: FormData) {
   const trigger =
     rawTrigger === "idle" ? "idle" : rawTrigger === "daily" && action === "move" ? "daily" : rawTrigger === "answer" ? "answer" : "enter";
   if (trigger === "daily") config.perDay = Math.min(1000, Math.max(1, Number(form.get("perDay")) || 100));
+  if (action === "notify") {
+    config.to = emailList(config.to);
+    if (!config.to) throw new Error("Escreva o e-mail de quem recebe o aviso.");
+    if (config.cc && !(config.cc = emailList(config.cc))) throw new Error("O e-mail da cópia não está certo.");
+  }
   if (trigger === "answer") {
     config.answers = String(form.get("answers") ?? "")
       .split("|")

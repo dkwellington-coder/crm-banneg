@@ -5,6 +5,7 @@ export const ACTIONS = {
   email: { label: "Enviar e-mail", icon: "mail" },
   cof: { label: "Enviar a COF por e-mail", icon: "file" },
   task: { label: "Criar tarefa", icon: "check" },
+  notify: { label: "Avisar a equipe por e-mail", icon: "mail" },
   move: { label: "Mover para etapa", icon: "arrow" },
   ai_on: { label: "Ativar SDR de IA", icon: "bot" },
   ai_off: { label: "Pausar a IA", icon: "pause" },
@@ -27,6 +28,9 @@ export type RuleConfig = {
   templateParams?: string[];
   // WhatsApp: quick reply buttons shown with the text
   buttons?: string[];
+  // notify: who gets the e-mail with the lead's data (and who gets a copy), addresses split by comma
+  to?: string;
+  cc?: string;
   // daily: how many leads leave the queue per business day
   perDay?: number;
   // answer: what the lead answered, usually the title of a button it tapped
@@ -108,6 +112,8 @@ export function actionLabel(action: string, config: RuleConfig, names: { stages?
       return "Enviar por e-mail a COF, os balanços e o contrato (com cópia guardada e confirmação de recebimento)";
     case "task":
       return `Criar tarefa “${config.title ?? ""}”`;
+    case "notify":
+      return `Avisar por e-mail ${config.to ?? ""}${config.cc ? ` (cópia: ${config.cc})` : ""} com os dados do lead`;
     case "move":
       return `Mover para “${names.stages?.[config.toStageId ?? ""] ?? "etapa removida"}”`;
     case "ai_on":
@@ -117,6 +123,18 @@ export function actionLabel(action: string, config: RuleConfig, names: { stages?
     default:
       return action;
   }
+}
+
+const EMAIL = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+
+/** "a@x.com; b@y.com" → "a@x.com, b@y.com"; undefined when any address is not an e-mail (or there is none). */
+export function emailList(raw: string | null | undefined) {
+  const list = (raw ?? "")
+    .split(/[,;\s]+/)
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  if (!list.length || !list.every((e) => EMAIL.test(e))) return undefined;
+  return [...new Set(list)].join(", ");
 }
 
 /** Replaces {{nome}}, {{empresa}}... in a WhatsApp text. Unknown variables become empty. */

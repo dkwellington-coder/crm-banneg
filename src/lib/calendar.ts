@@ -146,7 +146,7 @@ const guestList = (emails: (string | null | undefined)[]) =>
  * manager invited). Google e-mails the invitation to the lead when the lead has an e-mail, and to the
  * guests set in Ajustes for every meeting.
  */
-const CRM_URL = (process.env.PUBLIC_BASE_URL ?? "https://crm-banneg-banneg.vercel.app").replace(/\/$/, "");
+export const CRM_URL = (process.env.PUBLIC_BASE_URL ?? "https://crm-banneg-banneg.vercel.app").replace(/\/$/, "");
 
 /** 5531991084090 → (31) 99108-4090; anything else as it came. */
 export function phoneLabel(phone: string) {
