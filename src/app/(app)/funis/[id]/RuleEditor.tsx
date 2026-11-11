@@ -281,7 +281,7 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
           <option value="answer">responder</option>
         </select>
         {answer ? (
-          <ListInput value={d.config.answers ?? []} onChange={(answers) => setConfig({ answers })} placeholder="Quero ver | Sim" className={`${sel} w-56`} />
+          <ListInput value={d.config.answers ?? []} onChange={(answers) => setConfig({ answers })} placeholder="Quero ver | Sim | * (qualquer)" className={`${sel} w-56`} />
         ) : daily ? (
           <>
             <span className={word}>soltar</span>

@@ -56,3 +56,14 @@ describe("leadNotice", () => {
     );
   });
 });
+
+describe("answer \"*\"", () => {
+  it("matches whatever the lead writes, but not an empty message", async () => {
+    const { matchesAnswer, triggerLabel } = await import("@/lib/rules");
+    expect(matchesAnswer("Uns 500 mil, para comprar maquinário", ["*"])).toBe(true);
+    expect(matchesAnswer("🎤 Quero uns 300 mil", ["*"])).toBe(true);
+    expect(matchesAnswer("  ", ["*"])).toBe(false);
+    expect(matchesAnswer("Quero saber mais", ["Não tenho interesse"])).toBe(false);
+    expect(triggerLabel("answer", 0, { answers: ["*"] })).toBe("Quando o lead responder qualquer coisa");
+  });
+});

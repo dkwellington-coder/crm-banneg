@@ -69,10 +69,13 @@ const normalizeAnswer = (s: string) =>
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
 
-/** Whether what the lead wrote is one of the rule's answers: the tapped button, or the same words typed. */
+// An answer that matches whatever the lead writes (the next step after a question, e.g. "qual valor e para quê?")
+export const ANY_ANSWER = "*";
+
+/** Whether what the lead wrote is one of the rule's answers: the tapped button, the same words typed, or anything for "*". */
 export function matchesAnswer(body: string, answers: string[] = []) {
   const said = normalizeAnswer(body);
-  return !!said && answers.some((a) => normalizeAnswer(a) === said);
+  return !!said && answers.some((a) => a.trim() === ANY_ANSWER || normalizeAnswer(a) === said);
 }
 
 export const UNITS = [
@@ -98,7 +101,11 @@ export function delayLabel(minutes: number) {
 export function triggerLabel(trigger: string, delayMinutes: number, config: RuleConfig = {}) {
   if (trigger === "daily") return `Fila: ${config.perDay ?? 100} leads por dia útil, das 9h às 18h`;
   if (trigger === "idle") return `Sem resposta do lead por ${delayLabel(delayMinutes)}`;
-  if (trigger === "answer") return `Quando o lead responder ${(config.answers ?? []).map((a) => `“${a}”`).join(" ou ")}${config.aiReplies ? " (a IA também responde)" : ""}`;
+  if (trigger === "answer") {
+    const answers = config.answers ?? [];
+    const what = answers.some((a) => a.trim() === ANY_ANSWER) ? "qualquer coisa" : answers.map((a) => `“${a}”`).join(" ou ");
+    return `Quando o lead responder ${what}${config.aiReplies ? " (a IA também responde)" : ""}`;
+  }
   return delayMinutes === 0 ? "Assim que entrar na etapa" : `${delayLabel(delayMinutes)} depois de entrar`;
 }
 
