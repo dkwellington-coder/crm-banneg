@@ -1,4 +1,5 @@
 import { currentUser } from "@/lib/auth";
+import { canSee } from "@/lib/areas";
 import { db } from "@/lib/db";
 import { appendDocumentChunk, finishDocument, MAX_DOCUMENT_BYTES } from "@/lib/cof";
 
@@ -23,6 +24,7 @@ export async function POST(request: Request) {
   const user = await currentUser();
   if (!user) return json({ error: "Entre no CRM." }, 401);
   if (user.role === "SELLER") return json({ error: "Apenas gestores podem enviar os documentos da franquia." }, 403);
+  if (!canSee(user, "configuracoes")) return json({ error: "Sem acesso a esta tela." }, 403);
   const url = new URL(request.url);
   const step = url.searchParams.get("step");
   const id = url.searchParams.get("id") ?? "";

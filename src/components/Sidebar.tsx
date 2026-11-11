@@ -4,28 +4,35 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { CalendarDays, Columns3, FlaskConical, LayoutDashboard, Menu, MessageCircle, Plug, Settings, Target, X, type LucideIcon } from "lucide-react";
+import { CalendarDays, Columns3, FlaskConical, KeyRound, LayoutDashboard, LogOut, Menu, MessageCircle, Plug, Settings, Target, X, type LucideIcon } from "lucide-react";
+import { logoutAction } from "@/app/actions";
+import type { Area } from "@/lib/areas";
 import { AlertBell, AlertToasts, Badge, useTeamAlerts } from "./Alerts";
 import { ThemeToggle } from "./ThemeToggle";
 
-type Item = { href: string; label: string; icon: LucideIcon; match?: string[] };
+type Item = { href: string; label: string; icon: LucideIcon; match?: string[]; area?: Area };
 
-const ITEMS: Item[] = [
-  { href: "/funil", label: "Funil", icon: Columns3, match: ["/leads", "/funis"] },
-  { href: "/conversas", label: "Conversas", icon: MessageCircle },
-  { href: "/agenda", label: "Agenda", icon: CalendarDays },
-  { href: "/metas", label: "Metas", icon: Target },
-  { href: "/painel", label: "Painel", icon: LayoutDashboard },
-  { href: "/simulador", label: "Simulador", icon: FlaskConical },
+const ALL_ITEMS: Item[] = [
+  { href: "/funil", label: "Funil", icon: Columns3, match: ["/leads", "/funis"], area: "funil" },
+  { href: "/conversas", label: "Conversas", icon: MessageCircle, area: "conversas" },
+  { href: "/agenda", label: "Agenda", icon: CalendarDays, area: "agenda" },
+  { href: "/metas", label: "Metas", icon: Target, area: "metas" },
+  { href: "/painel", label: "Painel", icon: LayoutDashboard, area: "painel" },
+  { href: "/simulador", label: "Simulador", icon: FlaskConical, area: "simulador" },
 ];
-const SETUP: Item[] = [
-  { href: "/integracoes", label: "Integrar", icon: Plug },
-  { href: "/configuracoes", label: "Ajustes", icon: Settings },
+const ALL_SETUP: Item[] = [
+  { href: "/integracoes", label: "Integrar", icon: Plug, area: "integracoes" },
+  { href: "/configuracoes", label: "Ajustes", icon: Settings, area: "configuracoes" },
+  { href: "/acessos", label: "Acessos", icon: KeyRound },
 ];
 // On the phone the bar at the bottom has room for four; the rest open from "Mais"
 const PHONE_BAR = 4;
 
-export function Sidebar() {
+export function Sidebar({ areas, owner }: { areas: Area[]; owner: boolean }) {
+  // Only what this person can open; Acessos (no area) is the owner's
+  const allowed = (i: Item) => (i.area ? areas.includes(i.area) : owner);
+  const ITEMS = ALL_ITEMS.filter(allowed);
+  const SETUP = ALL_SETUP.filter(allowed);
   const path = usePathname();
   const router = useRouter();
   const [more, setMore] = useState(false);
@@ -89,6 +96,15 @@ export function Sidebar() {
       </Link>
     );
   };
+  // "Sair" lives in Ajustes: whoever has no Ajustes gets it in the menu
+  const signOut = !areas.includes("configuracoes") && (
+    <form action={logoutAction} className="contents">
+      <button className="flex w-full flex-col items-center gap-1 rounded-xl px-2 py-2.5 text-[11px] font-medium text-slate-500 transition hover:bg-brand-soft hover:text-brand">
+        <LogOut size={20} strokeWidth={1.8} />
+        Sair
+      </button>
+    </form>
+  );
   const rest = [...ITEMS.slice(PHONE_BAR), ...SETUP];
   const restActive = rest.some(isActive);
   return (
@@ -103,6 +119,7 @@ export function Sidebar() {
           <ThemeToggle />
           <AlertBell sound={alerts.sound} permission={alerts.permission} onClick={alerts.toggle} />
           {SETUP.map((i) => item(i))}
+          {signOut}
         </div>
       </nav>
 
@@ -115,6 +132,7 @@ export function Sidebar() {
               {rest.map((i) => item(i))}
               <ThemeToggle />
               <AlertBell sound={alerts.sound} permission={alerts.permission} onClick={alerts.toggle} />
+              {signOut}
             </div>
           </>
         )}

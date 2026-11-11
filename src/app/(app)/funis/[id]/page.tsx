@@ -3,7 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { after } from "next/server";
 import { ArrowLeft, Bot, MessageCircle, Sparkles, Star } from "lucide-react";
-import { requireUser } from "@/lib/auth";
+import { requireArea } from "@/lib/access";
 import { db } from "@/lib/db";
 import { Loading, btnCls, btnGhostCls, inputCls } from "@/components/ui";
 import type { RuleConfig, RuleTrigger } from "@/lib/rules";
@@ -31,7 +31,7 @@ async function accountNumbers() {
 }
 
 async function Editor({ params }: { params: PageProps<"/funis/[id]">["params"] }) {
-  const user = await requireUser();
+  const user = await requireArea("funil");
   const { id } = await params;
   const pipeline = await db.pipeline.findUnique({
     where: { id },

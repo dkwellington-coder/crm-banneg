@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { connection } from "next/server";
 import Link from "next/link";
 import type { Prisma } from "@prisma/client";
-import { requireUser } from "@/lib/auth";
+import { requireArea } from "@/lib/access";
 import { db } from "@/lib/db";
 import { teamAlerts } from "@/lib/alerts";
 import { lastMessages } from "@/lib/inbox";
@@ -35,7 +35,7 @@ async function Board({ searchParams }: { searchParams: PageProps<"/funil">["sear
   const unread = sp.naolidos === "1";
   // Everything that does not depend on the chosen funnel goes in one round
   const [user, pipelines, allStages, alerts, users, sdrs] = await Promise.all([
-    requireUser(),
+    requireArea("funil"),
     db.pipeline.findMany({ orderBy: [{ position: "asc" }, { createdAt: "asc" }] }),
     db.stage.findMany({ orderBy: { position: "asc" } }),
     teamAlerts(),

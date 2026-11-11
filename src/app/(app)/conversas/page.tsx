@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { requireUser } from "@/lib/auth";
+import { requireArea } from "@/lib/access";
 import { db } from "@/lib/db";
 import { latestConversations } from "@/lib/inbox";
 import { Avatar, Loading, PageHeader, Tabs, tabCls, relTime } from "@/components/ui";
@@ -18,7 +18,7 @@ export default function ConversasPage({ searchParams }: PageProps<"/conversas">)
 
 async function Inbox({ searchParams }: { searchParams: PageProps<"/conversas">["searchParams"] }) {
   // Latest WhatsApp message per lead, newest first
-  const [, sp, latest] = await Promise.all([requireUser(), searchParams, latestConversations(500)]);
+  const [, sp, latest] = await Promise.all([requireArea("conversas"), searchParams, latestConversations(500)]);
   const filter = typeof sp.f === "string" ? sp.f : "humano";
   const found = await db.lead.findMany({
     where: { id: { in: latest.map((m) => m.leadId) } },

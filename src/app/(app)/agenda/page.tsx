@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { requireUser } from "@/lib/auth";
+import { requireArea } from "@/lib/access";
 import { db } from "@/lib/db";
 import { Card, Loading, PageHeader, fmt } from "@/components/ui";
 import { completeTaskAction } from "../../actions";
@@ -21,7 +21,7 @@ export default function AgendaPage() {
 const dayKey = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
 
 async function Agenda() {
-  const user = await requireUser();
+  const user = await requireArea("agenda");
   const now = new Date();
   const [meetings, tasks] = await Promise.all([
     db.meeting.findMany({

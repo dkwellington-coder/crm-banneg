@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { after } from "next/server";
 import Link from "next/link";
-import { requireUser } from "@/lib/auth";
+import { requireArea, LEAD_AREAS } from "@/lib/access";
 import { db } from "@/lib/db";
 import { markSeen } from "@/lib/alerts";
 import { isWindowOpen } from "@/lib/whatsapp";
@@ -62,7 +62,7 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
   const { id } = await params;
   // The lead and everything around it load together, in one round
   const [user, lead, stages, agents, users, macros, settings, google] = await Promise.all([
-    requireUser(),
+    requireArea(LEAD_AREAS),
     db.lead.findUnique({
       where: { id },
       include: {

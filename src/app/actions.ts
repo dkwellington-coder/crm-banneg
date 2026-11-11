@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireUser, login, logout, hashPassword } from "@/lib/auth";
+import { cleanAreas, LEAD_AREAS, requireArea, type Area } from "@/lib/access";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { createLead, defaultPipeline, moveLead } from "@/lib/leads";
@@ -40,7 +41,7 @@ export async function logoutAction() {
  * and the screen asks for what is missing.
  */
 export async function moveLeadAction(leadId: string, stageId: string, reason?: string, reopen?: ReopenChoice): Promise<MoveResult> {
-  const user = await requireUser();
+  const user = await requireArea(LEAD_AREAS);
   const [lead, stage] = await Promise.all([
     db.lead.findUnique({
       where: { id: leadId },
@@ -81,7 +82,7 @@ export async function moveLeadAction(leadId: string, stageId: string, reason?: s
 
 /** "Marcar como visto": the lead stops alerting until it writes again. */
 export async function markAlertSeenAction(leadId: string) {
-  const user = await requireUser();
+  const user = await requireArea(LEAD_AREAS);
   await clearAlerts(leadId);
   await logEvent(leadId, "alert.seen", user.name, "Aviso marcado como visto.");
   revalidatePath("/funil");
@@ -91,7 +92,7 @@ export async function markAlertSeenAction(leadId: string) {
 
 /** The team's "Enviar COF agora": always sends, even if the lead already got these files. */
 export async function sendCofAction(leadId: string) {
-  const user = await requireUser();
+  const user = await requireArea(LEAD_AREAS);
   const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId } });
   const result = await sendCof(lead, user.name);
   await logEvent(leadId, "cof.button", user.name, result);
@@ -101,13 +102,13 @@ export async function sendCofAction(leadId: string) {
 
 /** Takes a document out of the next COFs. The file stays saved: COFs already sent point to it. */
 export async function removeDocumentAction(id: string) {
-  await requireManager();
+  await requireManager(LEAD_AREAS);
   await db.franchiseDocument.update({ where: { id }, data: { active: false } });
   revalidatePath("/configuracoes");
 }
 
 export async function createLeadAction(form: FormData) {
-  const user = await requireUser();
+  const user = await requireArea(LEAD_AREAS);
   const { lead } = await createLead(
     {
       name: String(form.get("name") ?? ""),
@@ -124,7 +125,7 @@ export async function createLeadAction(form: FormData) {
 }
 
 export async function sendMessageAction(leadId: string, form: FormData) {
-  const user = await requireUser();
+  const user = await requireArea(LEAD_AREAS);
   const body = String(form.get("body") ?? "").trim();
   if (!body) return;
   const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId } });
@@ -139,7 +140,7 @@ export async function sendMessageAction(leadId: string, form: FormData) {
 }
 
 export async function addNoteAction(leadId: string, form: FormData) {
-  const user = await requireUser();
+  const user = await requireArea(LEAD_AREAS);
   const body = String(form.get("note") ?? "").trim();
   if (!body) return;
   await db.message.create({ data: { leadId, channel: "NOTE", direction: "OUT", body, author: user.name, status: "SENT" } });
@@ -147,7 +148,7 @@ export async function addNoteAction(leadId: string, form: FormData) {
 }
 
 export async function toggleAiAction(leadId: string) {
-  const user = await requireUser();
+  const user = await requireArea(LEAD_AREAS);
   const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId } });
   const aiPaused = !lead.aiPaused;
   await db.lead.update({ where: { id: leadId }, data: { aiPaused } });
@@ -159,7 +160,7 @@ export async function toggleAiAction(leadId: string) {
 }
 
 export async function assignSdrAction(leadId: string, form: FormData) {
-  const user = await requireUser();
+  const user = await requireArea(LEAD_AREAS);
   const sdrId = String(form.get("sdrId") ?? "") || null;
   await db.lead.update({ where: { id: leadId }, data: { sdrId } });
   await logEvent(leadId, "ai.assigned", user.name, sdrId ? "SDR de IA trocada." : "SDR de IA removida.");
@@ -167,7 +168,7 @@ export async function assignSdrAction(leadId: string, form: FormData) {
 }
 
 export async function updateLeadAction(leadId: string, form: FormData) {
-  const user = await requireUser();
+  const user = await requireArea(LEAD_AREAS);
   const pick = (k: string) => String(form.get(k) ?? "").trim() || null;
   await db.lead.update({
     where: { id: leadId },
@@ -187,7 +188,7 @@ export async function updateLeadAction(leadId: string, form: FormData) {
 }
 
 export async function completeTaskAction(taskId: string) {
-  await requireUser();
+  await requireArea(LEAD_AREAS);
   const task = await db.task.update({ where: { id: taskId }, data: { doneAt: new Date() } });
   revalidatePath("/agenda");
   if (task.leadId) revalidatePath(`/leads/${task.leadId}`);
@@ -195,7 +196,7 @@ export async function completeTaskAction(taskId: string) {
 
 /** The "Perdido" card of the lead's page; an empty reason is refused with a message, never silently. */
 export async function markLostAction(leadId: string, _prev: unknown, form: FormData): Promise<{ error?: string }> {
-  const user = await requireUser();
+  const user = await requireArea(LEAD_AREAS);
   const reason = String(form.get("reason") ?? "").trim().slice(0, 500);
   if (!reason) return { error: "Informe o motivo da perda." };
   const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId } });
@@ -211,7 +212,7 @@ export async function markLostAction(leadId: string, _prev: unknown, form: FormD
 }
 
 export async function importCsvAction(_: unknown, form: FormData) {
-  const user = await requireUser();
+  const user = await requireArea("funil");
   const file = form.get("file");
   if (!(file instanceof File) || file.size === 0) return { message: "Escolha um arquivo CSV." };
   const startAi = form.get("startAi") === "on";
@@ -322,38 +323,56 @@ export async function saveWaTemplateAction(form: FormData) {
   revalidatePath("/configuracoes");
 }
 
-export async function saveUserAction(form: FormData) {
+export type AccessState = { ok?: boolean; error?: string; message?: string; login?: { name: string; email: string; password: string } };
+
+const ROLES = ["OWNER", "MANAGER", "SELLER"] as const;
+
+/**
+ * Acessos: a person's login (the e-mail), password, role and the screens they can open. A new password signs the
+ * person out everywhere. The password typed comes back once, so the owner can copy it to the person.
+ */
+export async function saveAccessAction(_: AccessState, form: FormData): Promise<AccessState> {
   await requireOwner();
+  const name = String(form.get("name") ?? "").trim();
   const email = String(form.get("email") ?? "").trim().toLowerCase();
   const password = String(form.get("password") ?? "");
-  const data = {
-    name: String(form.get("name")),
-    role: String(form.get("role")) as "OWNER" | "MANAGER" | "SELLER",
-    calendarId: String(form.get("calendarId") ?? "") || null,
-  };
+  const role = ROLES.find((r) => r === form.get("role")) ?? "SELLER";
+  const calendarId = String(form.get("calendarId") ?? "").trim() || null;
+  if (!name) return { error: "Escreva o nome da pessoa." };
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { error: "O usuário é o e-mail da pessoa, com @." };
+  if (password && password.length < 8) return { error: "A senha precisa ter pelo menos 8 caracteres." };
+  const areas = role === "OWNER" ? ["*"] : cleanAreas(form.getAll("areas").map(String));
+  if (!areas.length) return { error: "Marque pelo menos uma tela que a pessoa pode abrir." };
+  const data = { name, role, calendarId, areas };
   const existing = await db.user.findUnique({ where: { email } });
   if (existing) {
-    if (existing.role === "OWNER" && data.role !== "OWNER" && (await db.user.count({ where: { role: "OWNER" } })) <= 1)
-      throw new Error("O CRM precisa de pelo menos um proprietário.");
-    await db.user.update({ where: { email }, data: { ...data, ...(password ? { passwordHash: await hashPassword(password) } : {}) } });
+    if (existing.role === "OWNER" && role !== "OWNER" && (await db.user.count({ where: { role: "OWNER" } })) <= 1)
+      return { error: "O CRM precisa de pelo menos um proprietário." };
+    await db.user.update({ where: { email }, data: { ...data, ...(password && { passwordHash: await hashPassword(password) }) } });
     // A new password signs the person out everywhere: whoever had the old one loses access now
     if (password) await db.session.deleteMany({ where: { userId: existing.id } });
-  } else if (password) {
+  } else {
+    if (!password) return { error: "Dê uma senha para o novo acesso." };
     await db.user.create({ data: { ...data, email, passwordHash: await hashPassword(password) } });
   }
-  revalidatePath("/configuracoes");
+  revalidatePath("/acessos");
+  return {
+    ok: true,
+    message: existing ? (password ? "Acesso salvo com a senha nova." : "Acesso salvo.") : "Acesso criado.",
+    ...(password && { login: { name, email, password } }),
+  };
 }
 
 /**
- * Someone who left the team: signed out everywhere and the password replaced by one nobody knows. The person stays
- * in the history and as owner of their leads; giving a new password in Equipe brings the access back.
+ * Someone who left the team: signed out everywhere, no screen and the password replaced by one nobody knows. The person
+ * stays in the history and as owner of their leads; a new password and screens in Acessos bring the access back.
  */
 export async function removeUserAccessAction(userId: string) {
   const owner = await requireOwner();
   if (userId === owner.id) throw new Error("Você não pode tirar o seu próprio acesso.");
-  await db.user.update({ where: { id: userId }, data: { passwordHash: await hashPassword(randomBytes(32).toString("hex")) } });
+  await db.user.update({ where: { id: userId }, data: { passwordHash: await hashPassword(randomBytes(32).toString("hex")), areas: [] } });
   await db.session.deleteMany({ where: { userId } });
-  revalidatePath("/configuracoes");
+  revalidatePath("/acessos");
 }
 
 export async function retryJobAction(jobId: string) {
@@ -369,7 +388,7 @@ async function requireOwner() {
 }
 
 export async function saveMacroAction(form: FormData) {
-  const user = await requireUser();
+  const user = await requireArea("configuracoes");
   const id = String(form.get("id") ?? "");
   const title = String(form.get("title") ?? "").trim();
   const body = String(form.get("body") ?? "").trim();
@@ -388,8 +407,8 @@ function parseMoney(v: string | null) {
   return Number.isFinite(n) ? Math.round(n) : null;
 }
 
-async function requireManager() {
-  const user = await requireUser();
+async function requireManager(area: Area | readonly Area[]) {
+  const user = await requireArea(area);
   if (user.role === "SELLER") throw new Error("Apenas gestores podem editar funis e metas.");
   return user;
 }
@@ -405,7 +424,7 @@ const BLANK_STAGES = [
 ];
 
 export async function createPipelineAction(form: FormData) {
-  await requireManager();
+  await requireManager("funil");
   const name = String(form.get("name") ?? "").trim() || "Novo funil";
   const position = await db.pipeline.count();
   const pipeline = await db.pipeline.create({
@@ -416,7 +435,7 @@ export async function createPipelineAction(form: FormData) {
 }
 
 export async function renamePipelineAction(pipelineId: string, form: FormData) {
-  await requireManager();
+  await requireManager("funil");
   const name = String(form.get("name") ?? "").trim();
   if (name) await db.pipeline.update({ where: { id: pipelineId }, data: { name } });
   revalidatePath(`/funis/${pipelineId}`);
@@ -424,7 +443,7 @@ export async function renamePipelineAction(pipelineId: string, form: FormData) {
 
 /** What the AI does in this funnel, the short name forms use, and where qualified leads go next. */
 export async function savePipelineAiAction(pipelineId: string, form: FormData) {
-  await requireManager();
+  await requireManager("funil");
   const slug =
     String(form.get("slug") ?? "")
       .normalize("NFD")
@@ -450,7 +469,7 @@ export async function savePipelineAiAction(pipelineId: string, form: FormData) {
 
 /** The WhatsApp number new conversations in this funnel start from, and the SDR who takes its new leads. */
 export async function savePipelineWhatsAppAction(pipelineId: string, form: FormData) {
-  await requireManager();
+  await requireManager("funil");
   const raw = String(form.get("whatsappNumberId") ?? "");
   // The main number is kept as null, so it follows WHATSAPP_PHONE_NUMBER_ID (and inbound messages to it)
   const whatsappNumberId = raw && raw !== process.env.WHATSAPP_PHONE_NUMBER_ID ? raw : null;
@@ -465,7 +484,7 @@ export async function savePipelineWhatsAppAction(pipelineId: string, form: FormD
 }
 
 export async function setDefaultPipelineAction(pipelineId: string) {
-  await requireManager();
+  await requireManager("funil");
   await db.$transaction([
     db.pipeline.updateMany({ data: { isDefault: false } }),
     db.pipeline.update({ where: { id: pipelineId }, data: { isDefault: true } }),
@@ -474,7 +493,7 @@ export async function setDefaultPipelineAction(pipelineId: string) {
 }
 
 export async function deletePipelineAction(pipelineId: string) {
-  await requireManager();
+  await requireManager("funil");
   const p = await db.pipeline.findUniqueOrThrow({ where: { id: pipelineId }, include: { _count: { select: { leads: true } } } });
   if (p.isDefault) throw new Error("O funil padrão não pode ser excluído.");
   if (p._count.leads > 0) throw new Error("Mova os leads deste funil antes de excluí-lo.");
@@ -483,7 +502,7 @@ export async function deletePipelineAction(pipelineId: string) {
 }
 
 export async function addStageAction(pipelineId: string, form: FormData) {
-  await requireManager();
+  await requireManager("funil");
   const name = String(form.get("name") ?? "").trim();
   if (!name) return;
   const stages = await db.stage.findMany({ where: { pipelineId }, orderBy: { position: "asc" } });
@@ -498,7 +517,7 @@ export async function addStageAction(pipelineId: string, form: FormData) {
 }
 
 export async function updateStageAction(stageId: string, form: FormData) {
-  await requireManager();
+  await requireManager("funil");
   const kind = String(form.get("kind") ?? "OPEN");
   const stage = await db.stage.update({
     where: { id: stageId },
@@ -512,7 +531,7 @@ export async function updateStageAction(stageId: string, form: FormData) {
 }
 
 export async function moveStageAction(stageId: string, dir: -1 | 1) {
-  await requireManager();
+  await requireManager("funil");
   const stage = await db.stage.findUniqueOrThrow({ where: { id: stageId } });
   const stages = await db.stage.findMany({ where: { pipelineId: stage.pipelineId }, orderBy: { position: "asc" } });
   const i = stages.findIndex((s) => s.id === stageId);
@@ -524,7 +543,7 @@ export async function moveStageAction(stageId: string, dir: -1 | 1) {
 }
 
 export async function deleteStageAction(stageId: string) {
-  const user = await requireManager();
+  const user = await requireManager("funil");
   const stage = await db.stage.findUniqueOrThrow({ where: { id: stageId } });
   if (stage.key) throw new Error("Esta etapa é usada pela SDR de IA e não pode ser excluída. Você pode renomeá-la.");
   const fallback = await db.stage.findFirst({
@@ -543,7 +562,7 @@ export async function deleteStageAction(stageId: string) {
 // ---------- Automações ----------
 
 export async function saveRuleAction(form: FormData) {
-  await requireManager();
+  await requireManager("funil");
   const id = String(form.get("id") ?? "");
   const stageId = String(form.get("stageId"));
   const action = String(form.get("action"));
@@ -620,14 +639,14 @@ export async function saveRuleAction(form: FormData) {
 }
 
 export async function toggleRuleAction(ruleId: string) {
-  await requireManager();
+  await requireManager("funil");
   const rule = await db.automationRule.findUniqueOrThrow({ where: { id: ruleId }, include: { stage: true } });
   await db.automationRule.update({ where: { id: ruleId }, data: { active: !rule.active } });
   revalidatePath(`/funis/${rule.stage.pipelineId}`);
 }
 
 export async function deleteRuleAction(ruleId: string) {
-  await requireManager();
+  await requireManager("funil");
   const rule = await db.automationRule.delete({ where: { id: ruleId }, include: { stage: true } });
   await db.job.updateMany({
     where: { type: "rule.run", status: "PENDING", payload: { path: ["ruleId"], equals: ruleId } },
@@ -639,7 +658,7 @@ export async function deleteRuleAction(ruleId: string) {
 // ---------- Metas ----------
 
 export async function saveGoalsAction(form: FormData) {
-  await requireManager();
+  await requireManager("metas");
   const period = String(form.get("period"));
   if (!/^\d{4}-\d{2}$/.test(period)) throw new Error("Período inválido.");
   const users = await db.user.findMany({ select: { id: true } });
@@ -667,7 +686,7 @@ export async function saveGoalsAction(form: FormData) {
 export type TestState = { kind: string; ok: boolean; message: string; details?: string[] } | null;
 
 export async function testIntegrationAction(_: TestState, form: FormData): Promise<TestState> {
-  const user = await requireManager();
+  const user = await requireManager("integracoes");
   const kind = String(form.get("kind"));
   const integrations = await import("@/lib/integrations");
   // Moving where the WhatsApp messages arrive is the owner's call
@@ -704,7 +723,7 @@ export async function testIntegrationAction(_: TestState, form: FormData): Promi
 
 /** Which funnel a Facebook or Instagram form feeds, chosen on the Integrações screen. */
 export async function setFormFunnelAction(formId: string, form: FormData) {
-  await requireManager();
+  await requireManager("integracoes");
   const slug = String(form.get("funnel") ?? "");
   const row = await db.setting.findUnique({ where: { key: "meta_leads" } });
   const state = (row?.value ?? {}) as { forms?: Record<string, string>; names?: Record<string, { funnel: string | null }> };
@@ -719,7 +738,7 @@ export async function setFormFunnelAction(formId: string, form: FormData) {
 
 /** The funnel the e-mails of the leads box go to (Integrações); empty = the default funnel. */
 export async function setEmailLeadsFunnelAction(form: FormData) {
-  await requireManager();
+  await requireManager("integracoes");
   const funnel = async (key: string) => {
     const id = String(form.get(key) ?? "");
     return id ? ((await db.pipeline.findUnique({ where: { id }, select: { id: true } }))?.id ?? null) : null;
@@ -733,7 +752,7 @@ export async function setEmailLeadsFunnelAction(form: FormData) {
 
 /** Sends again what never went while the WhatsApp account was blocked (Integrações). */
 export async function resendBlockedAction() {
-  const user = await requireManager();
+  const user = await requireManager("integracoes");
   const health = await getHealth();
   if (health && !health.numberId) throw new Error("A conta do WhatsApp ainda aparece bloqueada; o reenvio libera quando ela voltar a enviar.");
   const count = await scheduleResends();
@@ -775,7 +794,7 @@ export type SimResult =
 
 /** Runs the real SDR on a made-up conversation. Reads settings and knowledge; writes nothing. */
 export async function simulateSdrAction(input: { agentId: string; messages: SimMessage[]; lead: { name?: string; city?: string } }): Promise<SimResult> {
-  await requireUser();
+  await requireArea("simulador");
   const [{ runSdrTurn }, { planFromDecision }, { pickOwner, freeSlotsFor, formatSlot }] = await Promise.all([
     import("@/lib/sdr"),
     import("@/lib/plan"),
@@ -843,7 +862,7 @@ export async function disconnectGoogleAction() {
 }
 
 export async function cancelMeetingAction(meetingId: string) {
-  const user = await requireUser();
+  const user = await requireArea(LEAD_AREAS);
   const { cancelMeeting } = await import("@/lib/jobs");
   const meeting = await db.meeting.findUnique({ where: { id: meetingId }, select: { leadId: true } });
   if (!meeting) return;
@@ -855,7 +874,7 @@ export async function cancelMeetingAction(meetingId: string) {
 
 /** "Compareceu" / "Não compareceu" once the meeting began; a missed one starts the funnel's "Não compareceu" stage. */
 export async function meetingOutcomeAction(meetingId: string, outcome: string) {
-  const user = await requireUser();
+  const user = await requireArea(LEAD_AREAS);
   if (outcome !== "done" && outcome !== "no_show") return;
   const { setMeetingOutcome } = await import("@/lib/jobs");
   const meeting = await db.meeting.findUnique({ where: { id: meetingId }, select: { leadId: true } });
@@ -868,7 +887,7 @@ export async function meetingOutcomeAction(meetingId: string, outcome: string) {
 
 /** "Agendar reunião" on the lead's page: Google agenda with Meet, lead in "Reunião marcada", link to the lead. */
 export async function scheduleMeetingAction(leadId: string, _: unknown, form: FormData) {
-  const user = await requireUser();
+  const user = await requireArea(LEAD_AREAS);
   const { scheduleMeeting } = await import("@/lib/jobs");
   const date = String(form.get("date") ?? "");
   const time = String(form.get("time") ?? "");

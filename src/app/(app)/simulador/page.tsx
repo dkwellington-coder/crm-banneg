@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { requireUser } from "@/lib/auth";
+import { requireArea } from "@/lib/access";
 import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { Loading, PageHeader } from "@/components/ui";
@@ -20,7 +20,7 @@ export default function SimuladorPage() {
 }
 
 async function Loader() {
-  await requireUser();
+  await requireArea("simulador");
   const [agents, settings, knowledge] = await Promise.all([
     db.sdrAgent.findMany({ where: { active: true }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
     getSettings(),

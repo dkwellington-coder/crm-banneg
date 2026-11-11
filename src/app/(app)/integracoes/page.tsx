@@ -1,7 +1,7 @@
 import { Suspense, type ReactNode } from "react";
 import { headers } from "next/headers";
 import { BadgeDollarSign, Bot, CalendarDays, ClipboardList, Copy, FlaskConical, Inbox, Mail, MessageCircle, RotateCcw, ShieldCheck, Webhook, type LucideIcon } from "lucide-react";
-import { requireUser } from "@/lib/auth";
+import { requireArea } from "@/lib/access";
 import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { Card, Loading, PageHeader, btnCls, btnGhostCls, inputCls, relTime } from "@/components/ui";
@@ -240,7 +240,7 @@ async function ResendBlocked() {
 }
 
 async function Integrations({ searchParams }: { searchParams: PageProps<"/integracoes">["searchParams"] }) {
-  const user = await requireUser();
+  const user = await requireArea("integracoes");
   const sp = await searchParams;
   const h = await headers();
   const origin = `${h.get("x-forwarded-proto") ?? "https"}://${h.get("host")}`;

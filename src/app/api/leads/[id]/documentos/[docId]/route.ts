@@ -1,9 +1,13 @@
 import { currentUser } from "@/lib/auth";
+import { canSee, LEAD_AREAS } from "@/lib/areas";
 import { db } from "@/lib/db";
 
 /** A lead's attached document (the policy), only for people signed in to the CRM. */
 export async function GET(_request: Request, ctx: RouteContext<"/api/leads/[id]/documentos/[docId]">) {
-  if (!(await currentUser())) return new Response("Entre no CRM.", { status: 401 });
+  const user = await currentUser();
+  if (!user) return new Response("Entre no CRM.", { status: 401 });
+  // Acessos: only someone who works leads (funil, conversas or agenda)
+  if (!canSee(user, LEAD_AREAS)) return new Response("Sem acesso a esta tela.", { status: 403 });
   const { id, docId } = await ctx.params;
   const doc = await db.leadDocument.findFirst({ where: { id: docId, leadId: id, sha256: { not: null } }, select: { name: true, mimeType: true, data: true } });
   if (!doc) return new Response("Documento não encontrado.", { status: 404 });

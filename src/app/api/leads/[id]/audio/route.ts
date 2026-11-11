@@ -1,5 +1,6 @@
 import { after } from "next/server";
 import { currentUser } from "@/lib/auth";
+import { canSee, LEAD_AREAS } from "@/lib/areas";
 import { db } from "@/lib/db";
 import { clearAlerts } from "@/lib/alerts";
 import { logEvent } from "@/lib/events";
@@ -12,6 +13,7 @@ const MAX_BYTES = 4 * 1024 * 1024;
 export async function POST(request: Request, ctx: RouteContext<"/api/leads/[id]/audio">) {
   const user = await currentUser();
   if (!user) return Response.json({ error: "Entre no CRM de novo." }, { status: 401 });
+  if (!canSee(user, LEAD_AREAS)) return Response.json({ error: "Sem acesso a esta tela." }, { status: 403 });
   const { id } = await ctx.params;
   const lead = await db.lead.findUnique({ where: { id } });
   if (!lead) return Response.json({ error: "Lead não encontrado." }, { status: 404 });

@@ -1,4 +1,5 @@
 import { currentUser } from "@/lib/auth";
+import { canSee, LEAD_AREAS } from "@/lib/areas";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/events";
 import { appendLeadDocumentChunk, finishLeadDocument, MAX_LEAD_DOCUMENT_BYTES, startLeadDocument } from "@/lib/lead-documents";
@@ -13,6 +14,7 @@ const json = (body: unknown, status = 200) => Response.json(body, { status });
 export async function POST(request: Request, ctx: RouteContext<"/api/leads/[id]/documentos">) {
   const user = await currentUser();
   if (!user) return json({ error: "Entre no CRM de novo." }, 401);
+  if (!canSee(user, LEAD_AREAS)) return json({ error: "Sem acesso a esta tela." }, 403);
   const { id: leadId } = await ctx.params;
   const lead = await db.lead.findUnique({ where: { id: leadId }, select: { id: true } });
   if (!lead) return json({ error: "Lead não encontrado." }, 404);

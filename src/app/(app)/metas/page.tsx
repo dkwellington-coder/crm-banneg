@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { CalendarCheck, ChevronLeft, ChevronRight, CircleDollarSign, Handshake, MessagesSquare, TrendingDown, TrendingUp } from "lucide-react";
 import { connection } from "next/server";
-import { requireUser } from "@/lib/auth";
+import { requireArea } from "@/lib/access";
 import { db } from "@/lib/db";
 import { METRICS, actuals, actualsBetween, currentPeriod, money, pace, periodLabel, shiftPeriod, todayRange, workingDays, type MetricKey } from "@/lib/goals";
 import { Avatar, Card, Loading, PageHeader, btnGhostCls } from "@/components/ui";
@@ -28,7 +28,7 @@ const TINT: Record<MetricKey, string> = {
 };
 
 async function Goals({ searchParams }: { searchParams: PageProps<"/metas">["searchParams"] }) {
-  const user = await requireUser();
+  const user = await requireArea("metas");
   await connection();
   const sp = await searchParams;
   const now = new Date();

@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { requireUser } from "@/lib/auth";
+import { requireArea } from "@/lib/access";
 import { db } from "@/lib/db";
 import { daysAgo } from "@/lib/time";
 import { campaignReport } from "@/lib/campaign-report";
@@ -20,7 +20,7 @@ export default function PainelPage({ searchParams }: PageProps<"/painel">) {
 const ADVANCED = ["QUALIFIED", "MEETING_BOOKED", "HANDED_OFF", "WON"] as const;
 
 async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">["searchParams"] }) {
-  await requireUser();
+  await requireArea("painel");
   const sp = await searchParams;
   const days = [7, 30, 90].includes(Number(sp.d)) ? Number(sp.d) : 30;
   const since = daysAgo(days);

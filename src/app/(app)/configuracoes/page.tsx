@@ -1,5 +1,6 @@
 import { Suspense, type ReactNode } from "react";
-import { requireUser } from "@/lib/auth";
+import Link from "next/link";
+import { requireArea } from "@/lib/access";
 import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { cofDeadline, dateTimeBr, sizeLabel } from "@/lib/cof";
@@ -16,15 +17,13 @@ import {
   saveKnowledgeAction,
   saveMacroAction,
   saveSettingsAction,
-  removeUserAccessAction,
-  saveUserAction,
   saveWaTemplateAction,
 } from "../../actions";
 
 export default function ConfigPage() {
   return (
     <>
-      <PageHeader title="Ajustes" subtitle="SDRs de IA, base de conhecimento, e-mails automáticos, modelos e equipe." />
+      <PageHeader title="Ajustes" subtitle="SDRs de IA, base de conhecimento, e-mails automáticos e modelos." />
       <Suspense fallback={<Loading />}>
         <Config />
       </Suspense>
@@ -55,16 +54,15 @@ const ENV_CHECKS: [string, string[]][] = [
 ];
 
 async function Config() {
-  const user = await requireUser();
+  const user = await requireArea("configuracoes");
   const owner = user.role === "OWNER";
-  const [settings, agents, knowledge, emails, waTemplates, macros, users, jobs, documents, cofs] = await Promise.all([
+  const [settings, agents, knowledge, emails, waTemplates, macros, jobs, documents, cofs] = await Promise.all([
     getSettings(),
     db.sdrAgent.findMany({ orderBy: { name: "asc" } }),
     db.knowledgeItem.findMany({ orderBy: { title: "asc" } }),
     db.emailTemplate.findMany({ orderBy: [{ key: "asc" }] }),
     db.whatsAppTemplate.findMany({ orderBy: { name: "asc" } }),
     db.macro.findMany({ orderBy: { title: "asc" } }),
-    db.user.findMany({ orderBy: { name: "asc" } }),
     db.job.findMany({ orderBy: { createdAt: "desc" }, take: 60, include: { lead: { select: { name: true, phone: true } } } }),
     db.franchiseDocument.findMany({
       where: { active: true },
@@ -347,33 +345,13 @@ async function Config() {
         ))}
       </Section>
 
-      <Section id="equipe" title="Equipe" hint="Gerentes recebem as reuniões marcadas pela IA. Agenda Google = e-mail da agenda do gerente.">
-        {[...users, null].map((u) => (
-          <form key={u?.id ?? "new"} action={saveUserAction} className="flex flex-wrap gap-2 border-t border-slate-100 pt-2 first:border-0 first:pt-0">
-            <fieldset disabled={!owner} className="contents">
-              <input name="name" required defaultValue={u?.name ?? ""} placeholder="Nome" className={`${inputCls} w-40!`} />
-              <input name="email" required type="email" defaultValue={u?.email ?? ""} readOnly={!!u} placeholder="E-mail" className={`${inputCls} w-56!`} />
-              <select name="role" defaultValue={u?.role ?? "MANAGER"} className={`${inputCls} w-36!`}>
-                <option value="OWNER">Proprietário</option>
-                <option value="MANAGER">Gerente</option>
-                <option value="SELLER">Vendedor</option>
-              </select>
-              <input name="calendarId" defaultValue={u?.calendarId ?? ""} placeholder="Agenda Google" className={`${inputCls} w-48!`} />
-              <input name="password" type="password" placeholder={u ? "Nova senha (opcional)" : "Senha"} className={`${inputCls} w-40!`} />
-              <button className={btnGhostCls}>{u ? "Salvar" : "Adicionar"}</button>
-              {u && owner && u.id !== user.id && (
-                <button
-                  formAction={removeUserAccessAction.bind(null, u.id)}
-                  title="Desconecta a pessoa de todos os aparelhos e troca a senha. Para devolver o acesso, dê uma nova senha aqui."
-                  className="text-xs text-slate-400 hover:text-red-600"
-                >
-                  Tirar acesso
-                </button>
-              )}
-            </fieldset>
-          </form>
-        ))}
-      </Section>
+      {owner && (
+        <Section id="equipe" title="Equipe e senhas" hint="Usuários, senhas e as telas que cada pessoa pode abrir agora ficam em Acessos.">
+          <Link href="/acessos" className={btnGhostCls}>
+            Abrir Acessos
+          </Link>
+        </Section>
+      )}
 
       <Section id="automacoes" title="Registro de automações" hint="Tudo o que a IA e as automações fizeram ou vão fazer, com erro e nova tentativa.">
         <div className="max-h-96 overflow-auto text-sm">

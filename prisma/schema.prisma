@@ -69,6 +69,8 @@ model User {
   role         Role      @default(SELLER)
   phone        String?
   calendarId   String?
+  // Screens this person can open (lib/access AREAS); "*" = all. The owner always sees everything
+  areas        String[]  @default(["*"])
   createdAt    DateTime  @default(now())
   leads        Lead[]
   tasks        Task[]
