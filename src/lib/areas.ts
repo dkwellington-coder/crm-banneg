@@ -7,6 +7,7 @@ export const AREAS = [
   { key: "funil", label: "Funil", hint: "Funil, leads e edição dos funis", href: "/funil" },
   { key: "conversas", label: "Conversas", hint: "Conversas do WhatsApp", href: "/conversas" },
   { key: "agenda", label: "Agenda", hint: "Reuniões marcadas", href: "/agenda" },
+  { key: "reunioes", label: "Reuniões", hint: "Só as reuniões: cliente, telefone, e-mail, COF e o relato do que aconteceu", href: "/reunioes" },
   { key: "metas", label: "Metas", hint: "Metas e resultados do time", href: "/metas" },
   { key: "painel", label: "Painel", hint: "Números e campanhas", href: "/painel" },
   { key: "simulador", label: "Simulador", hint: "Testar a IA", href: "/simulador" },
@@ -31,6 +32,14 @@ export function areasOf(user: Who): Area[] {
 export function canSee(user: Who, area: Area | readonly Area[]) {
   const mine = areasOf(user);
   return (typeof area === "string" ? [area] : area).some((a) => mine.includes(a));
+}
+
+/**
+ * Who the AI and "Agendar reunião" may give a meeting to: the owner, or a manager who works the Agenda.
+ * Someone with only "Reuniões" (the business manager who writes what happened) never receives one.
+ */
+export function receivesMeetings(user: Who) {
+  return user.role === "OWNER" || (user.role === "MANAGER" && canSee(user, "agenda"));
 }
 
 /** Where to send someone who opened a screen that is closed to them. */

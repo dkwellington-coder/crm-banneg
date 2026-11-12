@@ -291,6 +291,10 @@ model Meeting {
   calendarEventId String?
   meetLink        String?
   status          String   @default("scheduled")
+  // What happened in the meeting, written by whoever ran it (Reuniões screen)
+  notes           String?
+  notesAt         DateTime?
+  notesBy         String?
   createdAt       DateTime @default(now())
 }
 

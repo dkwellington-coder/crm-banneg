@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { after } from "next/server";
 import Link from "next/link";
-import { requireArea, LEAD_AREAS } from "@/lib/access";
+import { requireArea, LEAD_AREAS, receivesMeetings } from "@/lib/access";
 import { db } from "@/lib/db";
 import { markSeen } from "@/lib/alerts";
 import { isWindowOpen } from "@/lib/whatsapp";
@@ -102,7 +102,7 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
   const seenAt = lead.seenAt;
   const meetingUnseen = !!seenAt && lead.meetings.some((m) => m.status === "scheduled" && m.createdAt > seenAt);
   if (!seenAt || meetingUnseen) after(() => markSeen(lead.id, meetingUnseen));
-  const managers = users.filter((u) => u.role === "OWNER" || u.role === "MANAGER");
+  const managers = users.filter(receivesMeetings);
   const meetingWith = managers.find((m) => m.id === lead.ownerId) ?? managers.find((m) => m.id === user.id) ?? managers[0];
   // Same rule as the red alerts: the lead wrote and no AI answers, or a task fell due, since the last time it was handled
   const cleared = lead.alertsClearedAt;
@@ -274,6 +274,11 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
                   {m.status === "scheduled" && m.startsAt <= new Date() && (
                     <div className="mt-1">
                       <MeetingOutcome meetingId={m.id} />
+                    </div>
+                  )}
+                  {m.notes && (
+                    <div className="mt-1 rounded-lg bg-sunken px-2 py-1 text-xs text-slate-700">
+                      <span className="font-semibold">Relato{m.notesBy ? ` de ${m.notesBy}` : ""}:</span> <span className="whitespace-pre-line">{m.notes}</span>
                     </div>
                   )}
                   {m.status === "scheduled" && m.endsAt > new Date() && (

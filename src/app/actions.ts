@@ -17,7 +17,7 @@ import { importLeads, importSummary } from "@/lib/import";
 import { ACTIONS, emailList, UNITS, type PersonVersion, type RuleConfig } from "@/lib/rules";
 import { METRICS } from "@/lib/goals";
 import { sendCof } from "@/lib/cof";
-import { inviteGuestsToUpcoming } from "@/lib/calendar";
+import { formatSlot, inviteGuestsToUpcoming } from "@/lib/calendar";
 import { scheduleResends } from "@/lib/resend";
 import { checkStageMove, isReopenChoice, needsApolice, type MoveResult, type ReopenChoice } from "@/lib/stage-move";
 import { hasApolice } from "@/lib/lead-documents";
@@ -881,7 +881,7 @@ export async function cancelMeetingAction(meetingId: string) {
 
 /** "Compareceu" / "Não compareceu" once the meeting began; a missed one starts the funnel's "Não compareceu" stage. */
 export async function meetingOutcomeAction(meetingId: string, outcome: string) {
-  const user = await requireArea(LEAD_AREAS);
+  const user = await requireArea(MEETING_AREAS);
   if (outcome !== "done" && outcome !== "no_show") return;
   const { setMeetingOutcome } = await import("@/lib/jobs");
   const meeting = await db.meeting.findUnique({ where: { id: meetingId }, select: { leadId: true } });
@@ -889,7 +889,36 @@ export async function meetingOutcomeAction(meetingId: string, outcome: string) {
   await setMeetingOutcome(meetingId, outcome, user.name);
   revalidatePath(`/leads/${meeting.leadId}`);
   revalidatePath("/agenda");
+  revalidatePath("/reunioes");
   revalidatePath("/funil");
+}
+
+// Who can mark a meeting's result and write what happened: the team on the leads, and the Reuniões screen
+const MEETING_AREAS: readonly Area[] = [...LEAD_AREAS, "reunioes"];
+
+export type MeetingNotesState = { ok?: boolean; error?: string; message?: string };
+
+/**
+ * "O que aconteceu na reunião" (Reuniões screen): kept on the meeting and in the lead's history. Writing it
+ * on a meeting that began and had no result yet marks it as held: someone was there to tell it.
+ */
+export async function saveMeetingNotesAction(meetingId: string, _: MeetingNotesState, form: FormData): Promise<MeetingNotesState> {
+  const user = await requireArea(MEETING_AREAS);
+  const notes = String(form.get("notes") ?? "").trim().slice(0, 5000);
+  if (!notes) return { error: "Escreva o que aconteceu na reunião." };
+  const meeting = await db.meeting.findUnique({ where: { id: meetingId }, select: { leadId: true, startsAt: true, status: true, notes: true } });
+  if (!meeting) return { error: "Reunião não encontrada." };
+  if (meeting.status === "canceled") return { error: "Essa reunião foi desmarcada." };
+  if (meeting.startsAt > new Date()) return { error: "A reunião ainda não começou." };
+  if (notes === meeting.notes) return { ok: true, message: "Nada mudou." };
+  await db.meeting.update({ where: { id: meetingId }, data: { notes, notesAt: new Date(), notesBy: user.name } });
+  const { setMeetingOutcome } = await import("@/lib/jobs");
+  if (meeting.status === "scheduled") await setMeetingOutcome(meetingId, "done", user.name);
+  await logEvent(meeting.leadId, "meeting.notes", user.name, `${meeting.notes ? "Relato atualizado" : "Relato"} da reunião de ${formatSlot(meeting.startsAt)}: ${notes}`);
+  revalidatePath(`/leads/${meeting.leadId}`);
+  revalidatePath("/reunioes");
+  revalidatePath("/agenda");
+  return { ok: true, message: "Relato salvo." };
 }
 
 /** "Agendar reunião" on the lead's page: Google agenda with Meet, lead in "Reunião marcada", link to the lead. */

@@ -1,6 +1,7 @@
 import { db } from "./db";
 import { googleAgendaFor } from "./google";
 import type { BusinessHours } from "./settings";
+import { receivesMeetings } from "./areas";
 
 // Brazil has had no daylight saving time since 2019, so São Paulo is a fixed UTC-3.
 const SP_OFFSET_HOURS = -3;
@@ -88,10 +89,11 @@ export function meetingOptions(slots: Slot[], count = 3) {
 
 /** The business manager who receives the next meeting: the one with the fewest upcoming meetings. */
 export async function pickOwner() {
-  const users = await db.user.findMany({
+  const all = await db.user.findMany({
     where: { role: { in: ["MANAGER", "OWNER"] } },
     include: { _count: { select: { meetings: { where: { status: "scheduled", startsAt: { gte: new Date() } } } } } },
   });
+  const users = all.filter(receivesMeetings);
   users.sort((a, b) => a._count.meetings - b._count.meetings);
   return users[0] ?? null;
 }

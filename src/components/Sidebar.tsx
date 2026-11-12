@@ -4,9 +4,9 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { CalendarDays, Columns3, FlaskConical, KeyRound, LayoutDashboard, LogOut, Menu, MessageCircle, Plug, Settings, Target, X, type LucideIcon } from "lucide-react";
+import { CalendarDays, ClipboardList, Columns3, FlaskConical, KeyRound, LayoutDashboard, LogOut, Menu, MessageCircle, Plug, Settings, Target, X, type LucideIcon } from "lucide-react";
 import { logoutAction } from "@/app/actions";
-import type { Area } from "@/lib/areas";
+import { LEAD_AREAS, type Area } from "@/lib/areas";
 import { AlertBell, AlertToasts, Badge, useTeamAlerts } from "./Alerts";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -19,6 +19,8 @@ const ALL_ITEMS: Item[] = [
   { href: "/metas", label: "Metas", icon: Target, area: "metas" },
   { href: "/painel", label: "Painel", icon: LayoutDashboard, area: "painel" },
   { href: "/simulador", label: "Simulador", icon: FlaskConical, area: "simulador" },
+  // Last, so the owner's phone bar stays as it was; for the business manager it is the only screen
+  { href: "/reunioes", label: "Reuniões", icon: ClipboardList, area: "reunioes" },
 ];
 const ALL_SETUP: Item[] = [
   { href: "/integracoes", label: "Integrar", icon: Plug, area: "integracoes" },
@@ -105,6 +107,8 @@ export function Sidebar({ areas, owner }: { areas: Area[]; owner: boolean }) {
       </button>
     </form>
   );
+  // Alerts are about leads: whoever works no lead (only Reuniões) gets no bell
+  const bell = areas.some((a) => LEAD_AREAS.includes(a)) && <AlertBell sound={alerts.sound} permission={alerts.permission} onClick={alerts.toggle} />;
   const rest = [...ITEMS.slice(PHONE_BAR), ...SETUP];
   const restActive = rest.some(isActive);
   return (
@@ -117,7 +121,7 @@ export function Sidebar({ areas, owner }: { areas: Area[]; owner: boolean }) {
         {ITEMS.map((i) => item(i))}
         <div className="mt-auto space-y-1">
           <ThemeToggle />
-          <AlertBell sound={alerts.sound} permission={alerts.permission} onClick={alerts.toggle} />
+          {bell}
           {SETUP.map((i) => item(i))}
           {signOut}
         </div>
@@ -131,7 +135,7 @@ export function Sidebar({ areas, owner }: { areas: Area[]; owner: boolean }) {
             <div className="absolute inset-x-2 bottom-full z-50 mb-2 grid grid-cols-3 gap-1 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
               {rest.map((i) => item(i))}
               <ThemeToggle />
-              <AlertBell sound={alerts.sound} permission={alerts.permission} onClick={alerts.toggle} />
+              {bell}
               {signOut}
             </div>
           </>
