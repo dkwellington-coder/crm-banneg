@@ -349,13 +349,25 @@ async function graph<T>(path: string, init?: { method: "POST"; body: unknown }):
 
 // Samples Meta's review reads in place of {{1}}, {{2}}...: the name, the SDR, the partner store and the product
 const TEMPLATE_EXAMPLES = ["Maria", "Duda", "Lotus Veículos", "seguro auto"];
+// Templates whose variables are not the lead's and the SDR's names: what Meta's review reads in their place
+const EXAMPLES_BY_TEMPLATE: Record<string, string[]> = {
+  banneg_aviso_reuniao_equipe: [
+    "Maria Souza (Vendas de Franquias)",
+    "(17) 99999-0000",
+    "quinta-feira, 13/11, às 10:00",
+    "https://meet.google.com/abc-defg-hij",
+    "https://crm-banneg-banneg.vercel.app/leads/abc123",
+    "Duda",
+  ],
+};
 
 /**
  * Meta's template body: {{1}} is the lead's first name and {{2}} the SDR's (automations can fill more,
  * like the partner store), with examples so review can read it. A media header needs a sample Meta already holds (headerHandle).
  */
-export function templateComponents(t: { body: string; buttons: string[]; headerKind?: MediaKind | null; headerHandle?: string }) {
-  const example = Array.from({ length: templateSlots(t.body) }, (_, i) => TEMPLATE_EXAMPLES[i] ?? `exemplo ${i + 1}`);
+export function templateComponents(t: { name?: string; body: string; buttons: string[]; headerKind?: MediaKind | null; headerHandle?: string }) {
+  const examples = (t.name && EXAMPLES_BY_TEMPLATE[t.name]) || TEMPLATE_EXAMPLES;
+  const example = Array.from({ length: templateSlots(t.body) }, (_, i) => examples[i] ?? `exemplo ${i + 1}`);
   const components: Record<string, unknown>[] = [];
   if (t.headerKind && t.headerHandle) components.push({ type: "HEADER", format: t.headerKind.toUpperCase(), example: { header_handle: [t.headerHandle] } });
   components.push({ type: "BODY", text: t.body, ...(example.length && { example: { body_text: [example] } }) });
@@ -403,7 +415,7 @@ export async function submitTemplates() {
           name: t.name,
           language: t.language,
           category: t.category,
-          components: templateComponents({ body: t.body, buttons: t.buttons as string[], headerKind, headerHandle }),
+          components: templateComponents({ name: t.name, body: t.body, buttons: t.buttons as string[], headerKind, headerHandle }),
         },
       });
       await db.whatsAppTemplate.update({ where: { id: t.id }, data: { status: res.status ?? "PENDING", active: res.status === "APPROVED", metaNote: null } });

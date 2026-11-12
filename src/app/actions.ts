@@ -12,7 +12,7 @@ import { sendWhatsApp } from "@/lib/messaging";
 import { clearAlerts } from "@/lib/alerts";
 import { enqueue } from "@/lib/queue";
 import { getSettings, saveSettings } from "@/lib/settings";
-import { getHealth, savedWhatsAppNumbers } from "@/lib/whatsapp";
+import { getHealth, normalizePhone, savedWhatsAppNumbers } from "@/lib/whatsapp";
 import { importLeads, importSummary } from "@/lib/import";
 import { ACTIONS, emailList, UNITS, type PersonVersion, type RuleConfig } from "@/lib/rules";
 import { METRICS } from "@/lib/goals";
@@ -263,6 +263,15 @@ export async function saveSettingsAction(form: FormData) {
     qualifyScore: num("qualifyScore", current.qualifyScore, 0, 100),
     meetingMinutes: num("meetingMinutes", current.meetingMinutes, 15, 240),
     meetingGuests: guests,
+    // One WhatsApp per line or comma; a number that is not a phone is dropped
+    meetingAlertPhones: [
+      ...new Set(
+        String(form.get("meetingAlertPhones") ?? "")
+          .split(/[\n,;]+/)
+          .map(normalizePhone)
+          .filter((p) => p.length >= 12 && p.length <= 13),
+      ),
+    ],
     businessHours: {
       ...current.businessHours,
       start,

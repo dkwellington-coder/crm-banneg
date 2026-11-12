@@ -5,7 +5,7 @@ import { backoffMs, cancelJobs, enqueue } from "./queue";
 import { isClosed, moveToSendError, SEND_ERROR_STAGE, sendWhatsApp, type SendOutcome } from "./messaging";
 import { isUndelivered, isWindowOpen } from "./whatsapp";
 import { whatsappNumberFor } from "./integrations";
-import { getSettings, isTestContact, messageVars } from "./settings";
+import { getSettings, isTestContact, messageVars, type CrmSettings } from "./settings";
 import { createCalendarEvent, deleteCalendarEvent, formatSlot, moveCalendarEvent, freeSlotsFor, meetingDescription, meetingOptions, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
 import { isSubjectHandoffKey, NO_SHOW_STAGE, planFromDecision, referredByPerson, STAGE_KEYS, subjectHandoffStage } from "./plan";
@@ -19,6 +19,7 @@ import { blockedByAccount, resendSame } from "./resend";
 import { aiAccountProblem, aiAnswered, setAiHealth } from "./ai-health";
 import { sendPortalStatus, type PortalBody } from "./portal";
 import { sendPortalEmail } from "./portal-email";
+import { sendTeamMeetingAlert, teamAlertPhones } from "./team-alert";
 
 type Handler = (job: Job, lead: Lead | null) => Promise<string>;
 
@@ -236,6 +237,11 @@ const handlers: Record<string, Handler> = {
 
   async "portal.email"(job) {
     return sendPortalEmail(job.payload);
+  },
+
+  async "meeting.team_alert"(job) {
+    const { meetingId, actor, previous } = job.payload as { meetingId: string; actor: string; previous?: string };
+    return (await sendTeamMeetingAlert(meetingId, actor, previous ? new Date(previous) : undefined)).text;
   },
 
   async "meeting.reminder"(job, l) {
@@ -534,6 +540,7 @@ export async function bookMeeting(lead: Lead, userId: string, slot: Slot, actor:
   const user = await db.user.findUniqueOrThrow({ where: { id: userId } });
   // As it is now: the AI's turn that books has just written the summary
   const current = await db.lead.findUnique({ where: { id: lead.id }, include: { pipeline: { select: { name: true } } } });
+  const settings = await getSettings();
   let calendar: { id: string; meetLink: string | null } | null = null;
   try {
     calendar = await createCalendarEvent({
@@ -542,7 +549,7 @@ export async function bookMeeting(lead: Lead, userId: string, slot: Slot, actor:
       description: meetingDescription(current ?? lead, { actor, pipeline: current?.pipeline.name }),
       slot,
       attendeeEmail: lead.email,
-      guests: (await getSettings()).meetingGuests,
+      guests: settings.meetingGuests,
     });
   } catch (e) {
     await logEvent(lead.id, "calendar.failed", actor, `Reunião salva no CRM, mas o Google Agenda falhou: ${(e as Error).message}`);
@@ -558,8 +565,26 @@ export async function bookMeeting(lead: Lead, userId: string, slot: Slot, actor:
     },
   });
   await logEvent(lead.id, "meeting.booked", actor, `Reunião marcada com ${user.name}: ${formatSlot(slot.startsAt)}.`);
+  // The team's WhatsApp gets the client, the time, the Meet link and the lead's page (Ajustes › Qualificação e agenda)
+  await queueTeamAlert(meeting, actor, settings);
   await queueReminders(meeting);
   return meeting;
+}
+
+/** The notice to the team's WhatsApp; a rescheduled meeting goes again with the new time and the old one. */
+async function queueTeamAlert(
+  meeting: { id: string; leadId: string; startsAt: Date },
+  actor: string,
+  settings: Pick<CrmSettings, "meetingAlertPhones">,
+  previous?: Date,
+) {
+  if (!teamAlertPhones(settings).length) return;
+  await enqueue("meeting.team_alert", {
+    leadId: meeting.leadId,
+    payload: { meetingId: meeting.id, actor, ...(previous && { previous: previous.toISOString() }) },
+    dedupeKey: `team_alert:${meeting.id}${previous ? `:${meeting.startsAt.getTime()}` : ""}`,
+    maxAttempts: 3,
+  });
 }
 
 /** The lead's reminders the day before and 1 hour before (those still ahead). */
@@ -632,6 +657,7 @@ export async function rescheduleMeeting(meetingId: string, opts: { slot: Slot; a
   });
   await stopReminders(meeting, "Cancelado: reunião remarcada.");
   await queueReminders(updated);
+  await queueTeamAlert(updated, opts.actor, await getSettings(), meeting.startsAt);
   await logEvent(meeting.leadId, "meeting.rescheduled", opts.actor, `Reunião remarcada de ${formatSlot(meeting.startsAt)} para ${formatSlot(slot.startsAt)}. ${google}`);
   const sent = opts.notify ? await sendMeetingLink(meeting.lead, updated, opts.actor) : null;
   return { meeting: updated, message: `Reunião remarcada para ${formatSlot(slot.startsAt)}. ${google}${sent ? ` ${sent}` : ""}` };

@@ -7,6 +7,7 @@ export type JobType =
   | "rule.run"
   | "email.send"
   | "meeting.reminder"
+  | "meeting.team_alert"
   | "whatsapp.retry"
   | "whatsapp.undelivered_emails"
   | "whatsapp.other_category"

@@ -12,6 +12,8 @@ import { queueCapi } from "./meta-capi";
 import { DUPLICATE_MARK, NO_REASON } from "./portal-status";
 import { queuePortalStatus, referralClosure, reopenReferrals } from "./portal";
 import type { ReopenChoice } from "./stage-move";
+import { getSettings } from "./settings";
+import { isTeamPhone } from "./team-alert";
 
 /** A stage of the given funnel by its AI key; null when that funnel has no such stage. */
 export async function stageByKey(key: string, pipelineId: string) {
@@ -237,6 +239,8 @@ export async function handleInbound(input: {
     !sameFirstName(known.name, who) &&
     !(await saidOwnWords(known.id));
   lead ??= (await leadByEmailCode(input.body, phone)) ?? (referral && (await takeReferral(referral, phone)));
+  // Someone on the team answering a meeting notice ("ok", "obrigado") is not a new lead for the AI to sell to
+  if (!lead && isTeamPhone(await getSettings(), phone)) return null;
   if (!lead) {
     // Someone writing to a funnel's own number starts in that funnel, with its SDR
     const funnel = numberId ? await numberFunnel(numberId) : null;
