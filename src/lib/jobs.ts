@@ -6,7 +6,7 @@ import { isClosed, moveToSendError, SEND_ERROR_STAGE, sendWhatsApp, type SendOut
 import { isUndelivered, isWindowOpen } from "./whatsapp";
 import { whatsappNumberFor } from "./integrations";
 import { getSettings, isTestContact, messageVars } from "./settings";
-import { createCalendarEvent, deleteCalendarEvent, formatSlot, freeSlotsFor, meetingDescription, meetingOptions, pickOwner, type Slot } from "./calendar";
+import { createCalendarEvent, deleteCalendarEvent, formatSlot, moveCalendarEvent, freeSlotsFor, meetingDescription, meetingOptions, pickOwner, type Slot } from "./calendar";
 import { runSdrTurn } from "./sdr";
 import { isSubjectHandoffKey, NO_SHOW_STAGE, planFromDecision, referredByPerson, STAGE_KEYS, subjectHandoffStage } from "./plan";
 import { ensureTask, funnelStart, moveLead, sdrFor, stageByKey } from "./leads";
@@ -558,21 +558,83 @@ export async function bookMeeting(lead: Lead, userId: string, slot: Slot, actor:
     },
   });
   await logEvent(lead.id, "meeting.booked", actor, `Reunião marcada com ${user.name}: ${formatSlot(slot.startsAt)}.`);
+  await queueReminders(meeting);
+  return meeting;
+}
+
+/** The lead's reminders the day before and 1 hour before (those still ahead). */
+async function queueReminders(meeting: { id: string; leadId: string; startsAt: Date }) {
   for (const [hours, label] of [
     [24, "amanhã"],
     [1, "daqui a 1 hora"],
   ] as const) {
-    const runAt = new Date(slot.startsAt.getTime() - hours * 3600_000);
+    const runAt = new Date(meeting.startsAt.getTime() - hours * 3600_000);
     if (runAt > new Date()) {
       await enqueue("meeting.reminder", {
-        leadId: lead.id,
+        leadId: meeting.leadId,
         payload: { meetingId: meeting.id, label },
         runAt,
         dedupeKey: `reminder:${meeting.id}:${hours}`,
       });
     }
   }
-  return meeting;
+}
+
+/** Stops the reminders still waiting for a meeting (desmarcada or remarcada). */
+async function stopReminders(meeting: { id: string; leadId: string }, why: string) {
+  await db.job.updateMany({
+    where: { leadId: meeting.leadId, type: "meeting.reminder", status: "PENDING", dedupeKey: { startsWith: `reminder:${meeting.id}:` } },
+    data: { status: "CANCELLED", finishedAt: new Date(), dedupeKey: null, result: why },
+  });
+  // Reminders already sent free their key, so the new time gets its own
+  await db.job.updateMany({ where: { leadId: meeting.leadId, type: "meeting.reminder", dedupeKey: { startsWith: `reminder:${meeting.id}:` } }, data: { dedupeKey: null } });
+}
+
+/**
+ * "Remarcar" (Reuniões screen or the lead's page): the same meeting at another time. The Google event moves (same
+ * Meet link, guests told by Google), the reminders follow the new time, and the lead gets the new day and link.
+ */
+export async function rescheduleMeeting(meetingId: string, opts: { slot: Slot; actor: string; notify: boolean }) {
+  const meeting = await db.meeting.findUnique({ where: { id: meetingId }, include: { user: true, lead: true } });
+  if (!meeting || meeting.status !== "scheduled") throw new Error("Essa reunião não está mais marcada.");
+  const { slot } = opts;
+  let google = "Ficou só no CRM (sem Google Agenda).";
+  let calendar: { id: string; meetLink: string | null } | null = null;
+  if (meeting.user) {
+    try {
+      if (meeting.calendarEventId) {
+        calendar = await moveCalendarEvent(meeting.user, meeting.calendarEventId, slot);
+        if (calendar) google = "O Google Agenda mudou o horário e avisou os convidados.";
+      } else {
+        // Booked while Google was off: put it on the agenda now
+        const current = await db.lead.findUnique({ where: { id: meeting.leadId }, include: { pipeline: { select: { name: true } } } });
+        calendar = await createCalendarEvent({
+          user: meeting.user,
+          summary: `Reunião Banneg · ${meeting.lead.name ?? meeting.lead.phone}`,
+          description: meetingDescription(current ?? meeting.lead, { actor: opts.actor, pipeline: current?.pipeline.name }),
+          slot,
+          attendeeEmail: meeting.lead.email,
+          guests: (await getSettings()).meetingGuests,
+        });
+        if (calendar) google = "Entrou no Google Agenda com link do Meet.";
+      }
+    } catch (e) {
+      google = `O Google Agenda falhou (${(e as Error).message}): mude o evento por lá.`;
+    }
+  }
+  const updated = await db.meeting.update({
+    where: { id: meeting.id },
+    data: {
+      startsAt: slot.startsAt,
+      endsAt: slot.endsAt,
+      ...(calendar && { calendarEventId: calendar.id, meetLink: calendar.meetLink ?? meeting.meetLink }),
+    },
+  });
+  await stopReminders(meeting, "Cancelado: reunião remarcada.");
+  await queueReminders(updated);
+  await logEvent(meeting.leadId, "meeting.rescheduled", opts.actor, `Reunião remarcada de ${formatSlot(meeting.startsAt)} para ${formatSlot(slot.startsAt)}. ${google}`);
+  const sent = opts.notify ? await sendMeetingLink(meeting.lead, updated, opts.actor) : null;
+  return { meeting: updated, message: `Reunião remarcada para ${formatSlot(slot.startsAt)}. ${google}${sent ? ` ${sent}` : ""}` };
 }
 
 /** "Desmarcar" on the lead's page: off the Google agenda, reminders stopped, the time free again for the AI. */
@@ -588,10 +650,7 @@ export async function cancelMeeting(meetingId: string, actor: string) {
     }
   }
   await db.meeting.update({ where: { id: meeting.id }, data: { status: "canceled" } });
-  await db.job.updateMany({
-    where: { leadId: meeting.leadId, type: "meeting.reminder", status: "PENDING", dedupeKey: { startsWith: `reminder:${meeting.id}:` } },
-    data: { status: "CANCELLED", finishedAt: new Date(), dedupeKey: null, result: "Cancelado: reunião desmarcada." },
-  });
+  await stopReminders(meeting, "Cancelado: reunião desmarcada.");
   await logEvent(meeting.leadId, "meeting.canceled", actor, `Reunião de ${formatSlot(meeting.startsAt)} desmarcada.${google}`);
   return `Reunião desmarcada.${google}`;
 }

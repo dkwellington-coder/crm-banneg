@@ -7,6 +7,7 @@ import { phoneLabel } from "@/lib/calendar";
 import { dateTimeBr } from "@/lib/cof";
 import { Card, Loading, PageHeader, fmt } from "@/components/ui";
 import { MeetingOutcome, OUTCOME_LABEL } from "@/components/MeetingOutcome";
+import { RescheduleMeeting } from "@/components/RescheduleMeeting";
 import { MeetingNotes } from "./MeetingNotes";
 
 /**
@@ -151,6 +152,7 @@ function MeetingCard({ m, now, leadPage }: { m: Row; now: Date; leadPage: boolea
       )}
 
       {started && m.status === "scheduled" && <MeetingOutcome meetingId={m.id} />}
+      {m.status === "scheduled" && <RescheduleMeeting meetingId={m.id} startsAt={m.startsAt} hasPhone={!!lead.phone} />}
       {started && m.status !== "no_show" && (
         <MeetingNotes meetingId={m.id} notes={m.notes} signed={m.notesBy && m.notesAt ? `Escrito por ${m.notesBy} em ${dateTimeBr(m.notesAt)}` : null} />
       )}

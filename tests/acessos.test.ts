@@ -169,4 +169,44 @@ describe.skipIf(!dbUrl)("Acessos page actions", () => {
     expect((await db.meeting.findUniqueOrThrow({ where: { id: past.id } })).notes).toBe("Fechou a Loja.");
     expect((await db.leadEvent.findFirstOrThrow({ where: { leadId: lead.id }, orderBy: { createdAt: "desc" } })).summary).toMatch(/^Relato atualizado/);
   });
+
+  it("every meeting goes to the owner, and Remarcar moves the meeting with its reminders", async () => {
+    const owner = await db.user.create({ data: { name: "Wellington", email: "dono@exemplo.com", role: "OWNER", passwordHash: "x" } });
+    // A manager with the Agenda and no meeting yet: still the owner gets the next one
+    const odair = await db.user.create({ data: { name: "Odair", email: "gestor@exemplo.com", role: "MANAGER", passwordHash: "x", areas: ["funil", "agenda", "reunioes", "metas"] } });
+    const { pickOwner } = await import("@/lib/calendar");
+    const { bookMeeting } = await import("@/lib/jobs");
+    await db.meeting.deleteMany();
+    expect((await pickOwner())?.id).toBe(owner.id);
+
+    const pipeline = await db.pipeline.create({ data: { name: "Funil Remarcar", slug: `remarcar-${Date.now()}`, stages: { create: [{ name: "Reunião marcada", key: "reuniao_marcada", position: 0 }] } }, include: { stages: true } });
+    const lead = await db.lead.create({ data: { name: "Lead Remarcar", phone: "5517900000002", pipelineId: pipeline.id, stageId: pipeline.stages[0].id } });
+    const day = 24 * 3600_000;
+    const at = (d: number, h: number) => new Date(Math.floor(Date.now() / day) * day + d * day + h * 3600_000);
+    const meeting = await bookMeeting(lead, owner.id, { startsAt: at(3, 13), endsAt: at(3, 13.5) }, "IA");
+    const other = await bookMeeting(lead, owner.id, { startsAt: at(4, 13), endsAt: at(4, 13.5) }, "IA");
+
+    await signIn(odair.id);
+    const brDate = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+    const brTime = (d: Date) => d.toLocaleTimeString("en-GB", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
+    // On top of another meeting: refused
+    expect(await actions.rescheduleMeetingAction(meeting.id, null, form({ date: brDate(other.startsAt), time: brTime(other.startsAt) }))).toMatchObject({
+      error: "Esse horário já tem reunião marcada no CRM com Lead Remarcar.",
+    });
+    expect(await actions.rescheduleMeetingAction(meeting.id, null, form({ date: "2020-01-01", time: "10:00" }))).toEqual({ error: "Esse horário já passou." });
+
+    const target = at(5, 17);
+    const res = await actions.rescheduleMeetingAction(meeting.id, null, form({ date: brDate(target), time: brTime(target) }));
+    expect(res.message).toMatch(/^Reunião remarcada para /);
+    const moved = await db.meeting.findUniqueOrThrow({ where: { id: meeting.id } });
+    expect(moved.startsAt.getTime()).toBe(target.getTime());
+    expect(moved.endsAt.getTime() - moved.startsAt.getTime()).toBe(30 * 60_000);
+    expect(moved.status).toBe("scheduled");
+    // The old reminders stop, new ones wait for the new time
+    const reminders = await db.job.findMany({ where: { type: "meeting.reminder", payload: { path: ["meetingId"], equals: meeting.id } }, orderBy: { runAt: "asc" } });
+    expect(reminders.filter((j) => j.status === "PENDING").map((j) => j.runAt.getTime())).toEqual([target.getTime() - day, target.getTime() - 3600_000]);
+    expect(reminders.filter((j) => j.status === "CANCELLED")).toHaveLength(2);
+    const event = await db.leadEvent.findFirstOrThrow({ where: { leadId: lead.id, type: "meeting.rescheduled" } });
+    expect(event.actor).toBe("Odair");
+  });
 });

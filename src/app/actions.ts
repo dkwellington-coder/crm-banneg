@@ -921,6 +921,38 @@ export async function saveMeetingNotesAction(meetingId: string, _: MeetingNotesS
   return { ok: true, message: "Relato salvo." };
 }
 
+/** "Remarcar" (Reuniões screen or the lead's page): new day and time for a meeting still marked. */
+export async function rescheduleMeetingAction(meetingId: string, _: unknown, form: FormData): Promise<{ error?: string; message?: string }> {
+  const user = await requireArea(MEETING_AREAS);
+  const date = String(form.get("date") ?? "");
+  const time = String(form.get("time") ?? "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) return { error: "Escolha o dia e a hora." };
+  // The team types São Paulo time
+  const startsAt = new Date(`${date}T${time}:00-03:00`);
+  if (Number.isNaN(startsAt.getTime())) return { error: "Dia ou hora inválidos." };
+  if (startsAt < new Date()) return { error: "Esse horário já passou." };
+  const meeting = await db.meeting.findUnique({ where: { id: meetingId } });
+  if (!meeting || meeting.status !== "scheduled") return { error: "Essa reunião não está mais marcada." };
+  // Same length as before
+  const endsAt = new Date(startsAt.getTime() + (meeting.endsAt.getTime() - meeting.startsAt.getTime()));
+  if (startsAt.getTime() === meeting.startsAt.getTime()) return { error: "Esse já é o horário da reunião." };
+  const clash = await db.meeting.findFirst({
+    where: { id: { not: meetingId }, userId: meeting.userId, status: "scheduled", startsAt: { lt: endsAt }, endsAt: { gt: startsAt } },
+    include: { lead: { select: { name: true } } },
+  });
+  if (clash) return { error: `Esse horário já tem reunião marcada no CRM${clash.lead.name ? ` com ${clash.lead.name}` : ""}.` };
+  const { rescheduleMeeting } = await import("@/lib/jobs");
+  try {
+    const { message } = await rescheduleMeeting(meetingId, { slot: { startsAt, endsAt }, actor: user.name, notify: form.get("notify") === "on" });
+    revalidatePath(`/leads/${meeting.leadId}`);
+    revalidatePath("/reunioes");
+    revalidatePath("/agenda");
+    return { message };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+}
+
 /** "Agendar reunião" on the lead's page: Google agenda with Meet, lead in "Reunião marcada", link to the lead. */
 export async function scheduleMeetingAction(leadId: string, _: unknown, form: FormData) {
   const user = await requireArea(LEAD_AREAS);

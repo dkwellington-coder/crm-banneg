@@ -30,6 +30,7 @@ import { AudioRecorder } from "./AudioRecorder";
 import { ScheduleMeeting } from "./ScheduleMeeting";
 import { LeadSplit } from "./LeadSplit";
 import { MeetingOutcome, OUTCOME_LABEL } from "@/components/MeetingOutcome";
+import { RescheduleMeeting } from "@/components/RescheduleMeeting";
 import { PendingButton, SaveButton } from "./SaveButton";
 import { googleConfigured, googleLinks } from "@/lib/google";
 import { cofDeadline, dateTimeBr, sizeLabel } from "@/lib/cof";
@@ -279,6 +280,11 @@ async function LeadView({ params }: { params: PageProps<"/leads/[id]">["params"]
                   {m.notes && (
                     <div className="mt-1 rounded-lg bg-sunken px-2 py-1 text-xs text-slate-700">
                       <span className="font-semibold">Relato{m.notesBy ? ` de ${m.notesBy}` : ""}:</span> <span className="whitespace-pre-line">{m.notes}</span>
+                    </div>
+                  )}
+                  {m.status === "scheduled" && (
+                    <div className="mt-1">
+                      <RescheduleMeeting meetingId={m.id} startsAt={m.startsAt} hasPhone={!!lead.phone} />
                     </div>
                   )}
                   {m.status === "scheduled" && m.endsAt > new Date() && (

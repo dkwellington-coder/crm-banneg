@@ -93,7 +93,10 @@ export async function pickOwner() {
     where: { role: { in: ["MANAGER", "OWNER"] } },
     include: { _count: { select: { meetings: { where: { status: "scheduled", startsAt: { gte: new Date() } } } } } },
   });
-  const users = all.filter(receivesMeetings);
+  const allowed = all.filter(receivesMeetings);
+  // Every meeting goes on the owner's agenda (Wellington, 2026-10-17); a manager gets them only with no owner to take them
+  const owners = allowed.filter((u) => u.role === "OWNER");
+  const users = owners.length ? owners : allowed;
   users.sort((a, b) => a._count.meetings - b._count.meetings);
   return users[0] ?? null;
 }
@@ -205,6 +208,26 @@ export async function createCalendarEvent(input: {
   if (!res.ok) throw new Error(`Google Agenda recusou o evento: HTTP ${res.status} ${await res.text()}`);
   const ev = (await res.json()) as { id: string; hangoutLink?: string; htmlLink?: string };
   return { id: ev.id, meetLink: ev.hangoutLink ?? null, account: agenda.account };
+}
+
+/** Moves the event to another time (same Meet link); Google e-mails the new time to the guests. */
+export async function moveCalendarEvent(user: AgendaUser, eventId: string, slot: Slot) {
+  const agenda = await googleAgendaFor(user);
+  if (!agenda) return null;
+  const res = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(agenda.calendarId)}/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
+    {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${agenda.accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        start: { dateTime: slot.startsAt.toISOString(), timeZone: "America/Sao_Paulo" },
+        end: { dateTime: slot.endsAt.toISOString(), timeZone: "America/Sao_Paulo" },
+      }),
+    },
+  );
+  if (!res.ok) throw new Error(`Google Agenda não mudou o horário: HTTP ${res.status} ${await res.text()}`);
+  const ev = (await res.json()) as { id: string; hangoutLink?: string };
+  return { id: ev.id, meetLink: ev.hangoutLink ?? null };
 }
 
 /** Removes the event from the Google agenda; Google e-mails the cancellation to the guests. */
