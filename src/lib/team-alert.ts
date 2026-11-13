@@ -1,34 +1,71 @@
 import { db } from "./db";
 import { logEvent } from "./events";
 import { CRM_URL, phoneLabel } from "./calendar";
-import { getSettings, isTestContact, type CrmSettings } from "./settings";
-import { normalizePhone, phoneVariants, sendTemplate, sendText } from "./whatsapp";
+import { getSettings, saveSettings, type CrmSettings } from "./settings";
 
 /**
- * Every meeting the CRM books goes to the team's WhatsApp (Wellington, 2026-11-12): client, day and time, Meet link
- * and the lead's page. Meta only lets accounts with the green badge and 100K messages a day post in groups, so each
- * phone listed in Ajustes gets its own message from the main number. Outside the 24 h window only an approved
- * template reaches them, so this one is UTILITY with its own purpose (no lead message ever borrows it).
+ * Every meeting the CRM books is posted in the team's WhatsApp group (Wellington, 2026-11-12/13): client, day and time,
+ * Meet link and the lead's page. Meta's official API only posts in groups for accounts with the green badge and 100K
+ * messages a day, so the group is reached through Uazapi (unofficial), from a separate number that is in the group.
+ * UAZAPI_URL is the instance's server (https://xxx.uazapi.com) and UAZAPI_TOKEN the instance's token.
  */
-export const TEAM_ALERT_TEMPLATE = {
-  name: "banneg_aviso_reuniao_equipe",
-  category: "UTILITY",
-  purpose: "team_alert",
-  body:
-    "Nova reunião marcada pelo CRM do Banneg.\n\n" +
-    "Cliente: {{1}}\nWhatsApp: {{2}}\nQuando: {{3}}, horário de Brasília\nLink da reunião: {{4}}\nFicha no CRM: {{5}}\n\n" +
-    "Marcada por {{6}}. Bom atendimento!",
-} as const;
+export type TeamGroup = { id: string; name: string };
 
-/** The phones in Ajustes › "WhatsApp da equipe que recebe toda reunião", one per person, as WhatsApp numbers. */
-export function teamAlertPhones(settings: Pick<CrmSettings, "meetingAlertPhones">) {
-  return [...new Set((settings.meetingAlertPhones ?? []).map(normalizePhone).filter((p) => p.length >= 12))];
+export function uazapiMissing() {
+  return ["UAZAPI_URL", "UAZAPI_TOKEN"].filter((k) => !process.env[k]);
 }
 
-/** Whether this phone is one of the team's (with or without the 9): it gets the notices, it never becomes a lead. */
-export function isTeamPhone(settings: Pick<CrmSettings, "meetingAlertPhones">, phone: string) {
-  const mine = phoneVariants(phone);
-  return teamAlertPhones(settings).some((p) => phoneVariants(p).some((v) => mine.includes(v)));
+async function uazapi<T>(path: string, body?: unknown): Promise<T> {
+  const base = process.env.UAZAPI_URL?.trim().replace(/\/+$/, "");
+  const token = process.env.UAZAPI_TOKEN?.trim();
+  if (!base || !token) throw new Error("Falta UAZAPI_URL ou UAZAPI_TOKEN nas variáveis do servidor.");
+  let res: Response;
+  try {
+    res = await fetch(`${base}${path}`, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { token, Accept: "application/json", "Content-Type": "application/json" },
+      ...(body !== undefined && { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (e) {
+    throw new Error(`Sem resposta da Uazapi (${(e as Error).name === "TimeoutError" ? "demorou mais de 20 s" : (e as Error).message}).`);
+  }
+  const json = (await res.json().catch(() => ({}))) as T & { error?: string; message?: string };
+  if (!res.ok) throw new Error(`Uazapi respondeu ${res.status}: ${json.error ?? json.message ?? "erro"}`);
+  return json;
+}
+
+type RawGroup = { JID?: string; jid?: string; id?: string; Name?: string; name?: string; subject?: string };
+
+/** The groups the Uazapi number is in, by name. */
+export async function listTeamGroups(): Promise<TeamGroup[]> {
+  const res = await uazapi<RawGroup[] | { groups?: RawGroup[] }>("/group/list");
+  const raw = Array.isArray(res) ? res : (res.groups ?? []);
+  return raw
+    .map((g) => ({ id: g.JID ?? g.jid ?? g.id ?? "", name: g.Name ?? g.name ?? g.subject ?? "" }))
+    .filter((g) => g.id.endsWith("@g.us"))
+    .map((g) => ({ ...g, name: g.name || g.id }))
+    .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+}
+
+export async function sendToGroup(groupId: string, text: string) {
+  await uazapi("/send/text", { number: groupId, text, linkPreview: false });
+}
+
+/** The group chosen on Integrações; null = no notice. */
+export async function setTeamGroup(groupId: string | null) {
+  if (!groupId) {
+    await saveSettings({ meetingAlertGroup: null });
+    return null;
+  }
+  const group = (await listTeamGroups()).find((g) => g.id === groupId);
+  if (!group) throw new Error("Esse grupo não aparece mais no número da Uazapi.");
+  await saveSettings({ meetingAlertGroup: group });
+  return group;
+}
+
+export function teamGroupOn(settings: Pick<CrmSettings, "meetingAlertGroup">) {
+  return !!settings.meetingAlertGroup?.id && !uazapiMissing().length;
 }
 
 const when = (d: Date) =>
@@ -38,62 +75,56 @@ const when = (d: Date) =>
     minute: "2-digit",
   })}`;
 
-// Meta refuses a variable with line breaks, tabs or 4 spaces in a row, and an empty one
-const param = (s: string | null | undefined, empty: string) => (s ?? "").replace(/\s+/g, " ").trim() || empty;
-
-/** The six values of the template, in order; the free-text message says the same. */
-export function teamAlertParams(
-  lead: { id: string; name: string | null; phone: string | null },
+/** What the group reads (WhatsApp's *bold*): who, when, the Meet link, the lead's page and the AI's summary. */
+export function teamAlertText(
+  lead: { id: string; name: string | null; phone: string | null; email?: string | null; aiSummary?: string | null },
   meeting: { startsAt: Date; meetLink: string | null },
-  // previous: the time before a reschedule, said after who did it ("Wellington, remarcada de quinta-feira...")
   opts: { pipeline?: string | null; actor: string; previous?: Date },
 ) {
-  const name = param(lead.name, "sem nome");
-  return [
-    opts.pipeline ? `${name} (${param(opts.pipeline, "")})` : name,
-    lead.phone ? phoneLabel(lead.phone) : "sem WhatsApp",
-    when(meeting.startsAt),
-    param(meeting.meetLink, "sem link (veja o Google Agenda)"),
-    `${CRM_URL}/leads/${lead.id}`,
-    `${param(opts.actor, "CRM")}${opts.previous ? `, remarcada de ${when(opts.previous)}` : ""}`,
-  ];
+  const lines = [
+    opts.previous ? "*Reunião remarcada*" : "*Nova reunião marcada*",
+    "",
+    `*Cliente:* ${lead.name?.trim() || "sem nome"}${opts.pipeline ? ` (${opts.pipeline})` : ""}`,
+    lead.phone && `*WhatsApp:* ${phoneLabel(lead.phone)} · https://wa.me/${lead.phone.replace(/\D/g, "")}`,
+    lead.email && `*E-mail:* ${lead.email}`,
+    `*Quando:* ${when(meeting.startsAt)} (horário de Brasília)`,
+    opts.previous && `*Antes era:* ${when(opts.previous)}`,
+    `*Link da reunião:* ${meeting.meetLink ?? "sem link (veja o Google Agenda)"}`,
+    `*Ficha no CRM:* ${CRM_URL}/leads/${lead.id}`,
+  ].filter((l): l is string => typeof l === "string");
+  const summary = lead.aiSummary?.trim();
+  return [lines.join("\n"), summary && `*Resumo:* ${summary}`, `${opts.previous ? "Remarcada" : "Marcada"} por ${opts.actor}.`].filter(Boolean).join("\n\n");
 }
 
-export function teamAlertText(params: string[]) {
-  return params.reduce((text, value, i) => text.replace(`{{${i + 1}}}`, value), TEAM_ALERT_TEMPLATE.body as string);
-}
-
-/**
- * Sends the notice of one booked meeting to every phone on the list. Throws only when nobody got it, so the job tries
- * again later without repeating it to anyone.
- */
+/** Posts the notice of one meeting in the group. Throws when it did not go, so the job tries again later. */
 export async function sendTeamMeetingAlert(meetingId: string, actor: string, previous?: Date) {
   const settings = await getSettings();
-  const phones = teamAlertPhones(settings);
-  if (!phones.length) return { text: "Nenhum WhatsApp da equipe em Ajustes.", sent: [] as string[] };
+  const group = settings.meetingAlertGroup;
+  if (!group?.id) return "Nenhum grupo escolhido em Integrações.";
   const meeting = await db.meeting.findUnique({ where: { id: meetingId }, include: { lead: { include: { pipeline: { select: { name: true } } } } } });
-  if (!meeting || meeting.status !== "scheduled") return { text: "Ignorado: a reunião não está mais marcada.", sent: [] as string[] };
-  const params = teamAlertParams(meeting.lead, meeting, { pipeline: meeting.lead.pipeline.name, actor, previous });
-  const template = await db.whatsAppTemplate.findFirst({ where: { name: TEAM_ALERT_TEMPLATE.name, active: true } });
-  const sent: string[] = [];
-  const failed: string[] = [];
-  for (const phone of phones) {
-    if (settings.testMode && !isTestContact(settings, phone)) {
-      failed.push(`${phoneLabel(phone)} (modo teste: não enviado)`);
-      continue;
-    }
-    // Until Meta approves the template, the plain text still reaches whoever wrote to the number in the last 24 h
-    const res = template ? await sendTemplate(phone, template.name, template.language, params) : await sendText(phone, teamAlertText(params));
-    if (res.ok) sent.push(phone);
-    else failed.push(`${phoneLabel(phone)} (${res.error})`);
+  if (!meeting || meeting.status !== "scheduled") return "Ignorado: a reunião não está mais marcada.";
+  try {
+    await sendToGroup(group.id, teamAlertText(meeting.lead, meeting, { pipeline: meeting.lead.pipeline.name, actor, previous }));
+  } catch (e) {
+    const text = `Aviso da reunião não chegou ao grupo ${group.name}: ${(e as Error).message}`;
+    await logEvent(meeting.leadId, "meeting.team_alert", "CRM", text);
+    throw new Error(text);
   }
-  const text = [
-    sent.length && `Aviso da reunião no WhatsApp da equipe: ${sent.map(phoneLabel).join(", ")}.`,
-    failed.length && `Não chegou para ${failed.join(", ")}.`,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const text = `Aviso da reunião postado no grupo ${group.name} do WhatsApp.`;
   await logEvent(meeting.leadId, "meeting.team_alert", "CRM", text);
-  if (!sent.length && failed.some((f) => !f.includes("modo teste"))) throw new Error(text);
-  return { text, sent };
+  return text;
+}
+
+/** Integrações' test button: a short message in the chosen group. */
+export async function testTeamGroup() {
+  const missing = uazapiMissing();
+  if (missing.length) return { ok: false, message: `Falta configurar no Vercel: ${missing.join(", ")}.` };
+  const group = (await getSettings()).meetingAlertGroup;
+  if (!group?.id) return { ok: false, message: "Escolha o grupo e salve antes de testar." };
+  try {
+    await sendToGroup(group.id, "Teste do CRM do Banneg: daqui para a frente, cada reunião marcada aparece aqui com o cliente, o link do Meet e a ficha no CRM.");
+    return { ok: true, message: `Mensagem de teste enviada ao grupo ${group.name}. Confira no WhatsApp.` };
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
 }

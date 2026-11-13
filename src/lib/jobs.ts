@@ -19,7 +19,7 @@ import { blockedByAccount, resendSame } from "./resend";
 import { aiAccountProblem, aiAnswered, setAiHealth } from "./ai-health";
 import { sendPortalStatus, type PortalBody } from "./portal";
 import { sendPortalEmail } from "./portal-email";
-import { sendTeamMeetingAlert, teamAlertPhones } from "./team-alert";
+import { sendTeamMeetingAlert, teamGroupOn } from "./team-alert";
 
 type Handler = (job: Job, lead: Lead | null) => Promise<string>;
 
@@ -241,7 +241,7 @@ const handlers: Record<string, Handler> = {
 
   async "meeting.team_alert"(job) {
     const { meetingId, actor, previous } = job.payload as { meetingId: string; actor: string; previous?: string };
-    return (await sendTeamMeetingAlert(meetingId, actor, previous ? new Date(previous) : undefined)).text;
+    return sendTeamMeetingAlert(meetingId, actor, previous ? new Date(previous) : undefined);
   },
 
   async "meeting.reminder"(job, l) {
@@ -565,20 +565,20 @@ export async function bookMeeting(lead: Lead, userId: string, slot: Slot, actor:
     },
   });
   await logEvent(lead.id, "meeting.booked", actor, `Reunião marcada com ${user.name}: ${formatSlot(slot.startsAt)}.`);
-  // The team's WhatsApp gets the client, the time, the Meet link and the lead's page (Ajustes › Qualificação e agenda)
+  // The team's WhatsApp group gets the client, the time, the Meet link and the lead's page (Integrações › Grupo de reuniões)
   await queueTeamAlert(meeting, actor, settings);
   await queueReminders(meeting);
   return meeting;
 }
 
-/** The notice to the team's WhatsApp; a rescheduled meeting goes again with the new time and the old one. */
+/** The notice in the team's WhatsApp group; a rescheduled meeting goes again with the new time and the old one. */
 async function queueTeamAlert(
   meeting: { id: string; leadId: string; startsAt: Date },
   actor: string,
-  settings: Pick<CrmSettings, "meetingAlertPhones">,
+  settings: Pick<CrmSettings, "meetingAlertGroup">,
   previous?: Date,
 ) {
-  if (!teamAlertPhones(settings).length) return;
+  if (!teamGroupOn(settings)) return;
   await enqueue("meeting.team_alert", {
     leadId: meeting.leadId,
     payload: { meetingId: meeting.id, actor, ...(previous && { previous: previous.toISOString() }) },

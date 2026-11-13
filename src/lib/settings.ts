@@ -12,8 +12,8 @@ export type CrmSettings = {
   meetingMinutes: number;
   // E-mails invited to every meeting the CRM books; Google sends them the invitation, as it does to the lead
   meetingGuests: string[];
-  // WhatsApp of each person on the team who gets a message for every meeting booked (Meet link, client, CRM page)
-  meetingAlertPhones: string[];
+  // The team's WhatsApp group (through Uazapi) where every booked meeting is posted; null = none (Integrações)
+  meetingAlertGroup: { id: string; name: string } | null;
   businessHours: BusinessHours;
   presentationUrl: string;
   // While on, WhatsApp and e-mail only really go to testContacts; the rest is recorded as simulated
@@ -70,7 +70,7 @@ export const DEFAULT_SETTINGS: CrmSettings = {
   qualifyScore: 60,
   meetingMinutes: 30,
   meetingGuests: [],
-  meetingAlertPhones: [],
+  meetingAlertGroup: null,
   businessHours: { start: 9, end: 18, days: [1, 2, 3, 4, 5], timezone: "America/Sao_Paulo" },
   presentationUrl: DEFAULT_MATERIALS.apresentacao,
   testMode: true,

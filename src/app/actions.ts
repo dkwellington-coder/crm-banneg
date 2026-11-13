@@ -12,7 +12,7 @@ import { sendWhatsApp } from "@/lib/messaging";
 import { clearAlerts } from "@/lib/alerts";
 import { enqueue } from "@/lib/queue";
 import { getSettings, saveSettings } from "@/lib/settings";
-import { getHealth, normalizePhone, savedWhatsAppNumbers } from "@/lib/whatsapp";
+import { getHealth, savedWhatsAppNumbers } from "@/lib/whatsapp";
 import { importLeads, importSummary } from "@/lib/import";
 import { ACTIONS, emailList, UNITS, type PersonVersion, type RuleConfig } from "@/lib/rules";
 import { METRICS } from "@/lib/goals";
@@ -263,15 +263,6 @@ export async function saveSettingsAction(form: FormData) {
     qualifyScore: num("qualifyScore", current.qualifyScore, 0, 100),
     meetingMinutes: num("meetingMinutes", current.meetingMinutes, 15, 240),
     meetingGuests: guests,
-    // One WhatsApp per line or comma; a number that is not a phone is dropped
-    meetingAlertPhones: [
-      ...new Set(
-        String(form.get("meetingAlertPhones") ?? "")
-          .split(/[\n,;]+/)
-          .map(normalizePhone)
-          .filter((p) => p.length >= 12 && p.length <= 13),
-      ),
-    ],
     businessHours: {
       ...current.businessHours,
       start,
@@ -726,6 +717,7 @@ export async function testIntegrationAction(_: TestState, form: FormData): Promi
     meta_bring: () => integrations.bringMissingFormLeads(),
     meta_ads: () => integrations.checkMetaAds(),
     email_leads: () => integrations.checkEmailLeads(),
+    team_group: async () => (await import("@/lib/team-alert")).testTeamGroup(),
   }[kind];
   if (!run) return { kind, ok: false, message: "Teste desconhecido." };
   const res = await run();
@@ -749,6 +741,14 @@ export async function setFormFunnelAction(formId: string, form: FormData) {
   const names = state.names?.[formId] ? { ...state.names, [formId]: { ...state.names[formId], funnel: slug || null } } : state.names;
   const value = JSON.parse(JSON.stringify({ ...state, forms, names }));
   await db.setting.upsert({ where: { key: "meta_leads" }, create: { key: "meta_leads", value }, update: { value } });
+  revalidatePath("/integracoes");
+}
+
+/** The team's WhatsApp group that gets every booked meeting (Integrações); empty = none. */
+export async function setTeamGroupAction(form: FormData) {
+  await requireManager("integracoes");
+  const { setTeamGroup } = await import("@/lib/team-alert");
+  await setTeamGroup(String(form.get("groupId") ?? "") || null);
   revalidatePath("/integracoes");
 }
 

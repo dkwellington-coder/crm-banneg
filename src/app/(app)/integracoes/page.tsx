@@ -1,11 +1,12 @@
 import { Suspense, type ReactNode } from "react";
 import { headers } from "next/headers";
-import { BadgeDollarSign, Bot, CalendarDays, ClipboardList, Copy, FlaskConical, Inbox, Mail, MessageCircle, RotateCcw, ShieldCheck, Webhook, type LucideIcon } from "lucide-react";
+import { BadgeDollarSign, Bot, UsersRound, CalendarDays, ClipboardList, Copy, FlaskConical, Inbox, Mail, MessageCircle, RotateCcw, ShieldCheck, Webhook, type LucideIcon } from "lucide-react";
 import { requireArea } from "@/lib/access";
 import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { Card, Loading, PageHeader, btnCls, btnGhostCls, inputCls, relTime } from "@/components/ui";
-import { disconnectGoogleAction, resendBlockedAction, saveTestModeAction, setEmailLeadsFunnelAction } from "../../actions";
+import { disconnectGoogleAction, resendBlockedAction, saveTestModeAction, setEmailLeadsFunnelAction, setTeamGroupAction } from "../../actions";
+import { listTeamGroups, uazapiMissing, type TeamGroup } from "@/lib/team-alert";
 import { googleLinks } from "@/lib/google";
 import { TestButton } from "./TestButton";
 import { FormFunnelSelect } from "./FormFunnelSelect";
@@ -119,6 +120,60 @@ async function CalendarCheck() {
 }
 
 /** E-mails sent to the leads box become leads in the chosen funnel; the last ones read and what became of each. */
+/** The team's WhatsApp group (through Uazapi) where every booked meeting is posted. */
+async function TeamGroupBlock() {
+  const missing = uazapiMissing();
+  const chosen = (await getSettings()).meetingAlertGroup;
+  let groups: TeamGroup[] = [];
+  let error: string | null = null;
+  if (!missing.length) {
+    try {
+      groups = await listTeamGroups();
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+  // The saved group stays selectable even when the list could not be read
+  if (chosen && !groups.some((g) => g.id === chosen.id)) groups = [chosen, ...groups];
+  return (
+    <Block icon={UsersRound} color="#25d366" title="Grupo de reuniões no WhatsApp (Uazapi)" missing={missing}>
+      <p className="text-sm text-slate-600">
+        Toda reunião marcada (pela IA ou pela equipe) aparece no grupo escolhido: cliente, WhatsApp, dia e hora, link do Meet, a ficha no CRM e o
+        resumo da IA. Reunião remarcada aparece de novo com o horário novo. A mensagem sai de um número extra conectado na Uazapi, que precisa
+        estar no grupo. O número oficial do Banneg não é usado para isso.
+      </p>
+      {missing.length > 0 && (
+        <ol className="list-decimal space-y-1 pl-5">
+          <Step>Na Uazapi, crie uma instância e conecte o número extra pelo QR code.</Step>
+          <Step>No WhatsApp desse número, crie o grupo com a equipe (ou entre no grupo que já existe).</Step>
+          <Step>No Vercel, salve o endereço do servidor da instância como UAZAPI_URL e o token da instância como UAZAPI_TOKEN, e publique o CRM de novo.</Step>
+        </ol>
+      )}
+      {!missing.length && (
+        <form action={setTeamGroupAction} className="flex flex-wrap items-center gap-2 text-sm">
+          <label htmlFor="team-group" className="text-slate-600">
+            Grupo:
+          </label>
+          <select id="team-group" name="groupId" defaultValue={chosen?.id ?? ""} className={`${inputCls} w-auto!`}>
+            <option value="">Nenhum (não avisar)</option>
+            {groups.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}
+              </option>
+            ))}
+          </select>
+          <button className={btnGhostCls}>Salvar</button>
+        </form>
+      )}
+      {error && <p className="text-sm text-amber-700">Não deu para ler os grupos: {error}</p>}
+      {!missing.length && !error && !groups.length && (
+        <p className="text-sm text-slate-500">O número da Uazapi ainda não está em nenhum grupo. Crie o grupo no celular e recarregue esta página.</p>
+      )}
+      {chosen && <TestButton kind="team_group" label="Mandar mensagem de teste no grupo" />}
+    </Block>
+  );
+}
+
 async function EmailLeads() {
   const [state, pipelines] = await Promise.all([
     emailLeadsState(),
@@ -527,6 +582,8 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
       </Block>
 
       <EmailLeads />
+
+      <TeamGroupBlock />
 
       <div id="google" className="xl:col-span-2">
         <Block icon={CalendarDays} color="#d97706" title="Google Agenda (reuniões com Meet)" missing={has("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")}>

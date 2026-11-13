@@ -3,7 +3,6 @@ import Link from "next/link";
 import { requireArea } from "@/lib/access";
 import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
-import { phoneLabel } from "@/lib/calendar";
 import { cofDeadline, dateTimeBr, sizeLabel } from "@/lib/cof";
 import { CofUpload } from "./CofUpload";
 import { MetaCapiForm } from "./MetaCapiForm";
@@ -163,20 +162,6 @@ async function Config() {
               <textarea name="meetingGuests" rows={2} defaultValue={settings.meetingGuests.join("\n")} placeholder="nome@banneg.com.br" className={inputCls} />
               <span className="text-xs text-slate-500">
                 O Google manda o convite com o link do Meet para eles, como para o lead. Ao salvar, eles entram também nas reuniões já marcadas.
-              </span>
-            </label>
-            <label className="block text-sm">
-              WhatsApp da equipe que recebe toda reunião (um número por linha)
-              <textarea
-                name="meetingAlertPhones"
-                rows={2}
-                defaultValue={settings.meetingAlertPhones.map(phoneLabel).join("\n")}
-                placeholder="(17) 99999-0000"
-                className={inputCls}
-              />
-              <span className="text-xs text-slate-500">
-                A cada reunião marcada (pela IA ou pela equipe), cada número recebe do WhatsApp principal: cliente, dia e hora, link do Meet e o
-                link da ficha no CRM. Mensagens desses números não viram lead.
               </span>
             </label>
             <p className="text-xs text-slate-500">Follow-ups e lembretes agora ficam nas automações de cada etapa, em Funil › Editar funil.</p>

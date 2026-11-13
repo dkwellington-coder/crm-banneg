@@ -1,11 +1,8 @@
-// Every booked meeting goes to the team's WhatsApp (Wellington, 2026-11-12): client, time, Meet link and the lead's page.
-// Google and Meta (fetch) are stubbed. The database part runs only when TEST_DATABASE_URL is set.
-import { readFileSync } from "node:fs";
-import path from "node:path";
+// Every booked meeting is posted in the team's WhatsApp group through Uazapi (Wellington, 2026-11-12/13): client, time,
+// Meet link and the lead's page. Google and Uazapi (fetch) are stubbed. The database part runs only when TEST_DATABASE_URL is set.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { installDefaultPipeline } from "@/lib/pipeline-defaults";
-import { isTeamPhone, TEAM_ALERT_TEMPLATE, teamAlertParams, teamAlertPhones, teamAlertText } from "@/lib/team-alert";
-import { templateComponents } from "@/lib/whatsapp";
+import { teamAlertText } from "@/lib/team-alert";
 
 const dbUrl = process.env.TEST_DATABASE_URL;
 if (dbUrl) process.env.DATABASE_URL = dbUrl;
@@ -14,74 +11,89 @@ process.env.WHATSAPP_PHONE_NUMBER_ID = "123";
 process.env.GOOGLE_CLIENT_ID = "client";
 process.env.GOOGLE_CLIENT_SECRET = "secret";
 process.env.GOOGLE_REFRESH_TOKEN = "legacy";
+process.env.UAZAPI_URL = "https://banneg.uazapi.com/";
+process.env.UAZAPI_TOKEN = "tok";
 
-describe("the team's meeting notice", () => {
-  it("reads the phones in any format, and knows them with or without the 9", () => {
-    const settings = { meetingAlertPhones: ["(17) 98160-0088", "5517981600088", "abc", "11 92013-8123"] };
-    expect(teamAlertPhones(settings)).toEqual(["5517981600088", "5511920138123"]);
-    expect(isTeamPhone(settings, "551781600088")).toBe(true);
-    expect(isTeamPhone(settings, "5541999990000")).toBe(false);
-    expect(isTeamPhone({ meetingAlertPhones: [] }, "5517981600088")).toBe(false);
-  });
+const GROUP = { id: "120363001234567890@g.us", name: "Reuniões Banneg" };
 
-  it("fills the six variables on one line each, never empty", () => {
-    const params = teamAlertParams(
-      { id: "lead1", name: "Ana\nSouza", phone: "5541999990000" },
-      { startsAt: new Date("2026-11-13T13:00:00Z"), meetLink: null },
+describe("the group's meeting notice", () => {
+  it("says who, when, the Meet link, the lead's page and the summary", () => {
+    const text = teamAlertText(
+      { id: "lead1", name: "Ana Souza", phone: "5541999990000", email: "ana@x.com", aiSummary: "Quer abrir loja em Curitiba." },
+      { startsAt: new Date("2026-11-13T13:00:00Z"), meetLink: "https://meet.google.com/abc-defg-hij" },
       { pipeline: "Vendas de Franquias", actor: "Duda" },
     );
-    expect(params).toEqual([
-      "Ana Souza (Vendas de Franquias)",
-      "(41) 99999-0000",
-      "sexta-feira, 13/11, às 10:00",
-      "sem link (veja o Google Agenda)",
-      "https://crm-banneg-banneg.vercel.app/leads/lead1",
-      "Duda",
-    ]);
-    const text = teamAlertText(params);
-    expect(text).toContain("Cliente: Ana Souza (Vendas de Franquias)");
-    expect(text).toContain("Ficha no CRM: https://crm-banneg-banneg.vercel.app/leads/lead1");
-    expect(text).not.toMatch(/\{\{\d\}\}/);
+    expect(text).toBe(
+      [
+        "*Nova reunião marcada*",
+        "",
+        "*Cliente:* Ana Souza (Vendas de Franquias)",
+        "*WhatsApp:* (41) 99999-0000 · https://wa.me/5541999990000",
+        "*E-mail:* ana@x.com",
+        "*Quando:* sexta-feira, 13/11, às 10:00 (horário de Brasília)",
+        "*Link da reunião:* https://meet.google.com/abc-defg-hij",
+        "*Ficha no CRM:* https://crm-banneg-banneg.vercel.app/leads/lead1",
+        "",
+        "*Resumo:* Quer abrir loja em Curitiba.",
+        "",
+        "Marcada por Duda.",
+      ].join("\n"),
+    );
   });
 
-  it("goes to Meta's review with examples that fit it, and the migration carries the same text", () => {
-    const body = templateComponents({ name: TEAM_ALERT_TEMPLATE.name, body: TEAM_ALERT_TEMPLATE.body, buttons: [] })[0] as { example: { body_text: string[][] } };
-    expect(body.example.body_text[0]).toHaveLength(6);
-    expect(body.example.body_text[0][3]).toMatch(/^https:\/\/meet\.google\.com\//);
-    const sql = readFileSync(path.resolve(import.meta.dirname, "../prisma/migrations/20261112190000_aviso_reuniao_equipe/migration.sql"), "utf8");
-    const saved = /E'([^']*)'/.exec(sql)![1].replaceAll("\\n", "\n");
-    expect(saved).toBe(TEAM_ALERT_TEMPLATE.body);
-    expect(sql).toContain(`'${TEAM_ALERT_TEMPLATE.name}'`);
-    expect(sql).toContain(`'${TEAM_ALERT_TEMPLATE.purpose}'`);
+  it("a rescheduled meeting says so, with the old time; without Meet or WhatsApp it still reads well", () => {
+    const text = teamAlertText(
+      { id: "lead1", name: null, phone: null },
+      { startsAt: new Date("2026-11-14T17:00:00Z"), meetLink: null },
+      { actor: "Wellington", previous: new Date("2026-11-13T13:00:00Z") },
+    );
+    expect(text).toContain("*Reunião remarcada*");
+    expect(text).toContain("*Cliente:* sem nome\n*Quando:* sábado, 14/11, às 14:00 (horário de Brasília)\n*Antes era:* sexta-feira, 13/11, às 10:00");
+    expect(text).toContain("*Link da reunião:* sem link (veja o Google Agenda)");
+    expect(text).not.toContain("WhatsApp:");
+    expect(text).toMatch(/Remarcada por Wellington\.$/);
   });
 });
 
-describe.skipIf(!dbUrl)("meeting notice to the team's WhatsApp", () => {
+describe.skipIf(!dbUrl)("meeting notice in the team's WhatsApp group", () => {
   let db: typeof import("@/lib/db").db;
   let leads: typeof import("@/lib/leads");
   let jobs: typeof import("@/lib/jobs");
   let settings: typeof import("@/lib/settings");
-  const meta: Record<string, unknown>[] = [];
+  let team: typeof import("@/lib/team-alert");
+  const uazapi: { url: string; token: string | null; body: Record<string, unknown> | null }[] = [];
+  let uazapiDown = false;
 
   beforeAll(async () => {
     db = (await import("@/lib/db")).db;
     leads = await import("@/lib/leads");
     jobs = await import("@/lib/jobs");
     settings = await import("@/lib/settings");
-    vi.stubGlobal("fetch", async (url: string, init: { method?: string; body?: string | URLSearchParams }) => {
+    team = await import("@/lib/team-alert");
+    vi.stubGlobal("fetch", async (url: string, init: { method?: string; body?: string; headers?: Record<string, string> }) => {
       if (url.startsWith("https://oauth2.googleapis.com/token")) return Response.json({ access_token: "a1" });
       if (url.startsWith("https://www.googleapis.com/calendar/v3/")) {
         if ((init.method ?? "GET") === "GET") return Response.json({ items: [] });
         return Response.json({ id: "ev1", hangoutLink: "https://meet.google.com/abc-defg-hij" });
       }
-      const body = JSON.parse(String(init.body));
-      meta.push(body);
-      return Response.json({ messages: [{ id: `wamid.${meta.length}` }] });
+      if (url.startsWith("https://banneg.uazapi.com")) {
+        uazapi.push({ url, token: init.headers?.token ?? null, body: init.body ? JSON.parse(init.body) : null });
+        if (uazapiDown) return Response.json({ error: "instance disconnected" }, { status: 503 });
+        if (url.endsWith("/group/list"))
+          return Response.json([
+            { JID: GROUP.id, Name: GROUP.name },
+            { JID: "120363009999999999@g.us", Name: "Família" },
+            { JID: "5517999990000@s.whatsapp.net", Name: "not a group" },
+          ]);
+        return Response.json({ messageid: "m1", status: "sent" });
+      }
+      return Response.json({ messages: [{ id: "wamid.1" }] });
     });
   });
 
   beforeEach(async () => {
-    meta.length = 0;
+    uazapi.length = 0;
+    uazapiDown = false;
     await db.$executeRawUnsafe(
       'TRUNCATE "Job","LeadEvent","Message","Meeting","Task","Lead","SdrAgent","AutomationRule","Stage","Pipeline","Goal","User","Session","WhatsAppTemplate","EmailTemplate","Setting" CASCADE',
     );
@@ -96,82 +108,95 @@ describe.skipIf(!dbUrl)("meeting notice to the team's WhatsApp", () => {
     const meeting = await jobs.bookMeeting(lead, owner.id, { startsAt, endsAt: new Date(startsAt.getTime() + 30 * 60_000) }, actor);
     return { lead, meeting };
   };
-  const toTeam = () => meta.filter((m) => m.to !== "5541999990003");
+  const posts = () => uazapi.filter((c) => c.url.endsWith("/send/text"));
 
-  it("sends each team phone the client, the time, the Meet link and the lead's page", async () => {
-    await settings.saveSettings({ meetingAlertPhones: ["(17) 98160-0088", "(11) 92013-8123"] });
+  it("lists only groups, and saves the one chosen", async () => {
+    expect(await team.listTeamGroups()).toEqual([{ id: "120363009999999999@g.us", name: "Família" }, GROUP]);
+    expect(uazapi[0]).toMatchObject({ url: "https://banneg.uazapi.com/group/list", token: "tok" });
+    await team.setTeamGroup(GROUP.id);
+    expect((await settings.getSettings()).meetingAlertGroup).toEqual(GROUP);
+    await expect(team.setTeamGroup("120363000000000000@g.us")).rejects.toThrow("não aparece mais");
+    await team.setTeamGroup(null);
+    expect((await settings.getSettings()).meetingAlertGroup).toBeNull();
+  });
+
+  it("posts each booked meeting in the group, with the lead's page", async () => {
+    await settings.saveSettings({ meetingAlertGroup: GROUP });
     const { lead, meeting } = await book();
     expect(await db.job.count({ where: { type: "meeting.team_alert", dedupeKey: `team_alert:${meeting.id}` } })).toBe(1);
     await jobs.runDueJobs();
-    // No approved template yet: the plain text (it reaches whoever wrote to the number in the last 24 h)
-    expect(toTeam().map((m) => m.to)).toEqual(["5517981600088", "5511920138123"]);
-    const text = JSON.stringify(toTeam()[0]);
-    expect(toTeam()[0]).toMatchObject({ type: "text" });
-    expect(text).toContain("Michel Souza (Expansão)");
-    expect(text).toContain("(41) 99999-0003");
+    expect(posts()).toHaveLength(1);
+    const [post] = posts();
+    expect(post).toMatchObject({ token: "tok", body: { number: GROUP.id, linkPreview: false } });
+    const text = String(post.body!.text);
+    expect(text).toContain("*Cliente:* Michel Souza (Expansão)");
     expect(text).toContain("https://meet.google.com/abc-defg-hij");
     expect(text).toContain(`/leads/${lead.id}`);
-    expect(text).toContain("Marcada por Duda");
+    expect(text).toContain("Marcada por Duda.");
     const event = await db.leadEvent.findFirstOrThrow({ where: { leadId: lead.id, type: "meeting.team_alert" } });
-    expect(event.summary).toBe("Aviso da reunião no WhatsApp da equipe: (17) 98160-0088, (11) 92013-8123.");
+    expect(event.summary).toBe("Aviso da reunião postado no grupo Reuniões Banneg do WhatsApp.");
   });
 
-  it("uses the approved template once Meta approves it", async () => {
-    await settings.saveSettings({ meetingAlertPhones: ["17981600088"] });
-    await db.whatsAppTemplate.create({
-      data: { name: TEAM_ALERT_TEMPLATE.name, body: TEAM_ALERT_TEMPLATE.body, purpose: TEAM_ALERT_TEMPLATE.purpose, category: "UTILITY", status: "APPROVED", active: true },
-    });
-    const { lead } = await book("Wellington");
-    await jobs.runDueJobs();
-    const [sent] = toTeam();
-    expect(sent).toMatchObject({ to: "5517981600088", type: "template", template: { name: TEAM_ALERT_TEMPLATE.name, language: { code: "pt_BR" } } });
-    const params = (sent.template as { components: { parameters: { text: string }[] }[] }).components[0].parameters.map((p) => p.text);
-    expect(params).toHaveLength(6);
-    expect(params[3]).toBe("https://meet.google.com/abc-defg-hij");
-    expect(params[4]).toMatch(new RegExp(`/leads/${lead.id}$`));
-    expect(params[5]).toBe("Wellington");
-    expect(params.every((p) => p && !/\n/.test(p))).toBe(true);
-  });
-
-  it("a rescheduled meeting goes to the team again, with the new time and the old one", async () => {
-    await settings.saveSettings({ meetingAlertPhones: ["17981600088"] });
+  it("a rescheduled meeting is posted again with the new time and the old one", async () => {
+    await settings.saveSettings({ meetingAlertGroup: GROUP });
     const { meeting } = await book();
     await jobs.runDueJobs();
-    meta.length = 0;
+    uazapi.length = 0;
     const startsAt = new Date("2026-11-14T17:00:00Z");
     await jobs.rescheduleMeeting(meeting.id, { slot: { startsAt, endsAt: new Date(startsAt.getTime() + 30 * 60_000) }, actor: "Wellington", notify: false });
     await jobs.runDueJobs();
-    const text = JSON.stringify(toTeam());
-    expect(toTeam()).toHaveLength(1);
-    expect(text).toContain("Quando: sábado, 14/11, às 14:00");
-    expect(text).toContain("Marcada por Wellington, remarcada de sexta-feira, 13/11, às 10:00.");
+    expect(posts()).toHaveLength(1);
+    const text = String(posts()[0].body!.text);
+    expect(text).toContain("*Reunião remarcada*");
+    expect(text).toContain("*Quando:* sábado, 14/11, às 14:00");
+    expect(text).toContain("*Antes era:* sexta-feira, 13/11, às 10:00");
+    expect(text).toContain("Remarcada por Wellington.");
   });
 
-  it("sends nothing without phones, nor for a meeting canceled before the notice went", async () => {
+  it("nothing without a group or without Uazapi, nor for a meeting canceled before the notice went", async () => {
     await book();
     expect(await db.job.count({ where: { type: "meeting.team_alert" } })).toBe(0);
 
     await db.user.deleteMany();
     await db.lead.deleteMany();
-    await settings.saveSettings({ meetingAlertPhones: ["17981600088"] });
+    await settings.saveSettings({ meetingAlertGroup: GROUP });
+    const token = process.env.UAZAPI_TOKEN;
+    delete process.env.UAZAPI_TOKEN;
+    await book();
+    expect(await db.job.count({ where: { type: "meeting.team_alert" } })).toBe(0);
+    process.env.UAZAPI_TOKEN = token;
+
+    await db.user.deleteMany();
+    await db.lead.deleteMany();
     const { meeting } = await book();
     await jobs.cancelMeeting(meeting.id, "Wellington");
-    meta.length = 0;
     await jobs.runDueJobs();
-    expect(toTeam()).toEqual([]);
+    expect(posts()).toEqual([]);
     const job = await db.job.findFirstOrThrow({ where: { type: "meeting.team_alert" } });
     expect(job.result).toBe("Ignorado: a reunião não está mais marcada.");
   });
 
-  it("a team phone answering the notice does not become a lead; a lead with that phone still talks", async () => {
-    await settings.saveSettings({ meetingAlertPhones: ["(17) 98160-0088"] });
-    // WhatsApp sends this number without the 9
-    expect(await leads.handleInbound({ phone: "551781600088", body: "ok, obrigado", externalId: "w1", at: new Date() })).toBeNull();
-    expect(await db.lead.count()).toBe(0);
+  it("Uazapi down: the history says so and the job tries again later", async () => {
+    await settings.saveSettings({ meetingAlertGroup: GROUP });
+    uazapiDown = true;
+    const { lead, meeting } = await book();
+    await jobs.runDueJobs();
+    const job = await db.job.findFirstOrThrow({ where: { type: "meeting.team_alert", leadId: lead.id } });
+    expect(job).toMatchObject({ status: "PENDING", attempts: 1 });
+    expect(job.lastError).toContain("Uazapi respondeu 503: instance disconnected");
+    const event = await db.leadEvent.findFirstOrThrow({ where: { leadId: lead.id, type: "meeting.team_alert" } });
+    expect(event.summary).toMatch(/^Aviso da reunião não chegou ao grupo Reuniões Banneg/);
+    expect(meeting.status).toBe("scheduled");
+  });
 
-    // Wellington's own test lead keeps working
-    await leads.createLead({ name: "Wellington", phone: "17981600088", source: "manual" }, "Wellington");
-    expect(await leads.handleInbound({ phone: "551781600088", body: "teste", externalId: "w2", at: new Date() })).not.toBeNull();
-    expect(await db.message.count({ where: { direction: "IN" } })).toBe(1);
+  it("the test button posts in the chosen group, and says what is missing", async () => {
+    expect(await team.testTeamGroup()).toEqual({ ok: false, message: "Escolha o grupo e salve antes de testar." });
+    await settings.saveSettings({ meetingAlertGroup: GROUP });
+    expect(await team.testTeamGroup()).toMatchObject({ ok: true });
+    expect(posts()[0].body).toMatchObject({ number: GROUP.id });
+    const url = process.env.UAZAPI_URL;
+    delete process.env.UAZAPI_URL;
+    expect(await team.testTeamGroup()).toEqual({ ok: false, message: "Falta configurar no Vercel: UAZAPI_URL." });
+    process.env.UAZAPI_URL = url;
   });
 });
