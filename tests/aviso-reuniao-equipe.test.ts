@@ -2,7 +2,7 @@
 // Meet link and the lead's page. Google and Uazapi (fetch) are stubbed. The database part runs only when TEST_DATABASE_URL is set.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { installDefaultPipeline } from "@/lib/pipeline-defaults";
-import { teamAlertText } from "@/lib/team-alert";
+import { agendaDays, teamAlertText } from "@/lib/team-alert";
 
 const dbUrl = process.env.TEST_DATABASE_URL;
 if (dbUrl) process.env.DATABASE_URL = dbUrl;
@@ -52,6 +52,13 @@ describe("the group's meeting notice", () => {
     expect(text).toContain("*Link da reunião:* sem link (veja o Google Agenda)");
     expect(text).not.toContain("WhatsApp:");
     expect(text).toMatch(/Remarcada por Wellington\.$/);
+  });
+});
+
+describe("the agenda's days", () => {
+  it("today and up to the 2nd business day after it", () => {
+    expect(agendaDays("2026-11-13", 2)).toEqual(["2026-11-13", "2026-11-14", "2026-11-15", "2026-11-16", "2026-11-17"]);
+    expect(agendaDays("2026-11-11", 2)).toEqual(["2026-11-11", "2026-11-12", "2026-11-13"]);
   });
 });
 
@@ -198,5 +205,56 @@ describe.skipIf(!dbUrl)("meeting notice in the team's WhatsApp group", () => {
     delete process.env.UAZAPI_URL;
     expect(await team.testTeamGroup()).toEqual({ ok: false, message: "Falta configurar no Vercel: UAZAPI_URL." });
     process.env.UAZAPI_URL = url;
+  });
+
+  it("every morning at 7h posts the day's meetings once; the button posts today and the next 2 business days", async () => {
+    await settings.saveSettings({ meetingAlertGroup: GROUP });
+    const owner = await db.user.create({ data: { name: "Wellington", email: "wellington@banneg.com.br", role: "OWNER", passwordHash: "x" } });
+    const meet = async (name: string, phone: string, iso: string, status = "scheduled") => {
+      const { lead } = await leads.createLead({ name, phone, source: "Meta Ads" }, "Formulário");
+      return db.meeting.create({ data: { leadId: lead.id, userId: owner.id, startsAt: new Date(iso), endsAt: new Date(new Date(iso).getTime() + 1_800_000), meetLink: `https://meet.google.com/${name}`, status } });
+    };
+    // Friday 13: 10h and 14h (and one canceled); Monday 16: 9h; Wednesday 18: out of the button's range
+    await meet("bia", "41999990010", "2026-11-13T17:00:00Z");
+    await meet("ana", "41999990011", "2026-11-13T13:00:00Z");
+    await meet("caio", "41999990012", "2026-11-13T15:00:00Z", "canceled");
+    await meet("dani", "41999990013", "2026-11-16T12:00:00Z");
+    await meet("edu", "41999990014", "2026-11-18T12:00:00Z");
+
+    // 6h59 in Brasília: not yet
+    expect(await team.sendTeamAgendaIfDue(new Date("2026-11-13T09:59:00Z"))).toBeNull();
+    // The first time: today and the next 2 business days
+    const first = await team.sendTeamAgendaIfDue(new Date("2026-11-13T10:00:00Z"));
+    expect(first).toMatchObject({ day: "2026-11-13", ok: true });
+    expect(posts()).toHaveLength(2);
+    const text = String(posts()[0].body!.text);
+    expect(text.startsWith("*Reuniões de hoje, sexta-feira, 13/11* (2)")).toBe(true);
+    expect(String(posts()[1].body!.text)).toContain("*Reuniões de segunda-feira, 16/11* (1)");
+    expect(text.indexOf("ana")).toBeLessThan(text.indexOf("bia"));
+    expect(text).toContain("*10:00* · ana (Expansão) · com Wellington");
+    expect(text).toContain("Meet: https://meet.google.com/ana");
+    expect(text).toMatch(/Ficha: https:\/\/crm-banneg-banneg\.vercel\.app\/leads\//);
+    expect(text).not.toContain("caio");
+    // Once a day
+    expect(await team.sendTeamAgendaIfDue(new Date("2026-11-13T15:00:00Z"))).toBeNull();
+    expect(posts()).toHaveLength(2);
+    // The next days: only that day's meetings
+    uazapi.length = 0;
+    expect(await team.sendTeamAgendaIfDue(new Date("2026-11-16T10:30:00Z"))).toMatchObject({ day: "2026-11-16", ok: true });
+    expect(posts()).toHaveLength(1);
+    expect(String(posts()[0].body!.text)).toContain("*Reuniões de hoje, segunda-feira, 16/11* (1)");
+    // A day without meetings posts nothing
+    uazapi.length = 0;
+    expect(await team.sendTeamAgendaIfDue(new Date("2026-11-17T10:30:00Z"))).toMatchObject({ day: "2026-11-17", ok: true });
+    expect(posts()).toHaveLength(0);
+
+    uazapi.length = 0;
+    expect(await team.sendUpcomingAgenda(new Date("2026-11-13T15:43:00Z"))).toEqual({
+      ok: true,
+      message: "Agenda postada no grupo Reuniões Banneg: sexta-feira, 13/11: 2, segunda-feira, 16/11: 1.",
+    });
+    expect(posts()).toHaveLength(2);
+    expect(String(posts()[1].body!.text)).toContain("*Reuniões de segunda-feira, 16/11* (1)");
+    expect(JSON.stringify(posts())).not.toContain("edu");
   });
 });

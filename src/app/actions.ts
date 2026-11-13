@@ -718,6 +718,7 @@ export async function testIntegrationAction(_: TestState, form: FormData): Promi
     meta_ads: () => integrations.checkMetaAds(),
     email_leads: () => integrations.checkEmailLeads(),
     team_group: async () => (await import("@/lib/team-alert")).testTeamGroup(),
+    team_agenda: async () => (await import("@/lib/team-alert")).sendUpcomingAgenda(),
   }[kind];
   if (!run) return { kind, ok: false, message: "Teste desconhecido." };
   const res = await run();

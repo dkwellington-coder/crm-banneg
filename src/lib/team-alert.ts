@@ -128,3 +128,109 @@ export async function testTeamGroup() {
     return { ok: false, message: (e as Error).message };
   }
 }
+
+// ---------- The day's agenda in the group ----------
+
+const TZ_OFFSET = "-03:00";
+// The day's agenda goes at this hour (Brasília), every day that has meetings
+export const AGENDA_HOUR = 7;
+const AGENDA_KEY = "team_agenda";
+
+const dayLabel = (day: string) =>
+  new Date(`${day}T12:00:00${TZ_OFFSET}`).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "long", day: "2-digit", month: "2-digit" });
+
+/** "2026-11-13" plus n days. */
+function addDays(day: string, n: number) {
+  return new Date(Date.parse(`${day}T12:00:00${TZ_OFFSET}`) + n * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** Today and every day up to the n-th business day after it ("hoje e os próximos 2 dias": Friday → Fri to Tue). */
+export function agendaDays(today: string, businessDays: number) {
+  const days = [today];
+  let left = businessDays;
+  while (left > 0) {
+    const next = addDays(days.at(-1)!, 1);
+    days.push(next);
+    const weekday = new Date(`${next}T12:00:00${TZ_OFFSET}`).getUTCDay();
+    if (weekday !== 0 && weekday !== 6) left--;
+  }
+  return days;
+}
+
+async function meetingsOn(day: string) {
+  const from = new Date(`${day}T00:00:00${TZ_OFFSET}`);
+  const to = new Date(from.getTime() + 86_400_000);
+  return db.meeting.findMany({
+    where: { startsAt: { gte: from, lt: to }, status: { not: "canceled" } },
+    orderBy: { startsAt: "asc" },
+    include: { user: { select: { name: true } }, lead: { include: { pipeline: { select: { name: true } } } } },
+  });
+}
+
+type AgendaMeeting = Awaited<ReturnType<typeof meetingsOn>>[number];
+
+/** One message per day: each meeting with its time, client, WhatsApp, Meet link and the lead's page. */
+export function teamAgendaText(day: string, today: string, meetings: AgendaMeeting[]) {
+  const title = `*Reuniões ${day === today ? "de hoje," : "de"} ${dayLabel(day)}* (${meetings.length})`;
+  const items = meetings.map((m) => {
+    const time = m.startsAt.toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
+    return [
+      `*${time}* · ${m.lead.name?.trim() || "sem nome"} (${m.lead.pipeline.name})${m.user ? ` · com ${m.user.name}` : ""}`,
+      m.lead.phone && `WhatsApp: ${phoneLabel(m.lead.phone)} · https://wa.me/${m.lead.phone.replace(/\D/g, "")}`,
+      `Meet: ${m.meetLink ?? "sem link (veja o Google Agenda)"}`,
+      `Ficha: ${CRM_URL}/leads/${m.lead.id}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+  return [title, ...items].join("\n\n");
+}
+
+/** Posts the agenda of each day that has meetings; says which went. */
+export async function sendTeamAgenda(days: string[], today: string) {
+  const group = (await getSettings()).meetingAlertGroup;
+  if (!group?.id) return { ok: false, message: "Nenhum grupo escolhido em Integrações." };
+  const sent: string[] = [];
+  for (const day of days) {
+    const meetings = await meetingsOn(day);
+    if (!meetings.length) continue;
+    await sendToGroup(group.id, teamAgendaText(day, today, meetings));
+    sent.push(`${dayLabel(day)}: ${meetings.length}`);
+  }
+  return sent.length
+    ? { ok: true, message: `Agenda postada no grupo ${group.name}: ${sent.join(", ")}.` }
+    : { ok: true, message: `Nenhuma reunião de ${dayLabel(days[0])} a ${dayLabel(days.at(-1)!)}: nada postado.` };
+}
+
+/** Brasília's day and hour, whatever the server's clock. */
+function brClock(now: Date) {
+  const local = new Date(now.getTime() - 3 * 3_600_000);
+  return { day: local.toISOString().slice(0, 10), hour: local.getUTCHours() };
+}
+
+/**
+ * Every day at AGENDA_HOUR (cron, every minute): the day's meetings in the group, once. The very first time it also
+ * brings the next 2 business days (Wellington, 2026-11-13: "reenviar as reuniões do dia e as dos próximos 2 dias").
+ */
+export async function sendTeamAgendaIfDue(now = new Date()) {
+  const { day, hour } = brClock(now);
+  if (hour < AGENDA_HOUR || !teamGroupOn(await getSettings())) return null;
+  const last = (await db.setting.findUnique({ where: { key: AGENDA_KEY } }))?.value as { day?: string } | undefined;
+  if (last?.day === day) return null;
+  // Marked first: a Uazapi that fails does not post the same agenda every minute
+  const value = { day, at: now.toISOString() };
+  await db.setting.upsert({ where: { key: AGENDA_KEY }, create: { key: AGENDA_KEY, value }, update: { value } });
+  const days = last ? [day] : agendaDays(day, 2);
+  const res = await sendTeamAgenda(days, day).catch((e: Error) => ({ ok: false, message: e.message }));
+  const saved = { ...value, ...res };
+  await db.setting.update({ where: { key: AGENDA_KEY }, data: { value: saved } });
+  return saved;
+}
+
+/** Integrações' button: today and the next 2 business days. */
+export async function sendUpcomingAgenda(now = new Date()) {
+  const missing = uazapiMissing();
+  if (missing.length) return { ok: false, message: `Falta configurar no Vercel: ${missing.join(", ")}.` };
+  const { day } = brClock(now);
+  return sendTeamAgenda(agendaDays(day, 2), day).catch((e: Error) => ({ ok: false, message: e.message }));
+}

@@ -6,7 +6,7 @@ import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { Card, Loading, PageHeader, btnCls, btnGhostCls, inputCls, relTime } from "@/components/ui";
 import { disconnectGoogleAction, resendBlockedAction, saveTestModeAction, setEmailLeadsFunnelAction, setTeamGroupAction } from "../../actions";
-import { listTeamGroups, uazapiMissing, type TeamGroup } from "@/lib/team-alert";
+import { AGENDA_HOUR, listTeamGroups, uazapiMissing, type TeamGroup } from "@/lib/team-alert";
 import { googleLinks } from "@/lib/google";
 import { TestButton } from "./TestButton";
 import { FormFunnelSelect } from "./FormFunnelSelect";
@@ -169,7 +169,13 @@ async function TeamGroupBlock() {
       {!missing.length && !error && !groups.length && (
         <p className="text-sm text-slate-500">O número da Uazapi ainda não está em nenhum grupo. Crie o grupo no celular e recarregue esta página.</p>
       )}
-      {chosen && <TestButton kind="team_group" label="Mandar mensagem de teste no grupo" />}
+      {chosen && (
+        <>
+          <p className="text-sm text-slate-600">Todo dia às {AGENDA_HOUR}h o grupo recebe a agenda do dia, com o link de cada reunião.</p>
+          <TestButton kind="team_group" label="Mandar mensagem de teste no grupo" />
+          <TestButton kind="team_agenda" label="Mandar no grupo as reuniões de hoje e dos próximos 2 dias úteis" />
+        </>
+      )}
     </Block>
   );
 }
