@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
+import { Prisma } from "@prisma/client";
 import { requireArea } from "@/lib/access";
 import { db } from "@/lib/db";
 import { daysAgo } from "@/lib/time";
@@ -24,20 +25,34 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
   const sp = await searchParams;
   const days = [7, 30, 90].includes(Number(sp.d)) ? Number(sp.d) : 30;
   const since = daysAgo(days);
-  const inPeriod = { createdAt: { gte: since } };
+
+  // One funnel at a time: Vendas de Franquias unless another one (or all) is picked
+  const pipelines = await db.pipeline.findMany({ orderBy: [{ position: "asc" }, { createdAt: "asc" }], select: { id: true, name: true, slug: true, isDefault: true } });
+  const all = sp.f === "todos";
+  const pipe = all
+    ? null
+    : (pipelines.find((p) => p.id === sp.f) ?? pipelines.find((p) => p.slug === "franquias") ?? pipelines.find((p) => p.isDefault) ?? pipelines[0] ?? null);
+  const inPipe = pipe ? { pipelineId: pipe.id } : {};
+  const inPipeSql = pipe ? Prisma.sql`AND l."pipelineId" = ${pipe.id}` : Prisma.empty;
+  const inPeriod = { createdAt: { gte: since }, ...inPipe };
+  const link = (q: { d?: number; f?: string }) => `/painel?${new URLSearchParams({ d: String(q.d ?? days), f: q.f ?? (pipe?.id ?? "todos") })}`;
 
   const [received, qualified, meetings, won, stages, stageCounts, firstResponse, bySdr, bySource, jobs, report] = await Promise.all([
     db.lead.count({ where: inPeriod }),
     db.lead.count({ where: { ...inPeriod, status: { in: [...ADVANCED] } } }),
-    db.meeting.count({ where: { ...inPeriod, status: { not: "canceled" } } }),
-    db.lead.count({ where: { wonAt: { gte: since } } }),
-    db.stage.findMany({ orderBy: [{ pipeline: { position: "asc" } }, { position: "asc" }], include: { pipeline: { select: { name: true } } } }),
-    db.lead.groupBy({ by: ["stageId"], _count: true }),
+    db.meeting.count({ where: { createdAt: { gte: since }, status: { not: "canceled" }, ...(pipe && { lead: inPipe }) } }),
+    db.lead.count({ where: { wonAt: { gte: since }, ...inPipe } }),
+    db.stage.findMany({
+      where: inPipe,
+      orderBy: [{ pipeline: { position: "asc" } }, { position: "asc" }],
+      include: { pipeline: { select: { name: true } } },
+    }),
+    db.lead.groupBy({ by: ["stageId"], where: inPipe, _count: true }),
     db.$queryRaw<{ avg_minutes: number | null; median_minutes: number | null }[]>`
       SELECT AVG(m) AS avg_minutes, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY m) AS median_minutes FROM (
         SELECT EXTRACT(EPOCH FROM (MIN(msg."createdAt") - l."createdAt")) / 60 AS m
         FROM "Lead" l JOIN "Message" msg ON msg."leadId" = l.id AND msg.direction = 'OUT' AND msg.channel = 'WHATSAPP' AND msg.status <> 'FAILED'
-        WHERE l."createdAt" >= ${since}
+        WHERE l."createdAt" >= ${since} ${inPipeSql}
         GROUP BY l.id, l."createdAt"
       ) t`,
     db.$queryRaw<{ name: string; leads: bigint; advanced: bigint; meetings: bigint }[]>`
@@ -46,16 +61,20 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
         COUNT(DISTINCT l.id) FILTER (WHERE l.status IN ('QUALIFIED','MEETING_BOOKED','HANDED_OFF','WON')) AS advanced,
         COUNT(DISTINCT mt.id) AS meetings
       FROM "SdrAgent" a
-      LEFT JOIN "Lead" l ON l."sdrId" = a.id AND l."createdAt" >= ${since}
+      LEFT JOIN "Lead" l ON l."sdrId" = a.id AND l."createdAt" >= ${since} ${inPipeSql}
       LEFT JOIN "Meeting" mt ON mt."leadId" = l.id AND mt.status <> 'canceled'
       GROUP BY a.name ORDER BY a.name`,
     db.$queryRaw<{ source: string; leads: bigint; advanced: bigint }[]>`
       SELECT source, COUNT(*) AS leads,
         COUNT(*) FILTER (WHERE status IN ('QUALIFIED','MEETING_BOOKED','HANDED_OFF','WON')) AS advanced
-      FROM "Lead" WHERE "createdAt" >= ${since} GROUP BY source ORDER BY leads DESC LIMIT 10`,
-    db.job.groupBy({ by: ["type", "status"], where: { createdAt: { gte: since } }, _count: true }),
+      FROM "Lead" l WHERE l."createdAt" >= ${since} ${inPipeSql} GROUP BY source ORDER BY leads DESC LIMIT 10`,
+    db.job.groupBy({ by: ["type", "status"], where: { createdAt: { gte: since }, ...(pipe && { lead: inPipe }) }, _count: true }),
     campaignReport(since),
   ]);
+
+  // A campaign belongs to the funnel most of its leads landed in; spend with no lead yet shows everywhere
+  const campaigns = pipe ? report.campaigns.filter((c) => c.funnel === pipe.name || c.funnel === null) : report.campaigns;
+  const funnels = pipe ? report.funnels.filter((f) => f.funnel === pipe.name || f.funnel === null) : report.funnels;
 
   const countBy = new Map(stageCounts.map((c) => [c.stageId, c._count]));
   const maxStage = Math.max(1, ...stageCounts.map((c) => c._count));
@@ -71,13 +90,27 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
 
   return (
     <div className="space-y-4 px-4 pb-6 md:px-6">
-      <Tabs>
-        {[7, 30, 90].map((d) => (
-          <Link key={d} href={`/painel?d=${d}`} className={tabCls(d === days)}>
-            {d} dias
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+        <Tabs>
+          {pipelines.map((p) => (
+            <Link key={p.id} href={link({ f: p.id })} className={tabCls(p.id === pipe?.id)}>
+              {p.name}
+            </Link>
+          ))}
+          <Link href={link({ f: "todos" })} className={tabCls(all)}>
+            Todos os funis
           </Link>
-        ))}
-      </Tabs>
+        </Tabs>
+        <div>
+          <Tabs>
+            {[7, 30, 90].map((d) => (
+              <Link key={d} href={link({ d })} className={tabCls(d === days)}>
+                {d} dias
+              </Link>
+            ))}
+          </Tabs>
+        </div>
+      </div>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <Kpi label="Leads recebidos" value={received} />
         <Kpi label="1ª resposta (mediana)" value={minutes(fr?.median_minutes)} hint={`média ${minutes(fr?.avg_minutes)}`} />
@@ -140,7 +173,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
         </p>
         <Table
           head={["Funil", "Investimento", "Leads", "Custo por lead", "Reuniões", "Vendas", "Custo por venda", "Receita", "Retorno"]}
-          rows={report.funnels.map((f) => [
+          rows={funnels.map((f) => [
             f.funnel ?? "Sem leads no CRM",
             brl(f.spend),
             f.leads,
@@ -157,7 +190,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/painel">[
         <h2 className="mb-2 font-bold">Resultado e custo por campanha</h2>
         <Table
           head={["Campanha", "Funil", "Investimento", "Leads (Meta)", "Leads no CRM", "Custo por lead", "Qualificados", "Vendas", "Receita"]}
-          rows={report.campaigns.map((c) => [
+          rows={campaigns.map((c) => [
             c.campaign,
             c.funnel ?? "—",
             brl(c.spend),
