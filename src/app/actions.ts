@@ -591,6 +591,9 @@ export async function saveRuleAction(form: FormData) {
     title: action === "task" ? pick("title") : undefined,
     to: action === "notify" ? pick("to") : undefined,
     cc: action === "notify" ? pick("cc") : undefined,
+    subject: action === "notify" || action === "group" ? pick("subject")?.slice(0, 80) : undefined,
+    groupId: action === "group" ? pick("groupId") : undefined,
+    groupName: action === "group" ? pick("groupName") : undefined,
     toStageId: action === "move" ? pick("toStageId") : undefined,
     sdrId: action === "ai_on" ? pick("sdrId") : undefined,
   };
@@ -619,6 +622,7 @@ export async function saveRuleAction(form: FormData) {
     if (!config.to) throw new Error("Escreva o e-mail de quem recebe o aviso.");
     if (config.cc && !(config.cc = emailList(config.cc))) throw new Error("O e-mail da cópia não está certo.");
   }
+  if (action === "group" && !config.groupId?.endsWith("@g.us")) throw new Error("Escolha o grupo do WhatsApp que recebe o aviso.");
   if (trigger === "answer") {
     config.answers = String(form.get("answers") ?? "")
       .split("|")
@@ -751,6 +755,19 @@ export async function setTeamGroupAction(form: FormData) {
   const { setTeamGroup } = await import("@/lib/team-alert");
   await setTeamGroup(String(form.get("groupId") ?? "") || null);
   revalidatePath("/integracoes");
+}
+
+/** The WhatsApp groups (Uazapi) a funnel automation can post in: the funnel editor asks when "Avisar um grupo" is picked. */
+export async function listTeamGroupsAction(): Promise<{ groups: { id: string; name: string }[]; error?: string }> {
+  await requireManager("funil");
+  const { listTeamGroups, uazapiMissing } = await import("@/lib/team-alert");
+  const missing = uazapiMissing();
+  if (missing.length) return { groups: [], error: `Falta configurar no Vercel: ${missing.join(", ")}.` };
+  try {
+    return { groups: await listTeamGroups() };
+  } catch (e) {
+    return { groups: [], error: (e as Error).message };
+  }
 }
 
 /** The funnel the e-mails of the leads box go to (Integrações); empty = the default funnel. */

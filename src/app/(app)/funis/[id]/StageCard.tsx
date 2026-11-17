@@ -18,6 +18,7 @@ import {
   Pencil,
   Plus,
   Trash2,
+  UsersRound,
   Zap,
   type LucideIcon,
 } from "lucide-react";
@@ -41,6 +42,7 @@ export const ACTION_ICON: Record<string, LucideIcon> = {
   cof: FileText,
   task: CheckSquare,
   notify: Mail,
+  group: UsersRound,
   move: ArrowRightLeft,
   ai_on: Bot,
   ai_off: Pause,
@@ -52,6 +54,7 @@ const ACTION_TINT: Record<string, string> = {
   cof: "bg-teal-50 text-teal-700",
   task: "bg-amber-50 text-amber-700",
   notify: "bg-rose-50 text-rose-700",
+  group: "bg-green-50 text-green-700",
   move: "bg-violet-50 text-violet-700",
   ai_on: "bg-indigo-50 text-indigo-700",
   ai_off: "bg-slate-100 text-slate-600",

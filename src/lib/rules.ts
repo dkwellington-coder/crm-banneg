@@ -6,6 +6,7 @@ export const ACTIONS = {
   cof: { label: "Enviar a COF por e-mail", icon: "file" },
   task: { label: "Criar tarefa", icon: "check" },
   notify: { label: "Avisar a equipe por e-mail", icon: "mail" },
+  group: { label: "Avisar um grupo do WhatsApp", icon: "users" },
   move: { label: "Mover para etapa", icon: "arrow" },
   ai_on: { label: "Ativar SDR de IA", icon: "bot" },
   ai_off: { label: "Pausar a IA", icon: "pause" },
@@ -31,6 +32,11 @@ export type RuleConfig = {
   // notify: who gets the e-mail with the lead's data (and who gets a copy), addresses split by comma
   to?: string;
   cc?: string;
+  // notify and group: the notice's headline ("Nova cotação para atender"); empty = "Quer falar com um consultor"
+  subject?: string;
+  // group: the WhatsApp group (Uazapi) that gets the notice, by its id and the name it had when chosen
+  groupId?: string;
+  groupName?: string;
   // daily: how many leads leave the queue per business day
   perDay?: number;
   // answer: what the lead answered, usually the title of a button it tapped
@@ -120,7 +126,9 @@ export function actionLabel(action: string, config: RuleConfig, names: { stages?
     case "task":
       return `Criar tarefa “${config.title ?? ""}”`;
     case "notify":
-      return `Avisar por e-mail ${config.to ?? ""}${config.cc ? ` (cópia: ${config.cc})` : ""} com os dados do lead`;
+      return `Avisar por e-mail ${config.to ?? ""}${config.cc ? ` (cópia: ${config.cc})` : ""} com os dados do lead${config.subject ? ` (“${config.subject}”)` : ""}`;
+    case "group":
+      return `Avisar no grupo do WhatsApp “${config.groupName || config.groupId || "sem grupo"}” com os dados do lead${config.subject ? ` (“${config.subject}”)` : ""}`;
     case "move":
       return `Mover para “${names.stages?.[config.toStageId ?? ""] ?? "etapa removida"}”`;
     case "ai_on":

@@ -11,7 +11,7 @@ import { runSdrTurn } from "./sdr";
 import { isSubjectHandoffKey, NO_SHOW_STAGE, planFromDecision, referredByPerson, STAGE_KEYS, subjectHandoffStage } from "./plan";
 import { ensureTask, funnelStart, moveLead, sdrFor, stageByKey } from "./leads";
 import { emailList, fillVariables, forPerson, speaksOfPartner, templateSlots, type RuleConfig } from "./rules";
-import { leadNotice } from "./notify";
+import { handoffRequest, leadGroupNotice, leadNotice } from "./notify";
 import { isGreeting, type RuleJobPayload } from "./automations";
 import { attachMaterials, emailHtml, renderTemplate, sendEmail, withButton } from "./email";
 import { cofDocuments, sendCof } from "./cof";
@@ -19,7 +19,7 @@ import { blockedByAccount, resendSame } from "./resend";
 import { aiAccountProblem, aiAnswered, setAiHealth } from "./ai-health";
 import { sendPortalStatus, type PortalBody } from "./portal";
 import { sendPortalEmail } from "./portal-email";
-import { sendTeamMeetingAlert, teamGroupOn } from "./team-alert";
+import { sendTeamMeetingAlert, sendToGroup, teamGroupOn, uazapiMissing } from "./team-alert";
 
 type Handler = (job: Job, lead: Lead | null) => Promise<string>;
 
@@ -158,11 +158,12 @@ const handlers: Record<string, Handler> = {
       // Funnels the team built may not have the AI's stage: try the funnel this one hands leads to
       // (old leads go on to Vendas de Franquias once qualified), else only the status changes
       // A handoff about a subject the funnel has its own stage for (consórcio...) goes to that stage
+      // The task first: the stage's notices (e-mail, WhatsApp group) say what the lead asked for, read from it
+      if (plan.handoffTask) await ensureTask(lead.id, lead.ownerId ?? owner?.id ?? null, plan.handoffTask);
       const target = subjectHandoffStage(decision, subjectStages) ?? (await aiTargetStage(plan.stageKey, lead.pipelineId));
       const discarded = target?.kind === "LOST" && target.id !== lead.stageId;
       if (target) await moveLead(lead.id, target.id, agent.name, discarded ? { lostReason: discardReason(decision) } : {});
       else await db.lead.update({ where: { id: lead.id }, data: { status: plan.status } });
-      if (plan.handoffTask) await ensureTask(lead.id, lead.ownerId ?? owner?.id ?? null, plan.handoffTask);
     } catch (e) {
       await logEvent(lead.id, "ai.after_reply_failed", agent.name, `A IA respondeu, mas o passo seguinte falhou: ${(e as Error).message}`);
       await ensureTask(lead.id, lead.ownerId ?? owner?.id ?? null, "Conferir o lead: a IA respondeu, mas a COF, a etapa ou a passagem para o time falhou");
@@ -296,6 +297,11 @@ async function conversationGoingOn(lead: Lead, rule: { action: string; trigger: 
     select: { author: true },
   });
   return person ? `Ignorado: ${person.author} está atendendo este lead.` : null;
+}
+
+/** The lead's open tasks, newest first (the handoff's "Assumir conversa: ..." says what the lead wants). */
+function openTasks(leadId: string) {
+  return db.task.findMany({ where: { leadId, doneAt: null }, orderBy: { createdAt: "desc" }, take: 10, select: { title: true } });
 }
 
 async function aiTargetStage(key: string, pipelineId: string) {
@@ -500,12 +506,41 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig, 
         db.stage.findUnique({ where: { id: lead.stageId }, select: { name: true } }),
         db.message.findMany({ where: { leadId: lead.id, channel: "WHATSAPP" }, orderBy: { createdAt: "desc" }, take: 8, select: { direction: true, body: true, createdAt: true } }),
       ]);
-      const { subject, body } = leadNotice(lead, { pipeline: pipeline?.name ?? "", stage: stage?.name ?? "", messages: messages.reverse() });
+      const { subject, body } = leadNotice(lead, {
+        pipeline: pipeline?.name ?? "",
+        stage: stage?.name ?? "",
+        messages: messages.reverse(),
+        title: config.subject,
+        request: handoffRequest(await openTasks(lead.id)),
+      });
       const settings = await getSettings();
       // Test mode writes nothing real to anyone, the team included
       if (settings.testMode) return `Aviso para ${to} simulado (modo teste).`;
       await sendEmail(to, subject, body, [], undefined, undefined, cc);
       return `Aviso enviado por e-mail para ${to}${cc ? ` (cópia: ${cc})` : ""}.`;
+    }
+    case "group": {
+      if (!config.groupId) return "Ignorado: a automação não tem um grupo do WhatsApp escolhido.";
+      const missing = uazapiMissing();
+      if (missing.length) return `Ignorado: falta configurar no Vercel ${missing.join(", ")}.`;
+      const [pipeline, stage, messages, tasks] = await Promise.all([
+        db.pipeline.findUnique({ where: { id: lead.pipelineId }, select: { name: true } }),
+        db.stage.findUnique({ where: { id: lead.stageId }, select: { name: true } }),
+        db.message.findMany({ where: { leadId: lead.id, channel: "WHATSAPP" }, orderBy: { createdAt: "desc" }, take: 4, select: { direction: true, body: true, createdAt: true } }),
+        openTasks(lead.id),
+      ]);
+      const text = leadGroupNotice(lead, {
+        pipeline: pipeline?.name ?? "",
+        stage: stage?.name ?? "",
+        messages: messages.reverse(),
+        title: config.subject,
+        request: handoffRequest(tasks),
+      });
+      const group = config.groupName || "do WhatsApp";
+      if ((await getSettings()).testMode) return `Aviso no grupo ${group} simulado (modo teste).`;
+      // A failure throws, so the job tries again later
+      await sendToGroup(config.groupId, text);
+      return `Aviso postado no grupo ${group}.`;
     }
     case "move": {
       const to = config.toStageId ? await db.stage.findUnique({ where: { id: config.toStageId } }) : null;

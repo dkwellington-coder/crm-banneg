@@ -42,7 +42,7 @@ describe("leadNotice", () => {
     expect(body).toContain("WhatsApp: (27) 99800-4623 · https://wa.me/5527998004623");
     expect(body).toContain("Cidade: Colatina / ES");
     expect(body).toContain("Origem: Lista Produtor Rural");
-    expect(body).toContain("valor_imovel: R$ 2 milhões");
+    expect(body).toContain("valor imovel: R$ 2 milhões");
     expect(body).not.toContain("parceiroFunil");
     expect(body).not.toContain("vazio");
     expect(body).toContain("11/11, 15:40 Cliente: Quero saber mais");

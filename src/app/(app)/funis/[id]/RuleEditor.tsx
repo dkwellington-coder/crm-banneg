@@ -1,9 +1,9 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Wand2 } from "lucide-react";
 import { ACTIONS, UNITS, speaksOfPartner, splitDelay, templateSlots, type ActionKey, type PersonVersion, type RuleConfig, type RuleTrigger } from "@/lib/rules";
-import { saveRuleAction } from "../../../actions";
+import { listTeamGroupsAction, saveRuleAction } from "../../../actions";
 import { btnCls, btnGhostCls, inputCls } from "@/components/ui";
 
 export type RuleData = {
@@ -177,6 +177,62 @@ function TemplateFields({
 
 const sel = "rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm font-medium text-slate-800 outline-none focus:border-brand";
 const word = "text-sm font-medium text-slate-500";
+
+/** The notice's headline, for the e-mail subject and the group message. */
+function SubjectInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <input
+      name="subject"
+      maxLength={80}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder="Título do aviso (opcional, ex.: Nova cotação para atender)"
+      className={inputCls}
+    />
+  );
+}
+
+/** The WhatsApp groups the Uazapi number is in, read when the person picks "Avisar um grupo". */
+function GroupPicker({ id, name, onChange }: { id?: string; name?: string; onChange: (g: { groupId: string; groupName: string }) => void }) {
+  const [state, setState] = useState<{ groups: { id: string; name: string }[]; error?: string } | null>(null);
+  useEffect(() => {
+    let live = true;
+    listTeamGroupsAction()
+      .then((r) => live && setState(r))
+      .catch((e: Error) => live && setState({ groups: [], error: e.message }));
+    return () => {
+      live = false;
+    };
+  }, []);
+  const groups = state?.groups ?? [];
+  // The saved group stays selectable even when the list could not be read
+  const list = id && !groups.some((g) => g.id === id) ? [{ id, name: name || id }, ...groups] : groups;
+  return (
+    <>
+      <input type="hidden" name="groupName" value={name ?? ""} />
+      <select
+        name="groupId"
+        required
+        value={id ?? ""}
+        onChange={(e) => onChange({ groupId: e.target.value, groupName: list.find((g) => g.id === e.target.value)?.name ?? "" })}
+        className={inputCls}
+      >
+        <option value="" disabled>
+          {state ? "Qual grupo recebe o aviso?" : "Lendo os grupos do WhatsApp..."}
+        </option>
+        {list.map((g) => (
+          <option key={g.id} value={g.id}>
+            {g.name}
+          </option>
+        ))}
+      </select>
+      {state?.error && <p className="text-xs text-amber-700">Não deu para ler os grupos: {state.error}</p>}
+      {state && !state.error && !groups.length && (
+        <p className="text-xs text-slate-500">O número conectado na Uazapi ainda não está em nenhum grupo. Crie o grupo no celular com esse número e abra de novo.</p>
+      )}
+    </>
+  );
+}
 
 export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string; rule?: RuleData; options: EditorOptions; onDone: () => void }) {
   const [d, setD] = useState<Draft>(() => fromRule(rule));
@@ -450,8 +506,19 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
             placeholder="Com cópia para (opcional)"
             className={inputCls}
           />
+          <SubjectInput value={d.config.subject ?? ""} onChange={(subject) => setConfig({ subject })} />
           <p className="text-xs text-slate-500">
-            Vai o nome, o WhatsApp, o e-mail, a cidade, o que o lead respondeu, as últimas mensagens e o link da ficha no CRM.
+            Vai o nome, o WhatsApp, o e-mail, a cidade, o que o lead pediu, o que respondeu, as últimas mensagens e o link da ficha no CRM.
+          </p>
+        </div>
+      )}
+      {d.action === "group" && (
+        <div className="space-y-2">
+          <GroupPicker id={d.config.groupId} name={d.config.groupName} onChange={(g) => setConfig(g)} />
+          <SubjectInput value={d.config.subject ?? ""} onChange={(subject) => setConfig({ subject })} />
+          <p className="text-xs text-slate-500">
+            A mensagem sai do número conectado na Uazapi (o mesmo do grupo de reuniões), que precisa estar no grupo. Vai o nome, o WhatsApp, o
+            que o lead pediu, os dados que passou, o resumo da IA, as últimas mensagens e o link da ficha no CRM.
           </p>
         </div>
       )}
