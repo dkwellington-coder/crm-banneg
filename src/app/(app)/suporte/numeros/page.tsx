@@ -11,7 +11,7 @@ import { canCreateInstances } from "@/lib/support";
 export default function NumerosPage() {
   return (
     <>
-      <PageHeader title="Suporte" subtitle="Os números de suporte (cada um numa instância da Uazapi) e as pessoas que atendem." />
+      <PageHeader title="Suporte" subtitle="Os números de suporte, conectados pelo QR code, e as pessoas que atendem." />
       <Suspense fallback={<Loading />}>
         <Setup />
       </Suspense>

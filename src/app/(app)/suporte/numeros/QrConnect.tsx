@@ -62,7 +62,17 @@ function QrPanel({ state, onState }: { state: QrState; onState: (s: QrState) => 
 export function QrNewNumber({ attendants }: { attendants: { id: string; name: string }[] }) {
   const [state, setState] = useState<QrState>({});
   const [pending, start] = useTransition();
-  if (state.id) return <QrPanel state={state} onState={setState} />;
+  if (state.id)
+    return (
+      <div className="space-y-3">
+        <QrPanel state={state} onState={setState} />
+        {state.connected && (
+          <button type="button" className={btnGhostCls} onClick={() => setState({})}>
+            <QrCode size={16} /> Conectar outro número
+          </button>
+        )}
+      </div>
+    );
   return (
     <form action={(form) => start(async () => setState(await createNumberByQrAction(form)))} className="space-y-3">
       <label className="block space-y-1 text-xs font-medium text-slate-600">
