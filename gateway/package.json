@@ -1,0 +1,13 @@
+{
+  "name": "banneg-whatsapp-suporte",
+  "private": true,
+  "type": "module",
+  "description": "Liga os números de suporte ao CRM pelo QR code (WhatsApp Web), no servidor próprio do Banneg.",
+  "scripts": { "start": "node server.mjs", "test": "node --test" },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "baileys": "7.0.0-rc14",
+    "pino": "9.6.0",
+    "qrcode": "1.5.4"
+  }
+}
