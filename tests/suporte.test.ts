@@ -224,3 +224,94 @@ describe.skipIf(!dbUrl)("receiving and answering", () => {
     expect(await support.receiveSupport("k2", { EventType: "messages", message: { chatid: chat.waChatId, messageid: "out-1", fromMe: true, wasSentByApi: true, text: "Resolvido, pode testar?" } })).toMatchObject({ duplicate: true });
   });
 });
+
+describe.skipIf(!dbUrl)("history and files", () => {
+  let db: typeof import("@/lib/db").db;
+  let support: typeof import("@/lib/support");
+  let drive: typeof import("@/lib/support-drive");
+
+  beforeEach(async () => {
+    db = (await import("@/lib/db")).db;
+    support = await import("@/lib/support");
+    drive = await import("@/lib/support-drive");
+    await db.$executeRawUnsafe('TRUNCATE "SupportMessage","SupportChat","SupportNumber","SupportAttendant","Setting" CASCADE');
+  });
+
+  it("history arriving out of order: an old question answered later does not wait; the last unanswered one does", async () => {
+    const ana = await db.supportAttendant.create({ data: { name: "Ana" } });
+    await db.supportNumber.create({ data: { name: "Seguros", token: support.sealToken("tok-h"), webhookKey: "kh", attendants: { connect: { id: ana.id } } } });
+    const item = (id: string, fromMe: boolean, text: string, at: string) => ({
+      EventType: "messages",
+      token: "tok-h",
+      chat: { wa_contactName: "Joana" },
+      message: { chatid: "5517933334444@s.whatsapp.net", messageid: id, fromMe, text, messageTimestamp: +br(at), history: true },
+    });
+    // Newest first, as the history comes
+    for (const p of [item("h3", false, "E o boleto?", "2026-11-12T15:00"), item("h2", true, "Já resolvi", "2026-11-10T10:20"), item("h1", false, "Problema no app", "2026-11-10T10:00")])
+      await support.receiveSupport("kh", p);
+    const chat = await db.supportChat.findFirstOrThrow({});
+    expect(chat).toMatchObject({ name: "Joana", lastBody: "E o boleto?", lastFromMe: false, waitingSince: br("2026-11-12T15:00") });
+    expect(await db.supportMessage.findFirstOrThrow({ where: { externalId: "h2" } })).toMatchObject({ attendantId: ana.id, createdAt: br("2026-11-10T10:20") });
+  });
+
+  it("a file: downloading, saved on the server, copied to the Drive in pieces, and shown by name", async () => {
+    await db.supportNumber.create({ data: { name: "Seguros", token: support.sealToken("tok-f"), webhookKey: "kf", server: "https://wa.teste" } });
+    await support.receiveSupport("kf", {
+      EventType: "messages",
+      token: "tok-f",
+      chat: { wa_contactName: "Joana" },
+      message: { chatid: "5517933334444@s.whatsapp.net", messageid: "f1", fromMe: false, text: "segue", mediaType: "document", type: "media", messageTimestamp: +br("2026-11-19T14:05"), media: { mimetype: "application/pdf", fileName: "boleto.pdf", size: 10 } },
+    });
+    let m = await db.supportMessage.findFirstOrThrow({ where: { externalId: "f1" } });
+    expect(m).toMatchObject({ body: "[Documento] segue", mediaMime: "application/pdf", mediaName: "boleto.pdf", mediaStatus: "baixando" });
+    // The server says it saved the file
+    await support.receiveSupport("kf", { EventType: "media", token: "tok-f", message: { chatid: "5517933334444@s.whatsapp.net", messageid: "f1" }, media: { saved: true, size: 12 } });
+    m = await db.supportMessage.findFirstOrThrow({ where: { externalId: "f1" } });
+    expect(m).toMatchObject({ mediaStatus: "salvo", mediaSize: 12 });
+    expect(drive.driveFileName(m, "Joana")).toBe("2026-11-19 14h05 - Joana - boleto.pdf");
+
+    // Without the Drive connected nothing is copied
+    expect(await drive.copySupportMedia()).toEqual({ skipped: "Google Drive não conectado" });
+    const { sealToken } = await import("@/lib/google");
+    process.env.GOOGLE_CLIENT_SECRET ||= "s";
+    process.env.GOOGLE_CLIENT_ID ||= "c";
+    await db.setting.create({ data: { key: "suporte_drive", value: { email: "w@banneg.com.br", connectedAt: "x", token: sealToken("refresh"), folders: {} } } });
+
+    const calls: { url: string; method: string; headers: Record<string, string>; body?: string }[] = [];
+    let folders = 0;
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+      const headers = Object.fromEntries(new Headers(init.headers).entries());
+      calls.push({ url, method: init.method ?? "GET", headers, body: typeof init.body === "string" ? init.body : undefined });
+      if (url.startsWith("https://oauth2.googleapis.com/token")) return Response.json({ access_token: "acc" });
+      if (url.startsWith("https://wa.teste/media")) return new Response("PDF-CONTENT!", { status: 206, headers: { "content-range": "bytes 0-11/12", "content-type": "application/pdf" } });
+      if (url.startsWith("https://www.googleapis.com/drive/v3/files")) return Response.json({ id: `pasta${++folders}` });
+      if (url.startsWith("https://www.googleapis.com/upload/drive/v3/files")) return new Response(null, { status: 200, headers: { location: "https://upload.teste/sessao" } });
+      if (url === "https://upload.teste/sessao") return Response.json({ id: "arquivo-no-drive" });
+      return new Response("?", { status: 500 });
+    });
+    expect(await drive.copySupportMedia()).toMatchObject({ copied: 1 });
+    vi.unstubAllGlobals();
+
+    expect((await db.supportMessage.findFirstOrThrow({ where: { externalId: "f1" } })).driveFileId).toBe("arquivo-no-drive");
+    // Banneg Suporte / Seguros / 2026-11
+    const made = calls.filter((c) => c.url.startsWith("https://www.googleapis.com/drive/v3/files")).map((c) => JSON.parse(c.body!));
+    expect(made).toEqual([
+      { name: "Banneg Suporte", mimeType: "application/vnd.google-apps.folder" },
+      { name: "Seguros", mimeType: "application/vnd.google-apps.folder", parents: ["pasta1"] },
+      { name: "2026-11", mimeType: "application/vnd.google-apps.folder", parents: ["pasta2"] },
+    ]);
+    const start = calls.find((c) => c.url.startsWith("https://www.googleapis.com/upload"))!;
+    expect(start.headers).toMatchObject({ "x-upload-content-type": "application/pdf", "x-upload-content-length": "12" });
+    expect(JSON.parse(start.body!)).toMatchObject({ name: "2026-11-19 14h05 - Joana - boleto.pdf", parents: ["pasta3"] });
+    expect(calls.find((c) => c.url === "https://upload.teste/sessao")!.headers).toMatchObject({ "content-range": "bytes 0-11/12" });
+    // Next round: nothing left, the folders are remembered
+    expect(await drive.copySupportMedia()).toEqual({ copied: 0 });
+  });
+
+  it("a file WhatsApp no longer had is marked, and the chat moves on", async () => {
+    await db.supportNumber.create({ data: { name: "Seguros", token: support.sealToken("tok-e"), webhookKey: "ke" } });
+    await support.receiveSupport("ke", { EventType: "messages", message: { chatid: "5517@s.whatsapp.net", messageid: "e1", mediaType: "image", type: "media", media: { mimetype: "image/jpeg" } } });
+    await support.receiveSupport("ke", { EventType: "media", message: { chatid: "5517@s.whatsapp.net", messageid: "e1" }, media: { saved: false, error: "404" } });
+    expect(await db.supportMessage.findFirstOrThrow({})).toMatchObject({ body: "[Imagem]", mediaStatus: "erro", mediaError: "404" });
+  });
+});

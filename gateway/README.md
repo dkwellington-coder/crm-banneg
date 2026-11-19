@@ -25,5 +25,14 @@ Depois disso, os números são conectados pelo CRM: **Suporte → Números e ate
 | `GET /instance/status` | `token` | conectado ou não, e o QR code atual |
 | `POST /webhook` | `token` | para onde mandar as mensagens (o CRM configura sozinho) |
 | `POST /send/text` | `token` | envia uma mensagem de texto |
+| `GET /media?id=<mensagem>` | `token` | o arquivo da mensagem (áudio, foto, PDF, vídeo), inteiro ou em partes |
+
+## Histórico e arquivos
+
+- Quando um número é conectado, o WhatsApp manda o histórico; os últimos 30 dias vão para o CRM
+  (mude com a variável `HISTORY_DAYS`). Para trazer o histórico de um número que já estava conectado,
+  use **Ler o QR de novo para trazer o histórico** em Suporte → Números e atendentes.
+- Cada arquivo é baixado na hora e fica no volume, em `/data/media`. O CRM mostra o arquivo na conversa
+  e copia cada um para o Google Drive (pasta **Banneg Suporte**), quando o Drive está conectado.
 
 Testes: `npm test`.

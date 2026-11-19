@@ -102,15 +102,39 @@ export function QrNewNumber({ attendants }: { attendants: { id: string; name: st
   );
 }
 
-/** For a number that disconnected: a new QR code without creating anything. */
-export function QrReconnect({ id }: { id: string }) {
+/**
+ * For a number that disconnected: a new QR code without creating anything. fresh: for a connected number, drops the
+ * connection and reads the QR again, so WhatsApp sends the history of the last days to the CRM.
+ */
+export function QrReconnect({ id, fresh = false }: { id: string; fresh?: boolean }) {
   const [state, setState] = useState<QrState>({});
+  const [ask, setAsk] = useState(false);
   const [pending, start] = useTransition();
   if (state.id && !state.error) return <QrPanel state={state} onState={setState} />;
+  if (fresh && ask)
+    return (
+      <div className="space-y-2 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
+        <p>O número sai do CRM por alguns segundos e volta quando o QR for lido. O WhatsApp então manda o histórico dos últimos 30 dias, com os arquivos. Tenha o celular do número na mão.</p>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={btnCls} disabled={pending} onClick={() => start(async () => setState(await numberQrAction(id, true, true)))}>
+            <QrCode size={16} /> {pending ? "Gerando…" : "Mostrar o QR code"}
+          </button>
+          <button type="button" className={btnGhostCls} onClick={() => setAsk(false)}>
+            Cancelar
+          </button>
+        </div>
+        {state.error && <span className="text-sm font-medium text-red-700">{state.error}</span>}
+      </div>
+    );
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <button type="button" className={btnGhostCls} disabled={pending} onClick={() => start(async () => setState(await numberQrAction(id, true)))}>
-        <QrCode size={16} /> {pending ? "Gerando…" : "Conectar com QR code"}
+      <button
+        type="button"
+        className={btnGhostCls}
+        disabled={pending}
+        onClick={() => (fresh ? setAsk(true) : start(async () => setState(await numberQrAction(id, true))))}
+      >
+        <QrCode size={16} /> {pending ? "Gerando…" : fresh ? "Ler o QR de novo para trazer o histórico" : "Conectar com QR code"}
       </button>
       {state.error && <span className="text-sm font-medium text-red-700">{state.error}</span>}
     </div>

@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Download, FileText } from "lucide-react";
 import { db } from "@/lib/db";
 import { supportViewer } from "@/lib/support-access";
 import { supportChatVersion } from "@/lib/support";
@@ -68,7 +68,14 @@ async function Chat({ params }: { params: PageProps<"/suporte/c/[id]">["params"]
                       {m.author ?? chat.number.name} · {VIA[m.via] ?? m.via}
                     </div>
                   )}
-                  <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                  {m.mediaMime ? (
+                    <>
+                      <MessageFile m={m} />
+                      {textOf(m.body) && <div className="mt-1 whitespace-pre-wrap break-words">{textOf(m.body)}</div>}
+                    </>
+                  ) : (
+                    <div className="whitespace-pre-wrap break-words">{m.body}</div>
+                  )}
                   <div className="mt-1 text-right text-[11px] text-slate-400">{fmt(m.createdAt)}</div>
                   {m.error && <div className="mt-1 text-xs font-medium text-red-700">{m.error}</div>}
                 </div>
@@ -84,5 +91,62 @@ async function Chat({ params }: { params: PageProps<"/suporte/c/[id]">["params"]
         </div>
       </div>
     </div>
+  );
+}
+
+/** The caption without the "[Imagem]" label: the file itself is shown above it. */
+const textOf = (body: string) => body.replace(/^\[[^\]]+\]\s*/, "").trim();
+
+const sizeLabel = (bytes: number | null) =>
+  !bytes ? "" : bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1).replace(".", ",")} MB`;
+
+type FileMessage = { id: string; kind: string | null; mediaMime: string | null; mediaName: string | null; mediaSize: number | null; mediaStatus: string | null; mediaError: string | null };
+
+/** Photo, audio and video play right in the conversation; any other file (PDF, document) opens or downloads. */
+function MessageFile({ m }: { m: FileMessage }) {
+  if (m.mediaStatus === "baixando") return <div className="text-xs italic text-slate-500">Baixando o arquivo do WhatsApp…</div>;
+  if (m.mediaStatus === "erro")
+    return <div className="text-xs font-medium text-amber-700">O WhatsApp não entregou este arquivo{m.mediaError ? ` (${m.mediaError})` : ""}.</div>;
+  const src = `/api/suporte/midia/${m.id}`;
+  const mime = m.mediaMime ?? "";
+  const download = (
+    <a href={`${src}?baixar`} className="inline-flex items-center gap-1 text-xs font-medium text-brand underline">
+      <Download size={12} /> Baixar
+    </a>
+  );
+  if (mime.startsWith("image/"))
+    return (
+      <div className="space-y-1">
+        <a href={src} target="_blank" rel="noreferrer">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={src} alt={m.mediaName ?? "Imagem"} loading="lazy" className="max-h-72 rounded-lg object-contain" />
+        </a>
+        {download}
+      </div>
+    );
+  if (mime.startsWith("audio/"))
+    return (
+      <div className="space-y-1">
+        <audio controls preload="none" src={src} className="w-64 max-w-full" />
+        {download}
+      </div>
+    );
+  if (mime.startsWith("video/"))
+    return (
+      <div className="space-y-1">
+        <video controls preload="metadata" src={src} className="max-h-72 rounded-lg" />
+        {download}
+      </div>
+    );
+  return (
+    <a href={src} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-lg bg-white/70 p-2 ring-1 ring-slate-200 hover:bg-white">
+      <FileText size={22} className="shrink-0 text-gold" />
+      <span className="min-w-0">
+        <span className="block truncate font-medium">{m.mediaName || "Documento"}</span>
+        <span className="block text-xs text-slate-500">
+          {[mime === "application/pdf" ? "PDF" : mime.split("/")[1]?.toUpperCase(), sizeLabel(m.mediaSize)].filter(Boolean).join(" · ")}
+        </span>
+      </span>
+    </a>
   );
 }

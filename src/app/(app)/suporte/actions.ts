@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { requireArea } from "@/lib/access";
+import { disconnectSupportDrive } from "@/lib/support-drive";
 import { connectWebhook, createInstance, instanceQr, newWebhookKey, numberStatus, sealToken, sendSupportText } from "@/lib/support";
 
 export type SupportState = { ok?: boolean; error?: string; message?: string };
@@ -141,22 +142,33 @@ export async function createNumberByQrAction(form: FormData): Promise<QrState> {
 }
 
 /** The QR code of a number not connected yet; once read, the webhook is set and the number starts arriving. */
-export async function numberQrAction(id: string, start = false): Promise<QrState> {
+export async function numberQrAction(id: string, start = false, fresh = false): Promise<QrState> {
   await requireOwner();
   try {
-    return { id, ...(await qrStep(id, start)) };
+    if (fresh) {
+      await db.supportNumber.update({ where: { id }, data: { status: "aguardando QR", statusAt: new Date() } });
+      revalidatePath("/suporte", "layout");
+    }
+    return { id, ...(await qrStep(id, start, fresh)) };
   } catch (e) {
     return { id, error: (e as Error).message };
   }
 }
 
-async function qrStep(id: string, start: boolean) {
+async function qrStep(id: string, start: boolean, fresh = false) {
   const n = await db.supportNumber.findUniqueOrThrow({ where: { id } });
-  const step = await instanceQr(n, start);
+  const step = await instanceQr(n, start, fresh);
   if (step.connected) {
     await connectWebhook(n);
     await db.supportNumber.update({ where: { id }, data: { status: "connected", statusAt: new Date(), ...(step.phone && { phone: step.phone }) } });
     revalidatePath("/suporte", "layout");
   }
   return { qr: step.qr, connected: step.connected, phone: step.phone };
+}
+
+/** Stops copying the support files to the Google Drive (what is already there stays). */
+export async function disconnectDriveAction() {
+  await requireOwner();
+  await disconnectSupportDrive();
+  revalidatePath("/suporte/numeros");
 }

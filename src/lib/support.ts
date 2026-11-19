@@ -132,8 +132,11 @@ export function readQr(raw: { instance?: RawInstance; qrcode?: string | { base64
 }
 
 /** Asks Uazapi for a QR code (first call) or how the reading is going (next calls). */
-export async function instanceQr(n: NumberAccess, start: boolean) {
-  const raw = start ? await uazapi<Parameters<typeof readQr>[0]>(n, "POST", "/instance/connect", {}) : await uazapi<Parameters<typeof readQr>[0]>(n, "GET", "/instance/status");
+export async function instanceQr(n: NumberAccess, start: boolean, fresh = false) {
+  // fresh: drops the current connection and asks a new QR code (WhatsApp sends the history only to a new connection)
+  const raw = start
+    ? await uazapi<Parameters<typeof readQr>[0]>(n, "POST", "/instance/connect", fresh ? { fresh: true } : {})
+    : await uazapi<Parameters<typeof readQr>[0]>(n, "GET", "/instance/status");
   return readQr(raw);
 }
 
@@ -154,7 +157,11 @@ type RawMessage = {
   sender_pn?: string;
   wasSentByApi?: boolean;
   reaction?: string;
+  // Banneg's own server: the file that came with the message (it downloads it and tells when it is saved)
+  media?: RawMedia;
+  history?: boolean;
 };
+type RawMedia = { mimetype?: string; fileName?: string; size?: number; seconds?: number; saved?: boolean; error?: string };
 type RawChat = { phone?: string; name?: string; wa_contactName?: string; wa_name?: string; wa_chatid?: string; wa_isGroup?: boolean };
 export type SupportPayload = {
   EventType?: string;
@@ -165,6 +172,7 @@ export type SupportPayload = {
   instance?: { status?: string };
   status?: string;
   state?: string;
+  media?: RawMedia;
 };
 
 const MEDIA_LABEL: Record<string, string> = {
@@ -190,7 +198,9 @@ export type ParsedEvent =
       at: Date;
       body: string;
       mediaKind: string | null;
+      file: { mime: string; name: string | null; size: number | null } | null;
     }
+  | { kind: "media"; waChatId: string; externalId: string; saved: boolean; size: number | null; error: string | null }
   | { kind: "connection"; status: string }
   | { kind: "ignore"; reason: string };
 
@@ -200,6 +210,13 @@ const digits = (v: string | undefined | null) => (v ?? "").replace(/\D/g, "");
 export function parsePayload(p: SupportPayload, now = new Date()): ParsedEvent {
   const type = String(p.EventType ?? p.event ?? "").toLowerCase();
   if (type.startsWith("connection")) return { kind: "connection", status: String(p.instance?.status ?? p.status ?? p.state ?? "desconhecido") };
+  if (type === "media") {
+    // The server finished downloading a message's file (or WhatsApp no longer had it)
+    const waChatId = p.message?.chatid || p.chat?.wa_chatid || "";
+    const externalId = p.message?.messageid || p.message?.id || "";
+    if (!waChatId || !externalId) return { kind: "ignore", reason: "arquivo sem mensagem" };
+    return { kind: "media", waChatId, externalId, saved: !!p.media?.saved, size: Number(p.media?.size) || null, error: p.media?.error ? String(p.media.error).slice(0, 300) : null };
+  }
   if (!type.startsWith("messages") || !p.message) return { kind: "ignore", reason: `evento ${type || "sem tipo"}` };
   const m = p.message;
   const waChatId = m.chatid || p.chat?.wa_chatid || "";
@@ -231,6 +248,9 @@ export function parsePayload(p: SupportPayload, now = new Date()): ParsedEvent {
     at,
     body,
     mediaKind: media,
+    file: m.media
+      ? { mime: String(m.media.mimetype || "application/octet-stream").slice(0, 120), name: m.media.fileName ? String(m.media.fileName).slice(0, 200) : null, size: Number(m.media.size) || null }
+      : null,
   };
 }
 
@@ -245,6 +265,17 @@ export async function receiveSupport(key: string, payload: SupportPayload) {
   if (event.kind === "ignore") return { ok: true as const, ignored: event.reason };
   if (event.kind === "connection") {
     await db.supportNumber.update({ where: { id: number.id }, data: { status: event.status, statusAt: new Date() } });
+    return { ok: true as const };
+  }
+  if (event.kind === "media") {
+    const chat = await db.supportChat.findUnique({ where: { numberId_waChatId: { numberId: number.id, waChatId: event.waChatId } }, select: { id: true } });
+    if (!chat) return { ok: true as const, ignored: "arquivo de conversa desconhecida" };
+    await db.supportMessage.updateMany({
+      where: { chatId: chat.id, externalId: event.externalId },
+      data: event.saved
+        ? { mediaStatus: "salvo", mediaError: null, ...(event.size && { mediaSize: event.size }) }
+        : { mediaStatus: "erro", mediaError: event.error ?? "O WhatsApp não entregou o arquivo." },
+    });
     return { ok: true as const };
   }
   const chat = await db.supportChat.upsert({
@@ -272,6 +303,7 @@ export async function receiveSupport(key: string, payload: SupportPayload) {
         attendantId: event.fromMe && via !== "api" ? (only?.id ?? null) : null,
         externalId: event.externalId,
         createdAt: event.at,
+        ...(event.file && { mediaMime: event.file.mime, mediaName: event.file.name, mediaSize: event.file.size, mediaStatus: "baixando" }),
       },
     })
     .catch((e: { code?: string }) => {
@@ -279,18 +311,30 @@ export async function receiveSupport(key: string, payload: SupportPayload) {
       if (e.code === "P2002") return null;
       throw e;
     });
-  if (message) await updateChatAfter(chat.id, { at: event.at, body: event.body, fromMe: event.fromMe, answers: event.fromMe && via !== "api" });
+  if (message) await updateChatAfter(chat.id, { at: event.at, body: event.body, fromMe: event.fromMe });
   return { ok: true as const };
 }
 
-/** The list's last line and the queue: a client message starts the wait, a person's answer ends it. */
-async function updateChatAfter(chatId: string, m: { at: Date; body: string; fromMe: boolean; answers: boolean }) {
+/**
+ * The list's last line and the queue: a client message starts the wait, a person's answer ends it. Worked out from
+ * the messages themselves, because the history arrives out of order: an old question answered later never waits.
+ */
+async function updateChatAfter(chatId: string, m: { at: Date; body: string; fromMe: boolean }) {
   const chat = await db.supportChat.findUniqueOrThrow({ where: { id: chatId } });
   const newest = m.at >= chat.lastMessageAt;
-  const waitingSince = m.fromMe ? (m.answers && (!chat.waitingSince || m.at >= chat.waitingSince) ? null : chat.waitingSince) : (chat.waitingSince ?? m.at);
+  const answer = await db.supportMessage.findFirst({
+    where: { chatId, direction: "OUT", via: { not: "api" } },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+  const waiting = await db.supportMessage.findFirst({
+    where: { chatId, direction: "IN", ...(answer && { createdAt: { gt: answer.createdAt } }) },
+    orderBy: { createdAt: "asc" },
+    select: { createdAt: true },
+  });
   await db.supportChat.update({
     where: { id: chatId },
-    data: { waitingSince, ...(newest && { lastMessageAt: m.at, lastBody: m.body.slice(0, 300), lastFromMe: m.fromMe }) },
+    data: { waitingSince: waiting?.createdAt ?? null, ...(newest && { lastMessageAt: m.at, lastBody: m.body.slice(0, 300), lastFromMe: m.fromMe }) },
   });
 }
 
@@ -313,11 +357,26 @@ export async function sendSupportText(chatId: string, text: string, user: { id: 
   } else {
     await db.supportMessage.create({ data: { chatId, direction: "OUT", body: text, createdAt: at, ...data } });
   }
-  await updateChatAfter(chatId, { at, body: text, fromMe: true, answers: true });
+  await updateChatAfter(chatId, { at, body: text, fromMe: true });
 }
 
 /** What the open chat compares to know a new message arrived. */
 export async function supportChatVersion(chatId: string) {
-  const last = await db.supportMessage.findFirst({ where: { chatId }, orderBy: { createdAt: "desc" }, select: { id: true, via: true } });
-  return last ? `${last.id}:${last.via}` : "0";
+  // The count catches older messages arriving from the history; "baixando" catches a file that finished downloading
+  const [last, count, downloading] = await Promise.all([
+    db.supportMessage.findFirst({ where: { chatId }, orderBy: { createdAt: "desc" }, select: { id: true, via: true } }),
+    db.supportMessage.count({ where: { chatId } }),
+    db.supportMessage.count({ where: { chatId, mediaStatus: "baixando" } }),
+  ]);
+  return last ? `${last.id}:${last.via}:${count}:${downloading}` : "0";
+}
+
+/** A message's file, straight from the support WhatsApp server (in parts when the browser asks, to play audio and video). */
+export async function fetchSupportMedia(n: NumberAccess, externalId: string, range?: string | null) {
+  const base = serverOf(n);
+  if (!base) throw new Error("Falta o endereço do servidor do WhatsApp do suporte (SUPPORT_WA_URL).");
+  return fetch(`${base}/media?id=${encodeURIComponent(externalId)}`, {
+    headers: { token: openToken(n.token), ...(range && { range }) },
+    signal: AbortSignal.timeout(60_000),
+  });
 }

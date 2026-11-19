@@ -527,8 +527,20 @@ model SupportMessage {
   externalId  String?
   error       String?
   createdAt   DateTime          @default(now())
+  // The file of an audio, photo, PDF or video. The file itself stays on the WhatsApp server (Railway disk) and a copy
+  // goes to the Google Drive (Wellington, 2026-11-19: "não podemos perder"); the database only keeps where it is
+  mediaMime   String?
+  mediaName   String?
+  mediaSize   Int?
+  // baixando = the server is downloading it from WhatsApp, salvo = on the server's disk, erro = WhatsApp no longer had it
+  mediaStatus String?
+  mediaError  String?
+  driveFileId String?
+  driveTries  Int               @default(0)
+  driveError  String?
 
   @@unique([chatId, externalId])
   @@index([chatId, createdAt])
   @@index([createdAt])
+  @@index([mediaStatus, driveFileId])
 }
