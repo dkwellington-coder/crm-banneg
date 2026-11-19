@@ -43,7 +43,7 @@ export async function scheduleStageRules(lead: Pick<Lead, "id" | "stageId" | "st
       payload,
       runAt: ruleRunAt(base, rule.delayMinutes, rule.position, isNudge(rule)),
       dedupeKey: `rule:${rule.id}:${lead.id}:${idle ? now.toISOString() : payload.enteredAt}`,
-      maxAttempts: rule.action === "whatsapp" || rule.action === "email" ? 5 : 3,
+      maxAttempts: ["whatsapp", "whatsapp_pessoal", "email"].includes(rule.action) ? 5 : 3,
     });
   }
   return rules.length;
@@ -75,7 +75,7 @@ export async function scheduleAnswerRules(lead: Pick<Lead, "id" | "stageId" | "s
       payload,
       runAt: ruleRunAt(now, rule.delayMinutes, rule.position),
       dedupeKey: `rule:${rule.id}:${lead.id}:answer:${messageKey}`,
-      maxAttempts: rule.action === "whatsapp" || rule.action === "email" ? 5 : 3,
+      maxAttempts: ["whatsapp", "whatsapp_pessoal", "email"].includes(rule.action) ? 5 : 3,
     });
   }
   return { matched: matched.length > 0, aiReplies: matched.some((r) => (r.config as RuleConfig).aiReplies) };

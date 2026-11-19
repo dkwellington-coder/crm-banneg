@@ -37,6 +37,7 @@ export type StageData = {
 
 export const ACTION_ICON: Record<string, LucideIcon> = {
   whatsapp: MessageCircle,
+  whatsapp_pessoal: MessageCircle,
   email: Mail,
   cof: FileText,
   task: CheckSquare,
@@ -48,6 +49,7 @@ export const ACTION_ICON: Record<string, LucideIcon> = {
 
 const ACTION_TINT: Record<string, string> = {
   whatsapp: "bg-emerald-50 text-emerald-700",
+  whatsapp_pessoal: "bg-lime-50 text-lime-700",
   email: "bg-sky-50 text-sky-700",
   cof: "bg-teal-50 text-teal-700",
   task: "bg-amber-50 text-amber-700",

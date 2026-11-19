@@ -20,6 +20,7 @@ import { aiAccountProblem, aiAnswered, setAiHealth } from "./ai-health";
 import { sendPortalStatus, type PortalBody } from "./portal";
 import { sendPortalEmail } from "./portal-email";
 import { sendTeamMeetingAlert, teamGroupOn } from "./team-alert";
+import { sendPersonalWhatsApp } from "./personal-whatsapp";
 
 type Handler = (job: Job, lead: Lead | null) => Promise<string>;
 
@@ -483,6 +484,8 @@ export async function runAction(lead: Lead, action: string, config: RuleConfig, 
       if (!res.ok) throw new Error(res.error);
       return `WhatsApp ${sentHow(res)}.`;
     }
+    case "whatsapp_pessoal":
+      return sendPersonalWhatsApp(lead, config);
     case "email":
       return sendTemplateEmail(lead, config.templateKey ?? "");
     case "cof":

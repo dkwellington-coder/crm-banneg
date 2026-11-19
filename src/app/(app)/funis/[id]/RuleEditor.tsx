@@ -405,6 +405,29 @@ export function RuleEditor({ stageId, rule, options, onDone }: { stageId: string
           )}
         </div>
       )}
+      {d.action === "whatsapp_pessoal" && (
+        <div className="space-y-1.5">
+          <textarea
+            ref={text}
+            name="text"
+            required
+            rows={4}
+            value={d.config.text ?? ""}
+            onChange={(e) => setConfig({ text: e.target.value })}
+            placeholder="Olá, {{nome}}! Sou ..., diretor do Banneg."
+            className={inputCls}
+          />
+          <VariableBar onInsert={insertVar} />
+          <label className="flex items-center gap-2 text-xs text-slate-600">
+            <input type="checkbox" name="ifNoReply" checked={!!d.config.ifNoReply} onChange={(e) => setConfig({ ifNoReply: e.target.checked || undefined })} />
+            Só se o lead não respondeu à mensagem pessoal anterior (aqui ou no WhatsApp pessoal)
+          </label>
+          <p className="text-xs text-slate-500">
+            Sai do número conectado na Uazapi (o seu WhatsApp pessoal), não do número oficial. A resposta do lead chega no seu celular; aqui fica uma nota com o
+            que foi enviado. Não sai para lead encerrado nem para quem pediu para parar.
+          </p>
+        </div>
+      )}
       {d.action === "email" && (
         <select name="templateKey" required value={d.config.templateKey ?? ""} onChange={(e) => setConfig({ templateKey: e.target.value })} className={inputCls}>
           <option value="" disabled>

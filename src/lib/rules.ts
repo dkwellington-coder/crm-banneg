@@ -2,6 +2,7 @@
 
 export const ACTIONS = {
   whatsapp: { label: "Enviar WhatsApp", icon: "message" },
+  whatsapp_pessoal: { label: "Enviar WhatsApp do número pessoal", icon: "message" },
   email: { label: "Enviar e-mail", icon: "mail" },
   cof: { label: "Enviar a COF por e-mail", icon: "file" },
   task: { label: "Criar tarefa", icon: "check" },
@@ -40,6 +41,8 @@ export type RuleConfig = {
   // WhatsApp: what goes instead when a person (an affiliate), not a store, referred the lead and the message speaks of
   // {{parceiro}} ("corretora oficial da {{parceiro}}" would read wrong). Without it such a lead gets nothing
   pessoa?: PersonVersion;
+  // whatsapp_pessoal: only when the lead has not answered the previous personal message (here or on that WhatsApp)
+  ifNoReply?: boolean;
 };
 
 export type PersonVersion = { text?: string; templateName?: string; templateParams?: string[] };
@@ -113,6 +116,8 @@ export function actionLabel(action: string, config: RuleConfig, names: { stages?
   switch (action) {
     case "whatsapp":
       return `Enviar WhatsApp: “${config.text ?? ""}”${config.buttons?.length ? ` [${config.buttons.join(" · ")}]` : ""}${config.templateName ? ` (fora das 24 h: modelo ${config.templateName})` : ""}${config.pessoa?.text?.trim() ? " · com versão para indicação de pessoa" : ""}`;
+    case "whatsapp_pessoal":
+      return `Enviar do WhatsApp pessoal (Uazapi)${config.ifNoReply ? ", se o lead não respondeu à anterior" : ""}: “${config.text ?? ""}”`;
     case "email":
       return `Enviar e-mail “${names.emails?.[config.templateKey ?? ""] ?? config.templateKey}”`;
     case "cof":
@@ -180,7 +185,8 @@ export function ruleRunAt(base: Date, delayMinutes: number, position: number, aw
 }
 
 /** WhatsApp follow-ups an hour or more later wait for the morning; a reply right away, a first contact or an e-mail go at once. */
-export const isNudge = (rule: { action: string; delayMinutes: number }) => rule.action === "whatsapp" && rule.delayMinutes >= 60;
+export const isNudge = (rule: { action: string; delayMinutes: number }) =>
+  (rule.action === "whatsapp" || rule.action === "whatsapp_pessoal") && rule.delayMinutes >= 60;
 
 /** How many {{1}}, {{2}}... a Meta template asks for. */
 export function templateSlots(body: string) {
