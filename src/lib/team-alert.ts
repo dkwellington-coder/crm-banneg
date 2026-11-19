@@ -15,7 +15,7 @@ export function uazapiMissing() {
   return ["UAZAPI_URL", "UAZAPI_TOKEN"].filter((k) => !process.env[k]);
 }
 
-async function uazapi<T>(path: string, body?: unknown): Promise<T> {
+export async function uazapi<T>(path: string, body?: unknown): Promise<T> {
   const base = process.env.UAZAPI_URL?.trim().replace(/\/+$/, "");
   const token = process.env.UAZAPI_TOKEN?.trim();
   if (!base || !token) throw new Error("Falta UAZAPI_URL ou UAZAPI_TOKEN nas variáveis do servidor.");

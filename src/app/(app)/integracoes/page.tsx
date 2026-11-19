@@ -7,6 +7,8 @@ import { getSettings } from "@/lib/settings";
 import { Card, Loading, PageHeader, btnCls, btnGhostCls, inputCls, relTime } from "@/components/ui";
 import { disconnectGoogleAction, resendBlockedAction, saveTestModeAction, setEmailLeadsFunnelAction, setTeamGroupAction } from "../../actions";
 import { AGENDA_HOUR, listTeamGroups, uazapiMissing, type TeamGroup } from "@/lib/team-alert";
+import { BAD_CHECKS, getUazapiHealth } from "@/lib/uazapi-health";
+import { phoneLabel } from "@/lib/calendar";
 import { googleLinks } from "@/lib/google";
 import { TestButton } from "./TestButton";
 import { FormFunnelSelect } from "./FormFunnelSelect";
@@ -123,7 +125,8 @@ async function CalendarCheck() {
 /** The team's WhatsApp group (through Uazapi) where every booked meeting is posted. */
 async function TeamGroupBlock() {
   const missing = uazapiMissing();
-  const chosen = (await getSettings()).meetingAlertGroup;
+  const [chosen, health] = await Promise.all([getSettings().then((s) => s.meetingAlertGroup), getUazapiHealth()]);
+  const down = health && !health.ok && (health.bad ?? 0) >= BAD_CHECKS;
   let groups: TeamGroup[] = [];
   let error: string | null = null;
   if (!missing.length) {
@@ -142,6 +145,16 @@ async function TeamGroupBlock() {
         resumo da IA. Reunião remarcada aparece de novo com o horário novo. A mensagem sai de um número extra conectado na Uazapi, que precisa
         estar no grupo. O número oficial do Banneg não é usado para isso.
       </p>
+      {health && (
+        <p className={`text-sm ${down ? "font-medium text-red-700" : health.ok ? "text-emerald-700" : "text-amber-700"}`}>
+          {health.ok ? "Conectado" : down ? "Desconectado" : "Conferindo a conexão"}
+          {health.phone ? ` (${phoneLabel(health.phone)})` : ""} desde{" "}
+          {new Date(health.since).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short", timeStyle: "short" })}. Conferido a cada
+          minuto; se desconectar, o dono recebe um aviso na hora por e-mail e no WhatsApp, e o CRM mostra uma faixa vermelha.
+          {health.message && <span className="block text-xs text-slate-500">{health.message}</span>}
+          {down && health.alert?.length ? <span className="block text-xs text-slate-500">Aviso enviado: {health.alert.join("; ")}.</span> : null}
+        </p>
+      )}
       {missing.length > 0 && (
         <ol className="list-decimal space-y-1 pl-5">
           <Step>Na Uazapi, crie uma instância e conecte o número extra pelo QR code.</Step>
@@ -589,7 +602,9 @@ async function Integrations({ searchParams }: { searchParams: PageProps<"/integr
 
       <EmailLeads />
 
-      <TeamGroupBlock />
+      <div id="uazapi">
+        <TeamGroupBlock />
+      </div>
 
       <div id="google" className="xl:col-span-2">
         <Block icon={CalendarDays} color="#d97706" title="Google Agenda (reuniões com Meet)" missing={has("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")}>

@@ -12,6 +12,7 @@ import { backfillCapi, runCapi } from "@/lib/meta-capi";
 import { pullEmailLeads } from "@/lib/email-leads";
 import { getAiHealth } from "@/lib/ai-health";
 import { sendTeamAgendaIfDue } from "@/lib/team-alert";
+import { checkUazapi } from "@/lib/uazapi-health";
 
 // Called every minute by the server's scheduler (cron, Vercel Cron, or the worker script).
 export async function GET(request: Request) {
@@ -26,6 +27,10 @@ export async function GET(request: Request) {
   const results = await runDueJobs();
   // The day's meetings in the team's WhatsApp group, once a day in the morning
   const agenda = await sendTeamAgendaIfDue().catch((e: Error) => ({ error: e.message }));
+  // The Uazapi number behind the group: a disconnection is told to the owner right away (banner, e-mail, WhatsApp)
+  const uazapi = await checkUazapi()
+    .then((h) => h && { ok: h.ok, status: h.status, bad: h.bad ?? 0, alert: h.alert })
+    .catch((e: Error) => ({ error: e.message }));
   const meta: Record<string, unknown> = {};
   if (minute % 10 === 0 && process.env.WHATSAPP_BUSINESS_ACCOUNT_ID && process.env.WHATSAPP_TOKEN) {
     // Every template in the CRM was approved by the team: new ones go to Meta's review on their own
@@ -96,5 +101,5 @@ export async function GET(request: Request) {
     });
     meta.check = check;
   }
-  return Response.json({ ran: results.length, results, batches, ...(agenda && { agenda }), ...meta });
+  return Response.json({ ran: results.length, results, batches, ...(agenda && { agenda }), ...(uazapi && { uazapi }), ...meta });
 }
