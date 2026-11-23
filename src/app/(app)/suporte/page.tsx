@@ -5,7 +5,7 @@ import { db } from "@/lib/db";
 import { inboxVersion, supportViewer } from "@/lib/support-access";
 import { LiveRefresh } from "@/components/LiveRefresh";
 import { Avatar, Card, Loading, PageHeader, Tabs, tabCls, relTime } from "@/components/ui";
-import { phoneLabel, SupportTabs, WaitBadge } from "./parts";
+import { phoneLabel, StatusDot, SupportTabs, WaitBadge } from "./parts";
 
 export default function SuportePage({ searchParams }: PageProps<"/suporte">) {
   return (
@@ -25,7 +25,7 @@ async function Inbox({ searchParams }: { searchParams: PageProps<"/suporte">["se
   const numbers = await db.supportNumber.findMany({
     where: { active: true },
     orderBy: { name: "asc" },
-    select: { id: true, name: true, attendants: { select: { id: true } } },
+    select: { id: true, name: true, status: true, statusAt: true, attendants: { select: { id: true } } },
   });
   const mine = viewer.monitor || !viewer.attendant ? numbers : numbers.filter((n) => n.attendants.some((a) => a.id === viewer.attendant!.id));
   const where = { ...viewer.chatWhere, ...(numberId && { numberId }) };
@@ -45,6 +45,27 @@ async function Inbox({ searchParams }: { searchParams: PageProps<"/suporte">["se
     <div className="px-4 pb-6 md:px-6">
       <LiveRefresh src="/api/suporte/versao" version={version} />
       <SupportTabs active="conversas" monitor={viewer.monitor} owner={viewer.owner} waiting={waiting} />
+      {mine.some((n) => n.status !== "connected") && (
+        <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
+          <div className="font-semibold">Número de suporte fora do ar: as mensagens dele não estão chegando ao CRM.</div>
+          <ul className="mt-1 space-y-0.5">
+            {mine
+              .filter((n) => n.status !== "connected")
+              .map((n) => (
+                <li key={n.id} className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">{n.name}</span>
+                  <StatusDot status={n.status} />
+                  {n.statusAt && <span className="text-xs opacity-70">verificado {relTime(n.statusAt)}</span>}
+                </li>
+              ))}
+          </ul>
+          {viewer.owner && (
+            <Link href="/suporte/numeros" className="mt-1 inline-block font-medium underline">
+              Abrir Números e atendentes
+            </Link>
+          )}
+        </div>
+      )}
       {mine.length === 0 ? (
         <Card className="flex flex-col items-center gap-2 py-10 text-center">
           <Headset className="text-gold" size={32} />

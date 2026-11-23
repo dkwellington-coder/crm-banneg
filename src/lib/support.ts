@@ -69,7 +69,7 @@ export const webhookUrl = (key: string) => `${CRM_URL}/api/suporte/webhook/${key
 export const newWebhookKey = () => randomBytes(24).toString("base64url");
 
 type RawStatus = {
-  instance?: { status?: string; owner?: string; profileName?: string; name?: string };
+  instance?: { status?: string; owner?: string; profileName?: string; name?: string; reason?: string };
   status?: { connected?: boolean; jid?: string; loggedIn?: boolean } | string;
   connected?: boolean;
 };
@@ -80,7 +80,10 @@ export function readStatus(raw: RawStatus) {
   const text = raw.instance?.status ?? (typeof raw.status === "string" ? raw.status : undefined);
   const connected = nested?.connected ?? raw.connected ?? (text ? /^(connected|open|online)$/i.test(text) : false);
   const phone = (raw.instance?.owner || nested?.jid || "").split(/[@:]/)[0].replace(/\D/g, "") || null;
-  return { connected: !!connected, status: connected ? "connected" : (text ?? "disconnected"), phone, profile: raw.instance?.profileName ?? null };
+  const status = connected ? "connected" : (text ?? "disconnected");
+  // Our gateway also says why (the last time WhatsApp closed the connection); kept with the status so the screen shows it
+  const reason = connected ? null : raw.instance?.reason || null;
+  return { connected: !!connected, status, reason, saved: reason ? `${status}: ${reason}`.slice(0, 250) : status, phone, profile: raw.instance?.profileName ?? null };
 }
 
 export async function numberStatus(n: NumberAccess) {
@@ -384,4 +387,29 @@ export async function fetchSupportMedia(n: NumberAccess, externalId: string, ran
     headers: { token: openToken(n.token), ...(range && { range }) },
     signal: AbortSignal.timeout(60_000),
   });
+}
+
+/**
+ * Run by the scheduler every 5 minutes (2026-11-23, after 4 days with no message and nobody noticing): asks the
+ * WhatsApp server how each number is, so a number that fell shows red on the screen. A connected number gets its
+ * webhook pointed at the CRM again, which also heals a server that lost it.
+ */
+export async function checkSupportNumbers() {
+  const numbers = await db.supportNumber.findMany({ where: { active: true } });
+  const results: { name: string; status?: string; error?: string }[] = [];
+  for (const n of numbers) {
+    try {
+      const s = await numberStatus(n);
+      if (s.connected) await connectWebhook(n);
+      await db.supportNumber.update({ where: { id: n.id }, data: { status: s.saved, statusAt: new Date(), ...(s.phone && { phone: s.phone }) } });
+      results.push({ name: n.name, status: s.saved });
+    } catch (e) {
+      const error = (e as Error).message.slice(0, 200);
+      await db.supportNumber.update({ where: { id: n.id }, data: { status: `erro: ${error}`, statusAt: new Date() } });
+      results.push({ name: n.name, error });
+    }
+  }
+  const value = { at: new Date().toISOString(), results };
+  await db.setting.upsert({ where: { key: "suporte_check" }, create: { key: "suporte_check", value }, update: { value } });
+  return results;
 }

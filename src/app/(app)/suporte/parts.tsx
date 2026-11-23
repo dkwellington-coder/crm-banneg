@@ -33,10 +33,25 @@ export function WaitBadge({ since, now }: { since: Date; now: number }) {
 /** Green dot = connected, red = anything else. */
 export function StatusDot({ status }: { status: string | null }) {
   const on = status === "connected";
+  const error = status?.startsWith("erro") ? status.replace(/^erro:?\s*/, "") || null : null;
+  // "connecting: <why>": our gateway keeps trying, and says why WhatsApp closed it the last time
+  const why = !error && status?.includes(": ") ? status.slice(status.indexOf(": ") + 2) : null;
+  const base = status?.split(": ")[0];
+  const label = on
+    ? "Conectado"
+    : error !== null || status === "erro"
+      ? "Servidor do WhatsApp não respondeu"
+      : base === "qrcode" || base === "aguardando QR"
+        ? "Esperando o QR code"
+        : base === "connecting"
+          ? `Tentando reconectar${why ? `: ${why}` : ""}`
+          : status
+            ? `Desconectado${why ? `: ${why}` : ": leia o QR code de novo"}`
+            : "Ainda não verificado";
   return (
-    <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${on ? "text-emerald-700" : "text-red-700"}`}>
+    <span title={error ?? why ?? undefined} className={`inline-flex items-center gap-1.5 text-xs font-medium ${on ? "text-emerald-700" : "text-red-700"}`}>
       <span className={`size-2 rounded-full ${on ? "bg-emerald-500" : "bg-red-500"}`} />
-      {on ? "Conectado" : status ? "Desconectado" : "Ainda não verificado"}
+      {label}
     </span>
   );
 }
