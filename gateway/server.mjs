@@ -38,7 +38,7 @@ const log = pino({ level: process.env.LOG_LEVEL || "warn" });
 const SESSIONS_FILE = path.join(DATA, "sessions.json");
 // sendOnly: a number that only sends (Wellington's own WhatsApp posting the meetings in the team's group, 2026-11-23):
 // nothing it sends or receives goes to the CRM, no history and no files are kept
-/** @type {Map<string, {token: string, name: string, webhook: string, sendOnly?: boolean, sock?: any, qr?: string|null, status: string, owner?: string|null, sentByApi: Set<string>, retry?: NodeJS.Timeout, chain?: Promise<void>}>} */
+/** @type {Map<string, {token: string, name: string, webhook: string, sendOnly?: boolean, sock?: any, qr?: string|null, status: string, owner?: string|null, sentByApi: Set<string>, retry?: NodeJS.Timeout, chain?: Promise<void>, tries?: number, lastError?: {code: number, reason: string, at: string}|null}>} */
 const sessions = new Map();
 
 async function save() {
@@ -52,7 +52,7 @@ async function load() {
   for (const s of JSON.parse(await readFile(SESSIONS_FILE, "utf8"))) {
     sessions.set(s.token, { ...s, status: "disconnected", qr: null, sentByApi: new Set() });
     // Already paired before: connects again on its own
-    if (existsSync(path.join(DATA, "auth", s.token, "creds.json"))) start(sessions.get(s.token)).catch((e) => log.error(e));
+    if (existsSync(path.join(DATA, "auth", s.token, "creds.json"))) reconnect(sessions.get(s.token), 0);
   }
 }
 
@@ -61,6 +61,33 @@ const authDir = (token) => path.join(DATA, "auth", token);
 const mediaDir = (token) => path.join(DATA, "media", createHash("sha256").update(token).digest("hex").slice(0, 16));
 const safeId = (id) => String(id || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80);
 const digits = (jid) => (jid || "").split("@")[0].split(":")[0].replace(/\D/g, "");
+
+// Why WhatsApp closed a connection, in words the CRM shows (Wellington, 2026-11-23: numbers stuck "connecting" for days)
+const REASONS = {
+  401: "desconectado no celular: leia o QR code de novo",
+  403: "o WhatsApp recusou o acesso deste número",
+  408: "o WhatsApp não respondeu a tempo",
+  411: "o celular pediu para ler o QR code de novo",
+  428: "a conexão com o WhatsApp caiu",
+  440: "o número foi aberto em outro lugar (outro servidor ou WhatsApp Web) e derrubou este",
+  500: "a sessão salva estragou: leia o QR code de novo",
+  503: "o WhatsApp está fora do ar",
+  515: "o WhatsApp pediu para reconectar",
+};
+
+/** Connects again, waiting longer after each failure (5 s, 10 s, 20 s... up to 5 minutes), and never gives up silently. */
+function reconnect(s, ms) {
+  clearTimeout(s.retry);
+  s.status = "connecting";
+  s.retry = setTimeout(() => {
+    start(s).catch((e) => {
+      log.error({ number: s.name, err: e.message }, "não conseguiu ligar o número");
+      s.lastError = { code: 0, reason: `erro ao ligar: ${e.message}`.slice(0, 200), at: new Date().toISOString() };
+      s.tries = (s.tries || 0) + 1;
+      reconnect(s, Math.min(5_000 * 2 ** (s.tries - 1), 300_000));
+    });
+  }, ms);
+}
 
 let waVersion;
 async function start(s) {
@@ -94,12 +121,17 @@ async function start(s) {
     if (u.connection === "open") {
       s.status = "connected";
       s.qr = null;
+      s.tries = 0;
+      s.lastError = null;
       s.owner = digits(sock.user?.id);
       post(s, { EventType: "connection", instance: { status: "connected", owner: s.owner } });
     }
     if (u.connection === "close") {
       const code = u.lastDisconnect?.error?.output?.statusCode;
       s.sock = undefined;
+      s.tries = (s.tries || 0) + 1;
+      s.lastError = { code: code ?? 0, reason: REASONS[code] || `conexão fechada (${code ?? u.lastDisconnect?.error?.message ?? "sem código"})`, at: new Date().toISOString() };
+      log.warn({ number: s.name, code, tries: s.tries, err: u.lastDisconnect?.error?.message }, "conexão com o WhatsApp fechou");
       if (code === DisconnectReason.loggedOut) {
         // Disconnected on the phone: the keys are no longer valid, a new QR code is needed
         s.status = "disconnected";
@@ -107,8 +139,7 @@ async function start(s) {
         await rm(authDir(s.token), { recursive: true, force: true });
         post(s, { EventType: "connection", instance: { status: "disconnected" } });
       } else {
-        s.status = "connecting";
-        s.retry = setTimeout(() => start(s).catch((e) => log.error(e)), code === DisconnectReason.restartRequired ? 500 : 5_000);
+        reconnect(s, code === DisconnectReason.restartRequired ? 500 : Math.min(5_000 * 2 ** (s.tries - 1), 300_000));
       }
     }
   });
@@ -306,7 +337,15 @@ export function groupList(groups) {
 function statusOf(s) {
   const connected = s.status === "connected";
   return {
-    instance: { name: s.name, status: connected ? "connected" : s.status, owner: s.owner || "", qrcode: s.qr || "", profileName: s.name },
+    instance: {
+      name: s.name,
+      status: connected ? "connected" : s.status,
+      owner: s.owner || "",
+      qrcode: s.qr || "",
+      profileName: s.name,
+      // Why it is not connected: the last time WhatsApp closed it, and how many tries since
+      ...(!connected && s.lastError && { reason: s.lastError.reason, lastDisconnect: { ...s.lastError, tries: s.tries || 0 } }),
+    },
     status: { connected, jid: s.owner ? `${s.owner}@s.whatsapp.net` : "" },
   };
 }
@@ -338,7 +377,7 @@ const routes = {
 
   "GET /instance/all": async (_s, _b, req) => {
     if (!same(req.headers.admintoken, ADMIN)) return [401, { error: "admintoken inválido" }];
-    return [200, [...sessions.values()].map((s) => ({ name: s.name, status: s.status, owner: s.owner || "" }))];
+    return [200, [...sessions.values()].map((s) => ({ name: s.name, status: s.status, owner: s.owner || "", lastDisconnect: s.lastError || null, tries: s.tries || 0 }))];
   },
 
   "POST /instance/connect": async (s, body) => {
@@ -353,7 +392,11 @@ const routes = {
       s.status = "disconnected";
       s.qr = null;
     }
-    if (s.status !== "connected" && !s.sock) await start(s);
+    if (s.status !== "connected" && !s.sock)
+      await start(s).catch((e) => {
+        reconnect(s, 5_000);
+        throw e;
+      });
     await waitFor(s, 10_000);
     return [200, { connected: s.status === "connected", ...statusOf(s) }];
   },

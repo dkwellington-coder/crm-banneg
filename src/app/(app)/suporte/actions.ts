@@ -50,15 +50,17 @@ async function checkNumber(id: string, prefix = "") {
     const status = await numberStatus(n);
     await db.supportNumber.update({
       where: { id },
-      data: { status: status.status, statusAt: new Date(), ...(status.phone && { phone: status.phone }) },
+      data: { status: status.saved, statusAt: new Date(), ...(status.phone && { phone: status.phone }) },
     });
     if (!status.connected)
-      return { error: `${prefix} Este número está desconectado (${status.status}). Use "Conectar com QR code" e leia com o celular dele.`.trim() };
+      return {
+        error: `${prefix} Este número está desconectado${status.reason ? `: ${status.reason}` : ` (${status.status})`}. Use "Ler o QR code de novo" e leia com o celular dele.`.trim(),
+      };
     await connectWebhook(n);
     revalidatePath("/suporte", "layout");
     return { ok: true, message: `${prefix} Conectado${status.phone ? ` (${status.phone})` : ""}. As mensagens deste número já chegam no Suporte.`.trim() };
   } catch (e) {
-    await db.supportNumber.update({ where: { id }, data: { status: "erro", statusAt: new Date() } });
+    await db.supportNumber.update({ where: { id }, data: { status: `erro: ${(e as Error).message}`.slice(0, 250), statusAt: new Date() } });
     revalidatePath("/suporte", "layout");
     return { error: `${prefix} ${(e as Error).message}`.trim() };
   }
