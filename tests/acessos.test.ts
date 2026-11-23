@@ -19,8 +19,8 @@ vi.mock("next/server", async (original) => ({ ...(await original<typeof import("
 
 describe("screens each person can open", () => {
   it("the owner and '*' open everything; others only what was ticked; nothing ticked lands on 'sem acesso'", () => {
-    expect(areasOf({ role: "OWNER", areas: [] })).toHaveLength(9);
-    expect(areasOf({ role: "SELLER", areas: ["*"] })).toHaveLength(9);
+    expect(areasOf({ role: "OWNER", areas: [] })).toHaveLength(10);
+    expect(areasOf({ role: "SELLER", areas: ["*"] })).toHaveLength(10);
     const seller = { role: "SELLER", areas: ["agenda", "conversas"] };
     // In the menu's order, whatever order they were saved in
     expect(areasOf(seller)).toEqual(["conversas", "agenda"]);
@@ -30,7 +30,7 @@ describe("screens each person can open", () => {
     expect(homeOf({ role: "SELLER", areas: [] })).toBe("/sem-acesso");
     // What comes from the form: unknown names dropped, all ticked kept as "*" (new screens later come along)
     expect(cleanAreas(["funil", "hack", "agenda"])).toEqual(["funil", "agenda"]);
-    expect(cleanAreas(["funil", "conversas", "agenda", "reunioes", "metas", "painel", "simulador", "integracoes", "configuracoes"])).toEqual(["*"]);
+    expect(cleanAreas(["funil", "conversas", "agenda", "reunioes", "metas", "painel", "suporte", "simulador", "integracoes", "configuracoes"])).toEqual(["*"]);
   });
 
   it("the business manager with only Reuniões: no lead page, no alerts, never gets a meeting booked to him", () => {
@@ -111,7 +111,7 @@ describe.skipIf(!dbUrl)("Acessos page actions", () => {
     expect(await db.user.count()).toBe(1);
 
     // All screens ticked: kept as "*"
-    await actions.saveAccessAction({}, form({ ...base, password: "senha-forte-1", areas: ["funil", "conversas", "agenda", "reunioes", "metas", "painel", "simulador", "integracoes", "configuracoes"] }));
+    await actions.saveAccessAction({}, form({ ...base, password: "senha-forte-1", areas: ["funil", "conversas", "agenda", "reunioes", "metas", "painel", "suporte", "simulador", "integracoes", "configuracoes"] }));
     const rui = await db.user.findUniqueOrThrow({ where: { email: "rui@exemplo.com" } });
     expect(rui.areas).toEqual(["*"]);
     await db.session.create({ data: { id: "rui-phone", userId: rui.id, expiresAt: new Date(Date.now() + 86_400_000) } });

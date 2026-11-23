@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // The support numbers' WhatsApp server: a separate Node program with its own packages (not React)
+    "gateway/**",
   ]),
 ]);
 

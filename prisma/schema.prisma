@@ -450,3 +450,97 @@ model LeadDocument {
 
   @@index([leadId])
 }
+
+// ---- Suporte: the support WhatsApp numbers (Uazapi), the people who answer them and their conversations.
+// A support conversation is not a lead: no funnel, no AI, no automation. It exists to answer and to measure.
+
+// Someone who answers support (often from home): the agreed hours are what their day is compared with
+model SupportAttendant {
+  id        String           @id @default(cuid())
+  name      String
+  // Their CRM login, when they answer through the CRM too
+  userId    String?          @unique
+  // Agreed hours, Brasília time: days 0 (Sunday) to 6, "08:00" to "18:00"
+  workDays  Int[]            @default([1, 2, 3, 4, 5])
+  workStart String           @default("08:00")
+  workEnd   String           @default("18:00")
+  active    Boolean          @default(true)
+  createdAt DateTime         @default(now())
+  numbers   SupportNumber[]
+  messages  SupportMessage[]
+}
+
+// A support WhatsApp number, connected to its own Uazapi instance
+model SupportNumber {
+  id         String             @id @default(cuid())
+  name       String
+  phone      String?
+  // Uazapi server (https://xxx.uazapi.com); null = UAZAPI_URL
+  server     String?
+  // The instance's token, encrypted
+  token      String
+  // Secret part of the address Uazapi posts this number's messages to
+  webhookKey String             @unique
+  // Last state Uazapi gave (connected, disconnected...) and when
+  status     String?
+  statusAt   DateTime?
+  active     Boolean            @default(true)
+  createdAt  DateTime           @default(now())
+  attendants SupportAttendant[]
+  chats      SupportChat[]
+}
+
+model SupportChat {
+  id            String           @id @default(cuid())
+  numberId      String
+  number        SupportNumber    @relation(fields: [numberId], references: [id], onDelete: Cascade)
+  // WhatsApp's id for the chat (...@s.whatsapp.net or ...@lid)
+  waChatId      String
+  phone         String?
+  name          String?
+  lastMessageAt DateTime         @default(now())
+  lastBody      String?
+  lastFromMe    Boolean          @default(false)
+  // The client's first message that no person has answered yet; null = answered
+  waitingSince  DateTime?
+  createdAt     DateTime         @default(now())
+  messages      SupportMessage[]
+
+  @@unique([numberId, waChatId])
+  @@index([lastMessageAt])
+}
+
+model SupportMessage {
+  id          String            @id @default(cuid())
+  chatId      String
+  chat        SupportChat       @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  direction   Direction
+  body        String
+  // audio, image, video, document, sticker...; null = text
+  kind        String?
+  // phone = typed on the phone or WhatsApp Web, crm = sent from the CRM, api = automatic (a bot or another system): not a person
+  via         String            @default("phone")
+  author      String?
+  attendantId String?
+  attendant   SupportAttendant? @relation(fields: [attendantId], references: [id], onDelete: SetNull)
+  // WhatsApp's message id, so the same message never lands twice
+  externalId  String?
+  error       String?
+  createdAt   DateTime          @default(now())
+  // The file of an audio, photo, PDF or video. The file itself stays on the WhatsApp server (Railway disk) and a copy
+  // goes to the Google Drive (Wellington, 2026-11-19: "não podemos perder"); the database only keeps where it is
+  mediaMime   String?
+  mediaName   String?
+  mediaSize   Int?
+  // baixando = the server is downloading it from WhatsApp, salvo = on the server's disk, erro = WhatsApp no longer had it
+  mediaStatus String?
+  mediaError  String?
+  driveFileId String?
+  driveTries  Int               @default(0)
+  driveError  String?
+
+  @@unique([chatId, externalId])
+  @@index([chatId, createdAt])
+  @@index([createdAt])
+  @@index([mediaStatus, driveFileId])
+}

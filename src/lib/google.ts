@@ -25,12 +25,12 @@ export function googleRedirectUri(requestUrl: string) {
   return new URL("/api/google/callback", process.env.APP_URL || requestUrl).toString();
 }
 
-export function googleAuthUrl(state: string, redirectUri: string) {
+export function googleAuthUrl(state: string, redirectUri: string, scopes = SCOPES) {
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID!,
     redirect_uri: redirectUri,
     response_type: "code",
-    scope: SCOPES.join(" "),
+    scope: scopes.join(" "),
     // offline + consent: Google hands a refresh token, so the CRM keeps booking without anyone logged in
     access_type: "offline",
     prompt: "consent",
@@ -76,13 +76,18 @@ async function tokenRequest(body: Record<string, string>) {
   return json;
 }
 
-/** Trades the code Google sent back for a refresh token and saves it for this user. */
-export async function connectGoogle(userId: string, code: string, redirectUri: string) {
+/** Trades the code Google sent back for a refresh token (sealed) and the account's e-mail. */
+export async function googleCodeToLink(code: string, redirectUri: string): Promise<GoogleLink> {
   const json = await tokenRequest({ code, redirect_uri: redirectUri, grant_type: "authorization_code" });
   if (!json.refresh_token) throw new Error("O Google não mandou a permissão permanente. Tente conectar de novo.");
   // The id_token came straight from Google over HTTPS, so its payload can be read as is
   const payload = json.id_token ? JSON.parse(Buffer.from(json.id_token.split(".")[1], "base64url").toString("utf8")) : {};
-  const link: GoogleLink = { email: String(payload.email ?? ""), connectedAt: new Date().toISOString(), token: sealToken(json.refresh_token) };
+  return { email: String(payload.email ?? ""), connectedAt: new Date().toISOString(), token: sealToken(json.refresh_token) };
+}
+
+/** Trades the code Google sent back for a refresh token and saves it for this user. */
+export async function connectGoogle(userId: string, code: string, redirectUri: string) {
+  const link = await googleCodeToLink(code, redirectUri);
   await db.setting.upsert({ where: { key: settingKey(userId) }, create: { key: settingKey(userId), value: link }, update: { value: link } });
   // The scheduler proves the new connection on its next round
   await db.setting.deleteMany({ where: { key: "calendar_check" } });
