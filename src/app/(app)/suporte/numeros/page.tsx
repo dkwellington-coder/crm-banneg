@@ -10,6 +10,10 @@ import { canCreateInstances } from "@/lib/support";
 import { driveSummary } from "@/lib/support-drive";
 import { disconnectDriveAction } from "../actions";
 import { HardDrive } from "lucide-react";
+import Link from "next/link";
+import { getSettings } from "@/lib/settings";
+import { getUazapiHealth } from "@/lib/uazapi-health";
+import { TeamSenderQr } from "../../integracoes/TeamSenderQr";
 
 export default function NumerosPage({ searchParams }: PageProps<"/suporte/numeros">) {
   return (
@@ -87,6 +91,8 @@ async function Setup({ searchParams }: { searchParams: PageProps<"/suporte/numer
         </Card>
       </section>
 
+      <GroupSenderCard qr={qr} />
+
       <DriveCard result={typeof sp.drive === "string" ? sp.drive : null} detail={typeof sp.detalhe === "string" ? sp.detalhe : null} />
 
       <section className="space-y-3">
@@ -151,6 +157,41 @@ async function DriveCard({ result, detail }: { result: string | null; detail: st
               </>
             )}
           </div>
+        </div>
+      </Card>
+    </section>
+  );
+}
+
+/**
+ * Wellington's own number, connected here only to post the meetings in the team's group (2026-11-23: "apenas para enviar
+ * as msg de agendamento no grupo, não será para monitoramento"). It is not a support number: no conversations, no
+ * monitoring. The same connection as Integrações > Grupo de reuniões, where the group is chosen.
+ */
+async function GroupSenderCard({ qr }: { qr: boolean }) {
+  const [settings, health] = await Promise.all([getSettings(), getUazapiHealth()]);
+  const sender = settings.meetingSender;
+  const ok = health?.sender === "suporte" && health.ok;
+  return (
+    <section className="space-y-3">
+      <h2 className="text-lg font-semibold">Número que manda as reuniões no grupo</h2>
+      <Card>
+        <div className="space-y-3 text-sm">
+          <p className="text-slate-600">
+            Este número <b>só envia</b> os avisos de reunião e a agenda das 7h no grupo da equipe. As conversas dele não aparecem no CRM e não entram no
+            acompanhamento do suporte.
+          </p>
+          {sender && (
+            <p className={ok ? "font-medium text-emerald-700" : "font-medium text-amber-700"}>
+              {ok ? "Conectado" : sender.phone ? "Desconectado" : "Aguardando a leitura do QR code"}
+              {sender.phone ? ` (${phoneLabel(sender.phone)})` : ""}.
+            </p>
+          )}
+          {qr && !sender && <TeamSenderQr label="Conectar meu número (só para enviar)" done="Confira o grupo em Integrações e mande a mensagem de teste." />}
+          {qr && sender && !ok && <TeamSenderQr label="Ler o QR code" fresh done="Confira o grupo em Integrações e mande a mensagem de teste." />}
+          <Link href="/integracoes#uazapi" className="inline-block font-medium text-brand underline">
+            Escolher o grupo e mandar a mensagem de teste (Integrações)
+          </Link>
         </div>
       </Card>
     </section>
