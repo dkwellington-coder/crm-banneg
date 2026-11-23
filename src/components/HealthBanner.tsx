@@ -40,9 +40,10 @@ export async function HealthBanner() {
       )}
       {uazapi && (
         <a href="/integracoes#uazapi" className="block bg-red-600 px-4 py-2 text-sm font-medium text-white">
-          WhatsApp da Uazapi{uazapi.phone ? ` ${phoneLabel(uazapi.phone)}` : ""} desconectado desde{" "}
+          WhatsApp que manda as reuniões no grupo{uazapi.phone ? ` (${phoneLabel(uazapi.phone)})` : ""} desconectado desde{" "}
           {new Date(uazapi.since).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short", timeStyle: "short" })}: os avisos de reunião
-          não chegam ao grupo da equipe. Reconecte no painel da Uazapi lendo o QR code no celular.
+          não chegam ao grupo da equipe.{" "}
+          {uazapi.sender === "suporte" ? "Clique aqui e leia o QR code de novo." : "Reconecte no painel da Uazapi lendo o QR code no celular."}
         </a>
       )}
       {failedJobs > 0 && (

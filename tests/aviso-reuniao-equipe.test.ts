@@ -122,7 +122,7 @@ describe.skipIf(!dbUrl)("meeting notice in the team's WhatsApp group", () => {
     expect(uazapi[0]).toMatchObject({ url: "https://banneg.uazapi.com/group/list", token: "tok" });
     await team.setTeamGroup(GROUP.id);
     expect((await settings.getSettings()).meetingAlertGroup).toEqual(GROUP);
-    await expect(team.setTeamGroup("120363000000000000@g.us")).rejects.toThrow("não aparece mais");
+    await expect(team.setTeamGroup("120363000000000000@g.us")).rejects.toThrow("não aparece no número");
     await team.setTeamGroup(null);
     expect((await settings.getSettings()).meetingAlertGroup).toBeNull();
   });
@@ -203,7 +203,7 @@ describe.skipIf(!dbUrl)("meeting notice in the team's WhatsApp group", () => {
     expect(posts()[0].body).toMatchObject({ number: GROUP.id });
     const url = process.env.UAZAPI_URL;
     delete process.env.UAZAPI_URL;
-    expect(await team.testTeamGroup()).toEqual({ ok: false, message: "Falta configurar no Vercel: UAZAPI_URL." });
+    expect(await team.testTeamGroup()).toEqual({ ok: false, message: expect.stringContaining("Nenhum número conectado") });
     process.env.UAZAPI_URL = url;
   });
 

@@ -5,8 +5,10 @@ import { requireArea } from "@/lib/access";
 import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
 import { Card, Loading, PageHeader, btnCls, btnGhostCls, inputCls, relTime } from "@/components/ui";
-import { disconnectGoogleAction, resendBlockedAction, saveTestModeAction, setEmailLeadsFunnelAction, setTeamGroupAction } from "../../actions";
-import { AGENDA_HOUR, listTeamGroups, uazapiMissing, type TeamGroup } from "@/lib/team-alert";
+import { disconnectGoogleAction, resendBlockedAction, saveTestModeAction, setEmailLeadsFunnelAction, setTeamGroupAction, removeTeamSenderAction } from "../../actions";
+import { AGENDA_HOUR, listTeamGroups, teamSender, type TeamGroup } from "@/lib/team-alert";
+import { canCreateInstances } from "@/lib/support";
+import { TeamSenderQr } from "./TeamSenderQr";
 import { BAD_CHECKS, getUazapiHealth } from "@/lib/uazapi-health";
 import { phoneLabel } from "@/lib/calendar";
 import { googleLinks } from "@/lib/google";
@@ -124,12 +126,16 @@ async function CalendarCheck() {
 /** E-mails sent to the leads box become leads in the chosen funnel; the last ones read and what became of each. */
 /** The team's WhatsApp group (through Uazapi) where every booked meeting is posted. */
 async function TeamGroupBlock() {
-  const missing = uazapiMissing();
-  const [chosen, health] = await Promise.all([getSettings().then((s) => s.meetingAlertGroup), getUazapiHealth()]);
+  const [settings, health] = await Promise.all([getSettings(), getUazapiHealth()]);
+  const chosen = settings.meetingAlertGroup;
+  const sender = teamSender(settings);
+  // The number connected on the CRM's own server (the Suporte one); without it, the Uazapi instance in the Vercel variables
+  const own = !!settings.meetingSender;
+  const canConnect = canCreateInstances();
   const down = health && !health.ok && (health.bad ?? 0) >= BAD_CHECKS;
   let groups: TeamGroup[] = [];
   let error: string | null = null;
-  if (!missing.length) {
+  if (sender) {
     try {
       groups = await listTeamGroups();
     } catch (e) {
@@ -139,12 +145,29 @@ async function TeamGroupBlock() {
   // The saved group stays selectable even when the list could not be read
   if (chosen && !groups.some((g) => g.id === chosen.id)) groups = [chosen, ...groups];
   return (
-    <Block icon={UsersRound} color="#25d366" title="Grupo de reuniões no WhatsApp (Uazapi)" missing={missing}>
+    <Block icon={UsersRound} color="#25d366" title="Grupo de reuniões no WhatsApp" missing={[]}>
       <p className="text-sm text-slate-600">
         Toda reunião marcada (pela IA ou pela equipe) aparece no grupo escolhido: cliente, WhatsApp, dia e hora, link do Meet, a ficha no CRM e o
-        resumo da IA. Reunião remarcada aparece de novo com o horário novo. A mensagem sai de um número extra conectado na Uazapi, que precisa
-        estar no grupo. O número oficial do Banneg não é usado para isso.
+        resumo da IA. Reunião remarcada aparece de novo com o horário novo. A mensagem sai de um número conectado pelo QR code, que precisa estar no
+        grupo. O número oficial do Banneg não é usado para isso.
       </p>
+      <div className="space-y-2 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
+        <p>
+          <span className="font-medium">Número que manda no grupo:</span>{" "}
+          {own
+            ? `o seu, conectado aqui no CRM${settings.meetingSender?.phone ? ` (${phoneLabel(settings.meetingSender.phone)})` : ""}. Ele só envia: as suas conversas não entram no CRM e não são acompanhadas.`
+            : sender
+              ? "a Uazapi (variáveis UAZAPI_URL e UAZAPI_TOKEN no Vercel)."
+              : "nenhum ainda."}
+        </p>
+        {canConnect && !own && <TeamSenderQr label="Conectar meu número (só para enviar)" />}
+        {canConnect && own && !(health?.sender === "suporte" && health.ok) && <TeamSenderQr label="Ler o QR code" fresh />}
+        {own && (
+          <form action={removeTeamSenderAction}>
+            <button className="text-xs text-slate-500 underline">Desconectar este número{process.env.UAZAPI_URL ? " e voltar para a Uazapi" : ""}</button>
+          </form>
+        )}
+      </div>
       {health && (
         <p className={`text-sm ${down ? "font-medium text-red-700" : health.ok ? "text-emerald-700" : "text-amber-700"}`}>
           {health.ok ? "Conectado" : down ? "Desconectado" : "Conferindo a conexão"}
@@ -155,14 +178,10 @@ async function TeamGroupBlock() {
           {down && health.alert?.length ? <span className="block text-xs text-slate-500">Aviso enviado: {health.alert.join("; ")}.</span> : null}
         </p>
       )}
-      {missing.length > 0 && (
-        <ol className="list-decimal space-y-1 pl-5">
-          <Step>Na Uazapi, crie uma instância e conecte o número extra pelo QR code.</Step>
-          <Step>No WhatsApp desse número, crie o grupo com a equipe (ou entre no grupo que já existe).</Step>
-          <Step>No Vercel, salve o endereço do servidor da instância como UAZAPI_URL e o token da instância como UAZAPI_TOKEN, e publique o CRM de novo.</Step>
-        </ol>
+      {!sender && !canConnect && (
+        <p className="text-sm text-amber-700">Falta ligar o servidor do WhatsApp do suporte (SUPPORT_WA_URL e SUPPORT_WA_ADMIN_TOKEN no Vercel).</p>
       )}
-      {!missing.length && (
+      {sender && (
         <form action={setTeamGroupAction} className="flex flex-wrap items-center gap-2 text-sm">
           <label htmlFor="team-group" className="text-slate-600">
             Grupo:
@@ -179,8 +198,8 @@ async function TeamGroupBlock() {
         </form>
       )}
       {error && <p className="text-sm text-amber-700">Não deu para ler os grupos: {error}</p>}
-      {!missing.length && !error && !groups.length && (
-        <p className="text-sm text-slate-500">O número da Uazapi ainda não está em nenhum grupo. Crie o grupo no celular e recarregue esta página.</p>
+      {sender && !error && !groups.length && (
+        <p className="text-sm text-slate-500">O número que manda as mensagens ainda não está em nenhum grupo. Coloque-o no grupo pelo celular e recarregue esta página.</p>
       )}
       {chosen && (
         <>

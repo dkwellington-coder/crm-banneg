@@ -88,8 +88,8 @@ describe.skipIf(!dbUrl)("Uazapi disconnection warning", () => {
     const h = await health.checkUazapi(min(2));
     expect(h).toMatchObject({ ok: false, bad: 2, since: min(1).toISOString(), alertedAt: min(2).toISOString() });
     expect(mails).toHaveLength(1);
-    expect(mails[0]).toMatchObject({ to: "wellington@banneg.com.br", subject: "WhatsApp da Uazapi desconectado" });
-    expect(mails[0].body).toContain("o WhatsApp (17) 98160-0088 desconectou da Uazapi às 12:01");
+    expect(mails[0]).toMatchObject({ to: "wellington@banneg.com.br", subject: "WhatsApp do grupo de reuniões desconectado" });
+    expect(mails[0].body).toContain("o WhatsApp (17) 98160-0088, que manda as reuniões no grupo da equipe, desconectou da Uazapi às 12:01");
     expect(mails[0].body).toContain("leia o QR code");
     expect(whatsapp).toEqual([expect.objectContaining({ to: "5517981600088", type: "text" })]);
     expect(h?.alert).toEqual(["e-mail para wellington@banneg.com.br", "WhatsApp para (17) 98160-0088"]);
@@ -111,8 +111,8 @@ describe.skipIf(!dbUrl)("Uazapi disconnection warning", () => {
     const h = await health.checkUazapi(min(9));
     expect(h).toMatchObject({ ok: true, since: min(9).toISOString() });
     expect(await health.uazapiDown()).toBeNull();
-    expect(mails.map((m) => m.subject)).toEqual(["WhatsApp da Uazapi desconectado", "WhatsApp da Uazapi conectado de novo"]);
-    expect(mails[1].body).toContain("voltou a ficar conectado na Uazapi às 12:09");
+    expect(mails.map((m) => m.subject)).toEqual(["WhatsApp do grupo de reuniões desconectado", "WhatsApp do grupo de reuniões conectado de novo"]);
+    expect(mails[1].body).toContain("voltou a ficar conectado às 12:09");
     expect(whatsapp).toHaveLength(2);
     // A blip that never reached the warning comes back silently
     state = "disconnected";
@@ -141,7 +141,7 @@ describe.skipIf(!dbUrl)("Uazapi disconnection warning", () => {
     expect(whatsapp.at(-1)).toMatchObject({
       to: "5517981600088",
       type: "template",
-      template: { name: "banneg_aviso_uazapi_desconectado", components: [{ type: "body", parameters: [{ text: "(17) 98160-0088" }, { text: "12:01" }] }] },
+      template: { name: "banneg_aviso_whatsapp_grupo_desconectado", components: [{ type: "body", parameters: [{ text: "(17) 98160-0088" }, { text: "12:01" }] }] },
     });
     expect(h?.alert).toContain("WhatsApp (modelo) para (17) 98160-0088");
   });

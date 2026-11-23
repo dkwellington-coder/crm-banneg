@@ -104,14 +104,19 @@ export const canCreateInstances = () => !!(supportAdmin() && supportServer());
 type RawInstance = { token?: string; qrcode?: string; paircode?: string; status?: string; owner?: string };
 
 /** A new Uazapi instance for a support number; gives back its token. */
-export async function createInstance(name: string) {
+export async function createInstance(name: string, opts: { sendOnly?: boolean } = {}) {
   const base = serverOf({ server: null });
   const admin = supportAdmin();
   if (!base || !admin) throw new Error("Falta ligar o servidor do WhatsApp do suporte (SUPPORT_WA_URL e SUPPORT_WA_ADMIN_TOKEN).");
   const res = await fetch(`${base}/instance/init`, {
     method: "POST",
     headers: { admintoken: admin, Accept: "application/json", "Content-Type": "application/json" },
-    body: JSON.stringify({ name: `suporte-${name}`.toLowerCase().normalize("NFD").replace(/[^a-z0-9-]+/g, "-").slice(0, 40), systemName: "crm-banneg" }),
+    body: JSON.stringify({
+      name: `${opts.sendOnly ? "" : "suporte-"}${name}`.toLowerCase().normalize("NFD").replace(/[^a-z0-9-]+/g, "-").slice(0, 40),
+      systemName: "crm-banneg",
+      // Only sends (the meetings group): the server keeps nothing of what the number sends or receives
+      ...(opts.sendOnly && { sendOnly: true }),
+    }),
     signal: AbortSignal.timeout(20_000),
   }).catch((e: Error) => {
     throw new Error(`Sem resposta do servidor do WhatsApp (${e.message}).`);

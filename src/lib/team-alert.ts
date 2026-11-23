@@ -2,42 +2,57 @@ import { db } from "./db";
 import { logEvent } from "./events";
 import { CRM_URL, phoneLabel } from "./calendar";
 import { getSettings, saveSettings, type CrmSettings } from "./settings";
+import { canCreateInstances, createInstance, instanceQr, openToken, sealToken, serverOf } from "./support";
 
 /**
  * Every meeting the CRM books is posted in the team's WhatsApp group (Wellington, 2026-11-12/13): client, day and time,
  * Meet link and the lead's page. Meta's official API only posts in groups for accounts with the green badge and 100K
- * messages a day, so the group is reached through Uazapi (unofficial), from a separate number that is in the group.
- * UAZAPI_URL is the instance's server (https://xxx.uazapi.com) and UAZAPI_TOKEN the instance's token.
+ * messages a day, so the group is reached by a number connected like WhatsApp Web:
+ * - since 2026-11-23 (Uazapi kept dropping), Wellington's number connected by QR on Banneg's own WhatsApp server (the
+ *   Suporte one, SUPPORT_WA_URL) only to send: nothing of his conversations reaches the CRM (settings.meetingSender);
+ * - before that, and while no number is connected there, the Uazapi instance in UAZAPI_URL / UAZAPI_TOKEN.
+ * Both answer the same calls (/send/text, /group/list, /instance/status).
  */
 export type TeamGroup = { id: string; name: string };
 
-export function uazapiMissing() {
-  return ["UAZAPI_URL", "UAZAPI_TOKEN"].filter((k) => !process.env[k]);
-}
+type Sender = { kind: "suporte" | "uazapi"; base: string; token: string };
+type SenderSettings = Pick<CrmSettings, "meetingSender">;
 
-export async function uazapi<T>(path: string, body?: unknown): Promise<T> {
+/** Who posts in the group: the number connected on the Suporte server, else Uazapi; null when neither is set up. */
+export function teamSender(settings: SenderSettings): Sender | null {
+  const own = settings.meetingSender?.token;
+  if (own && canCreateInstances()) return { kind: "suporte", base: serverOf({ server: null }), token: openToken(own) };
   const base = process.env.UAZAPI_URL?.trim().replace(/\/+$/, "");
   const token = process.env.UAZAPI_TOKEN?.trim();
-  if (!base || !token) throw new Error("Falta UAZAPI_URL ou UAZAPI_TOKEN nas variáveis do servidor.");
+  return base && token ? { kind: "uazapi", base, token } : null;
+}
+
+/** The number posting in the group, in words (Integrações, the warnings). */
+export const senderName = (kind: Sender["kind"] | undefined) => (kind === "suporte" ? "o número conectado no CRM" : "a Uazapi");
+
+export async function uazapi<T>(path: string, body?: unknown, settings?: SenderSettings): Promise<T> {
+  const sender = teamSender(settings ?? (await getSettings()));
+  if (!sender) throw new Error("Nenhum número conectado para mandar no grupo: conecte o seu em Integrações > Grupo de reuniões.");
+  const [from, name] = sender.kind === "suporte" ? ["do servidor do WhatsApp", "O servidor do WhatsApp"] : ["da Uazapi", "Uazapi"];
   let res: Response;
   try {
-    res = await fetch(`${base}${path}`, {
+    res = await fetch(`${sender.base}${path}`, {
       method: body === undefined ? "GET" : "POST",
-      headers: { token, Accept: "application/json", "Content-Type": "application/json" },
+      headers: { token: sender.token, Accept: "application/json", "Content-Type": "application/json" },
       ...(body !== undefined && { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(20_000),
     });
   } catch (e) {
-    throw new Error(`Sem resposta da Uazapi (${(e as Error).name === "TimeoutError" ? "demorou mais de 20 s" : (e as Error).message}).`);
+    throw new Error(`Sem resposta ${from} (${(e as Error).name === "TimeoutError" ? "demorou mais de 20 s" : (e as Error).message}).`);
   }
   const json = (await res.json().catch(() => ({}))) as T & { error?: string; message?: string };
-  if (!res.ok) throw new Error(`Uazapi respondeu ${res.status}: ${json.error ?? json.message ?? "erro"}`);
+  if (!res.ok) throw new Error(`${name} respondeu ${res.status}: ${json.error ?? json.message ?? "erro"}`);
   return json;
 }
 
 type RawGroup = { JID?: string; jid?: string; id?: string; Name?: string; name?: string; subject?: string };
 
-/** The groups the Uazapi number is in, by name. */
+/** The groups the sending number is in, by name. */
 export async function listTeamGroups(): Promise<TeamGroup[]> {
   const res = await uazapi<RawGroup[] | { groups?: RawGroup[] }>("/group/list");
   const raw = Array.isArray(res) ? res : (res.groups ?? []);
@@ -59,14 +74,60 @@ export async function setTeamGroup(groupId: string | null) {
     return null;
   }
   const group = (await listTeamGroups()).find((g) => g.id === groupId);
-  if (!group) throw new Error("Esse grupo não aparece mais no número da Uazapi.");
+  if (!group) throw new Error("Esse grupo não aparece no número que manda as mensagens. Confira se o número está no grupo.");
   await saveSettings({ meetingAlertGroup: group });
   return group;
 }
 
-export function teamGroupOn(settings: Pick<CrmSettings, "meetingAlertGroup">) {
-  return !!settings.meetingAlertGroup?.id && !uazapiMissing().length;
+export function teamGroupOn(settings: Pick<CrmSettings, "meetingAlertGroup" | "meetingSender">) {
+  return !!settings.meetingAlertGroup?.id && !!teamSender(settings);
 }
+
+// ---------- Wellington's number on Banneg's own server, only to send ----------
+
+export type SenderQr = { connected: boolean; phone?: string | null; qr?: string | null; error?: string };
+
+/**
+ * "Conectar meu número": a send-only instance on the Suporte server (created once) and its QR code. fresh: reads the QR
+ * again on the same instance (after WhatsApp dropped it). Nothing the number sends or receives is kept: the server is
+ * told so when the instance is created (sendOnly), and the CRM never points a webhook at it.
+ */
+export async function connectTeamSender(fresh = false): Promise<SenderQr> {
+  if (!canCreateInstances()) return { connected: false, error: "Falta ligar o servidor do WhatsApp do suporte (SUPPORT_WA_URL e SUPPORT_WA_ADMIN_TOKEN)." };
+  try {
+    let sender = (await getSettings()).meetingSender;
+    if (!sender) {
+      sender = { token: sealToken(await createInstance("grupo-reunioes", { sendOnly: true })), phone: null, at: new Date().toISOString() };
+      await saveSettings({ meetingSender: sender });
+    }
+    return await senderStep(sender, true, fresh);
+  } catch (e) {
+    return { connected: false, error: (e as Error).message };
+  }
+}
+
+/** How the reading is going (the screen asks every few seconds). */
+export async function teamSenderQr(): Promise<SenderQr> {
+  const sender = (await getSettings()).meetingSender;
+  if (!sender) return { connected: false, error: "Nenhum número em conexão." };
+  return senderStep(sender, false).catch((e: Error) => ({ connected: false, error: e.message }));
+}
+
+async function senderStep(sender: NonNullable<CrmSettings["meetingSender"]>, start: boolean, fresh = false): Promise<SenderQr> {
+  const step = await instanceQr({ server: null, token: sender.token }, start, fresh);
+  if (step.connected && step.phone && step.phone !== sender.phone) await saveSettings({ meetingSender: { ...sender, phone: step.phone } });
+  return { connected: step.connected, phone: step.phone, qr: step.qr };
+}
+
+/** Back to Uazapi (or to nothing): the number leaves the server, as when a device is removed on the phone. */
+export async function removeTeamSender() {
+  const settings = await getSettings();
+  if (!settings.meetingSender) return;
+  await uazapi("/instance/logout", {}, settings).catch(() => {});
+  await saveSettings({ meetingSender: null });
+}
+
+const NO_SENDER = "Nenhum número conectado para mandar no grupo: conecte o seu em Integrações > Grupo de reuniões.";
 
 const when = (d: Date) =>
   `${d.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "long", day: "2-digit", month: "2-digit" })}, às ${d.toLocaleTimeString("pt-BR", {
@@ -117,9 +178,9 @@ export async function sendTeamMeetingAlert(meetingId: string, actor: string, pre
 
 /** Integrações' test button: a short message in the chosen group. */
 export async function testTeamGroup() {
-  const missing = uazapiMissing();
-  if (missing.length) return { ok: false, message: `Falta configurar no Vercel: ${missing.join(", ")}.` };
-  const group = (await getSettings()).meetingAlertGroup;
+  const settings = await getSettings();
+  if (!teamSender(settings)) return { ok: false, message: NO_SENDER };
+  const group = settings.meetingAlertGroup;
   if (!group?.id) return { ok: false, message: "Escolha o grupo e salve antes de testar." };
   try {
     await sendToGroup(group.id, "Teste do CRM do Banneg: daqui para a frente, cada reunião marcada aparece aqui com o cliente, o link do Meet e a ficha no CRM.");
@@ -229,8 +290,7 @@ export async function sendTeamAgendaIfDue(now = new Date()) {
 
 /** Integrações' button: today and the next 2 business days. */
 export async function sendUpcomingAgenda(now = new Date()) {
-  const missing = uazapiMissing();
-  if (missing.length) return { ok: false, message: `Falta configurar no Vercel: ${missing.join(", ")}.` };
+  if (!teamSender(await getSettings())) return { ok: false, message: NO_SENDER };
   const { day } = brClock(now);
   return sendTeamAgenda(agendaDays(day, 2), day).catch((e: Error) => ({ ok: false, message: e.message }));
 }

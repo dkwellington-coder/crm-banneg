@@ -1,11 +1,13 @@
 import { db } from "./db";
 import { sendEmail } from "./email";
-import { phoneLabel } from "./calendar";
+import { CRM_URL, phoneLabel } from "./calendar";
 import { sendTemplate, sendText } from "./whatsapp";
-import { uazapi, uazapiMissing } from "./team-alert";
+import { teamSender, uazapi } from "./team-alert";
+import { getSettings } from "./settings";
 
 /**
- * The Uazapi number (Wellington's own WhatsApp) posts the meetings in the team's group. When WhatsApp drops that session
+ * The number posting the meetings in the team's group (Wellington's own WhatsApp: connected in the CRM on Banneg's own
+ * server since 2026-11-23, on Uazapi before; see lib/team-alert teamSender). When WhatsApp drops that session
  * nothing says so: the notices just stop. Wellington (2026-11-19): "sempre que desconectar me avise na hora". The cron asks
  * the instance every minute; two bad answers in a row (about 2 minutes, so a blip does not wake anyone) and the CRM:
  * shows a red banner on every screen, e-mails the owner and writes to the number itself from the official WhatsApp.
@@ -14,18 +16,26 @@ import { uazapi, uazapiMissing } from "./team-alert";
 const KEY = "uazapi_health";
 // Bad answers in a row before warning: the cron runs every minute
 export const BAD_CHECKS = 2;
-const PANEL = () => process.env.UAZAPI_URL?.trim().replace(/\/+$/, "") ?? "o painel da Uazapi";
+/** How to connect again, by where the number is connected. */
+const howToReconnect = (sender: "suporte" | "uazapi") =>
+  sender === "suporte"
+    ? `Para reconectar: abra ${CRM_URL}/integracoes#uazapi, clique em "Ler o QR code" e aponte o celular (WhatsApp > Aparelhos conectados > Conectar um aparelho).`
+    : `Para reconectar: abra ${process.env.UAZAPI_URL?.trim().replace(/\/+$/, "") || "o painel da Uazapi"}, entre na instância e leia o QR code no celular (WhatsApp > Aparelhos conectados > Conectar um aparelho).`;
 
 /** Out of the 24 h window the warning goes as this template (approved by Meta: the cron sends new templates for review). */
 export const UAZAPI_TEMPLATE = {
-  name: "banneg_aviso_uazapi_desconectado",
+  name: "banneg_aviso_whatsapp_grupo_desconectado",
   category: "UTILITY",
-  purpose: "uazapi_alert",
-  body: "Aviso do CRM Banneg: o WhatsApp {{1}} desconectou da Uazapi às {{2}}. Enquanto estiver desconectado, os avisos de reunião não chegam ao grupo da equipe. Para reconectar, abra o painel da Uazapi e leia o QR code.",
+  purpose: "group_sender_alert",
+  body: "Aviso do CRM Banneg: o WhatsApp {{1}}, que manda as reuniões no grupo da equipe, desconectou às {{2}}. Enquanto estiver desconectado, os avisos de reunião não chegam ao grupo. Para reconectar, abra o CRM em Integrações e leia o QR code de novo.",
 } as const;
 
 export type UazapiHealth = {
   ok: boolean;
+  // Where the number is connected: the CRM's own server or Uazapi (a switch starts a new record)
+  sender?: "suporte" | "uazapi";
+  // A number just created in the CRM and never connected yet: no warning, no banner
+  waiting?: boolean;
   // What Uazapi says (connected, disconnected, connecting) or "sem resposta"
   status: string;
   message?: string;
@@ -73,7 +83,7 @@ export async function getUazapiHealth(): Promise<UazapiHealth | null> {
 /** For the banner: only once the warning threshold is reached. */
 export async function uazapiDown() {
   const h = await getUazapiHealth();
-  return h && !h.ok && (h.bad ?? 0) >= BAD_CHECKS ? h : null;
+  return h && !h.ok && !h.waiting && (h.bad ?? 0) >= BAD_CHECKS ? h : null;
 }
 
 const clock = (d: Date) => d.toLocaleTimeString("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
@@ -114,15 +124,23 @@ async function warn(subject: string, body: string, phone: string | undefined, te
   return done;
 }
 
-/** One check (the cron, every minute). Returns what it saw, or null when Uazapi is not set up. */
+/** One check (the cron, every minute). Returns what it saw, or null when no number is set up to post in the group. */
 export async function checkUazapi(now = new Date()): Promise<UazapiHealth | null> {
-  if (uazapiMissing().length) return null;
+  const settings = await getSettings();
+  const kind = teamSender(settings)?.kind;
+  if (!kind) return null;
   await ensureTemplate();
-  const prev = await getUazapiHealth();
+  const saved = await getUazapiHealth();
+  // Switched from Uazapi to the CRM's own server (or back): what was known of the other one does not count
+  const prev = saved && (saved.sender ?? "uazapi") === kind ? saved : null;
+  // The number created in the CRM that was never connected: he is still reading the QR code
+  const waiting = kind === "suporte" && !settings.meetingSender?.phone;
+  const where = kind === "uazapi" ? " da Uazapi" : "";
+  const source = kind === "uazapi" ? "A Uazapi" : "O servidor do WhatsApp";
   let seen: ReturnType<typeof readStatus>;
   let message: string | undefined;
   try {
-    seen = readStatus(await uazapi<RawStatus>("/instance/status"));
+    seen = readStatus(await uazapi<RawStatus>("/instance/status", undefined, settings));
   } catch (e) {
     seen = { connected: false, status: "sem resposta" };
     message = (e as Error).message;
@@ -131,13 +149,13 @@ export async function checkUazapi(now = new Date()): Promise<UazapiHealth | null
   const at = now.toISOString();
   let next: UazapiHealth;
   if (seen.connected) {
-    next = { ok: true, status: seen.status, ...(phone && { phone }), since: prev?.ok ? prev.since : at, checkedAt: at };
+    next = { ok: true, sender: kind, status: seen.status, ...(phone && { phone }), since: prev?.ok ? prev.since : at, checkedAt: at };
     // It was down and he was told: tell him it is back
     if (prev && !prev.ok && prev.alertedAt) {
       const who = phone ? ` ${phoneLabel(phone)}` : "";
       next.alert = await warn(
-        "WhatsApp da Uazapi conectado de novo",
-        `Aviso do CRM Banneg: o WhatsApp${who} voltou a ficar conectado na Uazapi às ${clock(now)} (estava desconectado desde ${day(new Date(prev.since))}). Os avisos de reunião voltaram a ir para o grupo da equipe.`,
+        "WhatsApp do grupo de reuniões conectado de novo",
+        `Aviso do CRM Banneg: o WhatsApp${who}, que manda as reuniões no grupo da equipe, voltou a ficar conectado às ${clock(now)} (estava desconectado desde ${day(new Date(prev.since))}). Os avisos de reunião voltaram a ir para o grupo.`,
         phone,
       );
     }
@@ -146,6 +164,8 @@ export async function checkUazapi(now = new Date()): Promise<UazapiHealth | null
     const bad = (wasBad ? (prev.bad ?? 0) : 0) + 1;
     next = {
       ok: false,
+      sender: kind,
+      ...(waiting && { waiting: true }),
       status: seen.status,
       ...((message ?? seen.reason) && { message: message ?? seen.reason }),
       ...(phone && { phone }),
@@ -154,17 +174,17 @@ export async function checkUazapi(now = new Date()): Promise<UazapiHealth | null
       bad,
       ...(wasBad && prev.alertedAt && { alertedAt: prev.alertedAt, alert: prev.alert }),
     };
-    if (bad >= BAD_CHECKS && !next.alertedAt) {
+    if (bad >= BAD_CHECKS && !next.alertedAt && !waiting) {
       const since = new Date(next.since);
-      const who = phone ? phoneLabel(phone) : "da Uazapi";
-      const why = message ? `A Uazapi não respondeu (${message}).` : `A Uazapi diz que o número está "${seen.status}".`;
+      const who = phone ? phoneLabel(phone) : "do grupo de reuniões";
+      const why = message ? `${source} não respondeu (${message}).` : `${source} diz que o número está "${seen.status}".`;
       next.alertedAt = at;
       next.alert = await warn(
-        "WhatsApp da Uazapi desconectado",
+        "WhatsApp do grupo de reuniões desconectado",
         [
-          `Aviso do CRM Banneg: o WhatsApp ${who} desconectou da Uazapi às ${clock(since)}. ${why}`,
+          `Aviso do CRM Banneg: o WhatsApp ${who}, que manda as reuniões no grupo da equipe, desconectou${where} às ${clock(since)}. ${why}`,
           "Enquanto estiver desconectado, os avisos de reunião e a agenda das 7h não chegam ao grupo da equipe.",
-          `Para reconectar: abra ${PANEL()}, entre na instância e leia o QR code no celular (WhatsApp > Aparelhos conectados > Conectar um aparelho).`,
+          howToReconnect(kind),
           "Aviso de novo quando voltar.",
         ].join("\n\n"),
         phone,
@@ -175,6 +195,6 @@ export async function checkUazapi(now = new Date()): Promise<UazapiHealth | null
   await db.setting.upsert({ where: { key: KEY }, create: { key: KEY, value: next }, update: { value: next } });
   // In the runtime logs, only when the state changes
   if (!prev || prev.ok !== next.ok || next.alert !== prev.alert)
-    console.info(`Uazapi: ${next.ok ? "conectado" : `desconectado (${next.status}${next.message ? `: ${next.message}` : ""})`}${next.alert ? ` · avisos: ${next.alert.join("; ")}` : ""}`);
+    console.info(`Grupo de reuniões (${kind}): ${next.ok ? "conectado" : `desconectado (${next.status}${next.message ? `: ${next.message}` : ""})`}${next.alert ? ` · avisos: ${next.alert.join("; ")}` : ""}`);
   return next;
 }

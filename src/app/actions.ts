@@ -753,6 +753,28 @@ export async function setTeamGroupAction(form: FormData) {
   revalidatePath("/integracoes");
 }
 
+/** "Conectar meu número" for the meetings group: Wellington's number on Banneg's own server, only to send. */
+export async function connectTeamSenderAction(fresh = false) {
+  await requireManager("integracoes");
+  const { connectTeamSender } = await import("@/lib/team-alert");
+  return connectTeamSender(fresh);
+}
+
+export async function teamSenderQrAction() {
+  await requireManager("integracoes");
+  const { teamSenderQr } = await import("@/lib/team-alert");
+  const step = await teamSenderQr();
+  if (step.connected) revalidatePath("/integracoes");
+  return step;
+}
+
+export async function removeTeamSenderAction() {
+  await requireManager("integracoes");
+  const { removeTeamSender } = await import("@/lib/team-alert");
+  await removeTeamSender();
+  revalidatePath("/integracoes");
+}
+
 /** The funnel the e-mails of the leads box go to (Integrações); empty = the default funnel. */
 export async function setEmailLeadsFunnelAction(form: FormData) {
   await requireManager("integracoes");

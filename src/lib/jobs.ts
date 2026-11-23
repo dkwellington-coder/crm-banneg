@@ -575,7 +575,7 @@ export async function bookMeeting(lead: Lead, userId: string, slot: Slot, actor:
 async function queueTeamAlert(
   meeting: { id: string; leadId: string; startsAt: Date },
   actor: string,
-  settings: Pick<CrmSettings, "meetingAlertGroup">,
+  settings: Pick<CrmSettings, "meetingAlertGroup" | "meetingSender">,
   previous?: Date,
 ) {
   if (!teamGroupOn(settings)) return;
