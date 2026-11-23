@@ -151,6 +151,11 @@ describe("what Uazapi posts", () => {
   it("reads the instance's status", () => {
     expect(readStatus({ instance: { status: "connected", owner: "5517988887777" } })).toMatchObject({ connected: true, phone: "5517988887777" });
     expect(readStatus({ status: { connected: false } })).toMatchObject({ connected: false });
+    // Our gateway says why it is not connected; it is kept with the status
+    expect(readStatus({ instance: { status: "connecting", reason: "a sessão salva estragou: leia o QR code de novo" } })).toMatchObject({
+      connected: false,
+      saved: "connecting: a sessão salva estragou: leia o QR code de novo",
+    });
   });
 });
 
@@ -306,6 +311,26 @@ describe.skipIf(!dbUrl)("history and files", () => {
     expect(calls.find((c) => c.url === "https://upload.teste/sessao")!.headers).toMatchObject({ "content-range": "bytes 0-11/12" });
     // Next round: nothing left, the folders are remembered
     expect(await drive.copySupportMedia()).toEqual({ copied: 0 });
+  });
+
+  it("the check every 5 minutes: a connected number gets its webhook set again; one that stopped answering shows the error", async () => {
+    const on = await db.supportNumber.create({ data: { name: "Seguros", token: support.sealToken("tok-on"), webhookKey: "kon", server: "https://a.teste" } });
+    const off = await db.supportNumber.create({ data: { name: "Solar", token: support.sealToken("tok-off"), webhookKey: "koff", server: "https://b.teste" } });
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
+      calls.push(`${init.method} ${url}`);
+      if (url.startsWith("https://b.teste")) throw new Error("ECONNREFUSED");
+      if (url.endsWith("/instance/status")) return new Response(JSON.stringify({ instance: { status: "connected", owner: "5517900001111" } }));
+      return new Response("{}");
+    });
+    const results = await support.checkSupportNumbers();
+    vi.unstubAllGlobals();
+
+    expect(calls).toEqual(["GET https://a.teste/instance/status", "POST https://a.teste/webhook", "GET https://b.teste/instance/status"]);
+    expect(results).toEqual([{ name: "Seguros", status: "connected" }, { name: "Solar", error: expect.stringContaining("ECONNREFUSED") }]);
+    expect(await db.supportNumber.findUniqueOrThrow({ where: { id: on.id } })).toMatchObject({ status: "connected", phone: "5517900001111" });
+    expect((await db.supportNumber.findUniqueOrThrow({ where: { id: off.id } })).status).toMatch(/^erro: Sem resposta/);
+    expect(await db.setting.findUnique({ where: { key: "suporte_check" } })).toBeTruthy();
   });
 
   it("a file WhatsApp no longer had is marked, and the chat moves on", async () => {

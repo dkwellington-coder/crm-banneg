@@ -55,7 +55,8 @@ async function Setup({ searchParams }: { searchParams: PageProps<"/suporte/numer
             </details>
             <div className="mt-2 space-y-2">
               <NumberActions id={n.id} active={n.active} />
-              {n.active && n.status !== "connected" && <QrReconnect id={n.id} />}
+              {/* Our gateway: a number stuck reconnecting keeps its old keys, so only a fresh QR code brings it back */}
+              {n.active && n.status !== "connected" && <QrReconnect id={n.id} fresh={!!qr} />}
               {n.active && n.status === "connected" && qr && <QrReconnect id={n.id} fresh />}
             </div>
           </Card>

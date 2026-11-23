@@ -13,6 +13,7 @@ import { pullEmailLeads } from "@/lib/email-leads";
 import { getAiHealth } from "@/lib/ai-health";
 import { sendTeamAgendaIfDue } from "@/lib/team-alert";
 import { copySupportMedia } from "@/lib/support-drive";
+import { checkSupportNumbers } from "@/lib/support";
 
 // Called every minute by the server's scheduler (cron, Vercel Cron, or the worker script).
 export async function GET(request: Request) {
@@ -97,6 +98,9 @@ export async function GET(request: Request) {
     });
     meta.check = check;
   }
+  // Suporte: is each support number still connected to the WhatsApp server (and still posting here)
+  if (minute % 5 === 2 && (await db.supportNumber.count({ where: { active: true } })))
+    meta.supportCheck = await checkSupportNumbers().catch((e: Error) => ({ error: e.message }));
   // Suporte: the files of the support numbers get their copy in the Google Drive (a few each minute)
   const drive = await copySupportMedia(30_000).catch((e: Error) => ({ error: e.message }));
   if (!("skipped" in drive) && !("copied" in drive && drive.copied === 0)) meta.supportDrive = drive;
