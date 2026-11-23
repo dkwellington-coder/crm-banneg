@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 
 process.env.NODE_ENV = "test";
 process.env.ADMIN_TOKEN = "x".repeat(32);
-const { toPayload } = await import("./server.mjs");
+const { toPayload, groupList } = await import("./server.mjs");
 const s = { sentByApi: new Set(["SENT1"]) };
 
 test("client text, with the phone and the name", () => {
@@ -57,4 +57,18 @@ test("history: name from the address book, phone from the LID list, marked as hi
   assert.equal(mine.chat.wa_contactName, "Joana Cliente");
   assert.equal(mine.chat.phone, "5517933334444");
   assert.equal(mine.message.history, true);
+});
+
+test("group list in Uazapi's shape: only groups, with their names", () => {
+  assert.deepEqual(
+    groupList({
+      "120363001@g.us": { id: "120363001@g.us", subject: "Leads expansao" },
+      "120363002@g.us": { id: "120363002@g.us", subject: "" },
+      x: { id: "5517999990000@s.whatsapp.net", subject: "not a group" },
+    }),
+    [
+      { JID: "120363001@g.us", Name: "Leads expansao" },
+      { JID: "120363002@g.us", Name: "" },
+    ],
+  );
 });

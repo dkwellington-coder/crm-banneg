@@ -14,6 +14,9 @@ export type CrmSettings = {
   meetingGuests: string[];
   // The team's WhatsApp group (through Uazapi) where every booked meeting is posted; null = none (Integrações)
   meetingAlertGroup: { id: string; name: string } | null;
+  // The number that posts in that group, connected by QR on Banneg's own WhatsApp server (the Suporte one), only to send:
+  // token sealed (lib/support sealToken); null = the Uazapi instance in UAZAPI_URL/UAZAPI_TOKEN (Wellington, 2026-11-23)
+  meetingSender: { token: string; phone?: string | null; at: string } | null;
   businessHours: BusinessHours;
   presentationUrl: string;
   // While on, WhatsApp and e-mail only really go to testContacts; the rest is recorded as simulated
@@ -71,6 +74,7 @@ export const DEFAULT_SETTINGS: CrmSettings = {
   meetingMinutes: 30,
   meetingGuests: [],
   meetingAlertGroup: null,
+  meetingSender: null,
   businessHours: { start: 9, end: 18, days: [1, 2, 3, 4, 5], timezone: "America/Sao_Paulo" },
   presentationUrl: DEFAULT_MATERIALS.apresentacao,
   testMode: true,

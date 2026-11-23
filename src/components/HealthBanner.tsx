@@ -4,15 +4,18 @@ import { db } from "@/lib/db";
 import { daysAgo } from "@/lib/time";
 import { getSettings } from "@/lib/settings";
 import { getAiHealth } from "@/lib/ai-health";
+import { uazapiDown } from "@/lib/uazapi-health";
+import { phoneLabel } from "@/lib/calendar";
 
 // Account-level problems show on every screen, so nobody finds out by reading failed messages one by one.
 export async function HealthBanner() {
   await connection();
-  const [health, failedJobs, settings, ai] = await Promise.all([
+  const [health, failedJobs, settings, ai, uazapi] = await Promise.all([
     getHealth(),
     db.job.count({ where: { status: "FAILED", finishedAt: { gte: daysAgo(1) } } }),
     getSettings(),
     getAiHealth(),
+    uazapiDown(),
   ]);
   // A problem of one of the funnels' own numbers says which number stopped
   const where = health?.numberId ? ` no número ${await numberDisplay(health.numberId)}` : "";
@@ -33,6 +36,14 @@ export async function HealthBanner() {
         <a href="/integracoes" className="block bg-red-600 px-4 py-2 text-sm font-medium text-white">
           IA parada desde {new Date(ai.at).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short", timeStyle: "short" })}: {ai.message} Os
           leads que escrevem ficam sem resposta da Duda e da Alice; quando ela voltar, responde quem esperou.
+        </a>
+      )}
+      {uazapi && (
+        <a href="/integracoes#uazapi" className="block bg-red-600 px-4 py-2 text-sm font-medium text-white">
+          WhatsApp que manda as reuniões no grupo{uazapi.phone ? ` (${phoneLabel(uazapi.phone)})` : ""} desconectado desde{" "}
+          {new Date(uazapi.since).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short", timeStyle: "short" })}: os avisos de reunião
+          não chegam ao grupo da equipe.{" "}
+          {uazapi.sender === "suporte" ? "Clique aqui e leia o QR code de novo." : "Reconecte no painel da Uazapi lendo o QR code no celular."}
         </a>
       )}
       {failedJobs > 0 && (

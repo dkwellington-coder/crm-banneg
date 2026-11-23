@@ -36,11 +36,13 @@ const log = pino({ level: process.env.LOG_LEVEL || "warn" });
 
 // ---- Saved numbers: token, name and where to post. The WhatsApp keys live in data/auth/<token>/
 const SESSIONS_FILE = path.join(DATA, "sessions.json");
-/** @type {Map<string, {token: string, name: string, webhook: string, sock?: any, qr?: string|null, status: string, owner?: string|null, sentByApi: Set<string>, retry?: NodeJS.Timeout, chain?: Promise<void>}>} */
+// sendOnly: a number that only sends (Wellington's own WhatsApp posting the meetings in the team's group, 2026-11-23):
+// nothing it sends or receives goes to the CRM, no history and no files are kept
+/** @type {Map<string, {token: string, name: string, webhook: string, sendOnly?: boolean, sock?: any, qr?: string|null, status: string, owner?: string|null, sentByApi: Set<string>, retry?: NodeJS.Timeout, chain?: Promise<void>}>} */
 const sessions = new Map();
 
 async function save() {
-  const list = [...sessions.values()].map(({ token, name, webhook }) => ({ token, name, webhook }));
+  const list = [...sessions.values()].map(({ token, name, webhook, sendOnly }) => ({ token, name, webhook, ...(sendOnly && { sendOnly: true }) }));
   await writeFile(SESSIONS_FILE, JSON.stringify(list, null, 2));
 }
 
@@ -75,8 +77,9 @@ async function start(s) {
     browser: Browsers.macOS("Desktop"),
     // Not "online": the attendant's phone keeps getting its notifications
     markOnlineOnConnect: false,
-    syncFullHistory: true,
-    shouldSyncHistoryMessage: () => true,
+    // A send-only number asks for no history at all
+    syncFullHistory: !s.sendOnly,
+    shouldSyncHistoryMessage: () => !s.sendOnly,
   });
   s.sock = sock;
   s.status = "connecting";
@@ -110,6 +113,7 @@ async function start(s) {
     }
   });
   sock.ev.on("messages.upsert", ({ messages }) => {
+    if (s.sendOnly) return;
     for (const m of messages) {
       const payload = toPayload(s, m);
       // The message first, then its file: the CRM already has the message when the file arrives
@@ -117,6 +121,7 @@ async function start(s) {
     }
   });
   sock.ev.on("messaging-history.set", ({ messages, contacts, chats, lidPnMappings }) => {
+    if (s.sendOnly) return;
     const names = new Map();
     for (const c of contacts || []) if (c.id) names.set(c.id, c.name || c.notify || c.verifiedName || "");
     for (const c of chats || []) if (c.id && c.name && !names.get(c.id)) names.set(c.id, c.name);
@@ -246,7 +251,7 @@ export function toPayload(s, m, history) {
 
 // ---- Posting to the CRM, a few tries
 async function post(s, body) {
-  if (!s.webhook) return;
+  if (!s.webhook || s.sendOnly) return;
   const many = Array.isArray(body);
   const sign = (b) => ({ ...b, token: s.token, owner: s.owner || "" });
   const data = JSON.stringify(many ? body.map(sign) : sign(body));
@@ -291,6 +296,13 @@ async function sendFile(s, id, req, res) {
 // ---- HTTP
 const same = (a, b) => !!a && !!b && timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
 
+/** Baileys' groups as Uazapi lists them: JID and Name. */
+export function groupList(groups) {
+  return Object.values(groups || {})
+    .filter((g) => g?.id && isJidGroup(g.id))
+    .map((g) => ({ JID: g.id, Name: g.subject || "" }));
+}
+
 function statusOf(s) {
   const connected = s.status === "connected";
   return {
@@ -310,7 +322,15 @@ const routes = {
   "POST /instance/init": async (_s, body, req) => {
     if (!same(req.headers.admintoken, ADMIN)) return [401, { error: "admintoken inválido" }];
     const token = randomBytes(24).toString("base64url");
-    const s = { token, name: String(body.name || "suporte").slice(0, 60), webhook: "", status: "disconnected", qr: null, sentByApi: new Set() };
+    const s = {
+      token,
+      name: String(body.name || "suporte").slice(0, 60),
+      webhook: "",
+      ...(body.sendOnly === true && { sendOnly: true }),
+      status: "disconnected",
+      qr: null,
+      sentByApi: new Set(),
+    };
     sessions.set(token, s);
     await save();
     return [200, { token, instance: { token, name: s.name, status: s.status } }];
@@ -346,11 +366,19 @@ const routes = {
   },
 
   "POST /webhook": async (s, body) => {
+    if (s.sendOnly) return [409, { error: "Este número só envia: nada dele vai para o CRM." }];
     const url = String(body.url || "");
     if (url && !/^https:\/\//.test(url)) return [400, { error: "O webhook precisa ser https." }];
     s.webhook = url;
     await save();
     return [200, { url, events: ["messages", "connection"] }];
+  },
+
+  // The groups the number is in (the meetings group is chosen from these in the CRM)
+  "GET /group/list": async (s) => {
+    if (s.status !== "connected" || !s.sock) return [409, { error: "Número desconectado. Leia o QR code de novo no CRM." }];
+    const groups = await s.sock.groupFetchAllParticipating();
+    return [200, groupList(groups)];
   },
 
   "POST /send/text": async (s, body) => {
