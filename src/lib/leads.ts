@@ -308,7 +308,7 @@ export async function handleInbound(input: {
     await ensureTask(lead.id, lead.ownerId, forTeam);
     return lead;
   }
-  if (lead.sdrId && !lead.aiPaused && ["NEW", "AI_QUALIFYING", "QUALIFIED", "NURTURING"].includes(lead.status)) {
+  if (lead.sdrId && !lead.aiPaused && ["NEW", "AI_QUALIFYING", "QUALIFIED", "NURTURING", "MEETING_BOOKED"].includes(lead.status)) {
     // Wait a few seconds so several short messages get one answer
     await enqueueDebounced("sdr.reply", lead.id, Number(process.env.SDR_DEBOUNCE_MS ?? 15_000));
   } else {

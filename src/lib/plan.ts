@@ -60,6 +60,10 @@ export type Plan = {
   fields: Partial<{ name: string; email: string; city: string; state: string }>;
   qualification: Record<string, string>;
   slot: Slot | null;
+  // The lead's meeting already booked goes to this time instead (same Google event and Meet link)
+  reschedule: Slot | null;
+  // The lead's meeting already booked comes off the agenda
+  cancelMeeting: boolean;
   handoffTask: string | null;
   startNurture: boolean;
   stopAi: boolean;
@@ -68,8 +72,10 @@ export type Plan = {
 /**
  * Turns the SDR's decision into concrete changes. Pure, so every branch is unit-tested;
  * the model only proposes, this function decides what the CRM actually does.
+ * meetingBooked: the lead has a meeting marked and not yet held. The AI keeps answering it in "Reunião marcada":
+ * doubts, a new time, a lead who gives up.
  */
-export function planFromDecision(d: SdrDecision, slots: Slot[]): Plan {
+export function planFromDecision(d: SdrDecision, slots: Slot[], { meetingBooked = false }: { meetingBooked?: boolean } = {}): Plan {
   const { name, email, city, state, ...rest } = d.extracted;
   const fields: Plan["fields"] = {};
   if (name) fields.name = name;
@@ -85,10 +91,14 @@ export function planFromDecision(d: SdrDecision, slots: Slot[]): Plan {
     fields,
     qualification,
     slot: null,
+    reschedule: null,
+    cancelMeeting: false,
     handoffTask: null,
     startNurture: false,
     stopAi: false,
   };
+
+  if (meetingBooked) return withMeeting(d, slots, base);
 
   switch (d.decision) {
     case "offer_meeting":
@@ -96,7 +106,8 @@ export function planFromDecision(d: SdrDecision, slots: Slot[]): Plan {
       // the meeting, whatever the score (the stage's "sem resposta" messages would otherwise talk over the booking)
       if (slots.length === 0) return base;
       return { ...base, status: "QUALIFIED", stageKey: STAGE_KEYS.QUALIFIED };
-    case "book_meeting": {
+    case "book_meeting":
+    case "reschedule_meeting": {
       const slot = d.slotIndex !== null ? slots[d.slotIndex] : undefined;
       if (!slot) {
         return {
@@ -106,7 +117,8 @@ export function planFromDecision(d: SdrDecision, slots: Slot[]): Plan {
           handoffTask: "Lead quis marcar reunião, mas o horário escolhido não está mais livre. Confirme um novo horário.",
         };
       }
-      return { ...base, status: "MEETING_BOOKED", stageKey: STAGE_KEYS.MEETING_BOOKED, slot, stopAi: true };
+      // The AI stays on: a lead who writes in "Reunião marcada" (a new time, a doubt, gives up) is answered
+      return { ...base, status: "MEETING_BOOKED", stageKey: STAGE_KEYS.MEETING_BOOKED, slot };
     }
     case "handoff":
       return {
@@ -117,10 +129,38 @@ export function planFromDecision(d: SdrDecision, slots: Slot[]): Plan {
         stopAi: true,
       };
     case "nurture":
+    case "cancel_meeting":
       return { ...base, status: "NURTURING", stageKey: STAGE_KEYS.NURTURING, startNurture: true, stopAi: true };
     case "disqualify":
       return { ...base, status: "DISQUALIFIED", stageKey: STAGE_KEYS.DISQUALIFIED, stopAi: true };
     default:
       return base;
+  }
+}
+
+/**
+ * A lead with a meeting marked stays in "Reunião marcada" while it talks: the AI answers, offers and books a new time
+ * (the same meeting moves), and only a lead who still gives up after the AI asked why leaves, the meeting canceled.
+ */
+function withMeeting(d: SdrDecision, slots: Slot[], base: Plan): Plan {
+  const booked = { ...base, status: "MEETING_BOOKED" as const, stageKey: STAGE_KEYS.MEETING_BOOKED };
+  switch (d.decision) {
+    case "book_meeting":
+    case "reschedule_meeting": {
+      const slot = d.slotIndex !== null ? slots[d.slotIndex] : undefined;
+      if (!slot) return { ...booked, handoffTask: "Lead pediu para remarcar a reunião, mas o horário escolhido não está livre. Confirme um novo horário." };
+      return { ...booked, reschedule: slot };
+    }
+    case "handoff":
+      // A person answers; the meeting and the stage stay as they are
+      return { ...booked, handoffTask: `Assumir conversa: ${d.reason}`, stopAi: true };
+    case "nurture":
+    case "cancel_meeting":
+      return { ...base, status: "NURTURING", stageKey: STAGE_KEYS.NURTURING, cancelMeeting: true, startNurture: true, stopAi: true };
+    case "disqualify":
+      return { ...base, status: "DISQUALIFIED", stageKey: STAGE_KEYS.DISQUALIFIED, cancelMeeting: true, stopAi: true };
+    default:
+      // continue, offer_meeting: the times go in the reply, the lead keeps its meeting until it picks one
+      return booked;
   }
 }

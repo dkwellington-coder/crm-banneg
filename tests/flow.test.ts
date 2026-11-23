@@ -123,7 +123,7 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(l.qualification).toMatchObject({ capital: "R$ 300 mil" });
     expect(sent.at(-1)).toMatchObject({ type: "text" });
 
-    // 3. Lead picks a slot; meeting is booked, reminders scheduled and the AI steps back
+    // 3. Lead picks a slot; meeting is booked, reminders scheduled and the AI keeps watching
     await leads.handleInbound({ phone: "5541999990000", body: "Pode ser o 0", externalId: "in2", at: new Date() });
     nextDecision.value = { ...nextDecision.value, decision: "book_meeting", slotIndex: 0, reply: "Combinado, reunião marcada!" };
     await drain();
@@ -131,7 +131,8 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(booked.stage.key).toBe("reuniao");
     expect(booked.meetings).toHaveLength(1);
     expect(booked.owner?.name).toBe("Gerente");
-    expect(booked.aiPaused).toBe(true);
+    // The AI stays on: what the lead writes in "Reunião marcada" gets an answer
+    expect(booked.aiPaused).toBe(false);
     // The confirmation carries the booked time itself, whatever the AI wrote
     expect(sent.map((m) => m.body)).toContainEqual(expect.stringMatching(/^Combinado, reunião marcada!\n\nReunião: .+ \(horário de Brasília\)/));
     expect(await db.job.count({ where: { leadId: lead.id, type: "meeting.reminder" } })).toBeGreaterThan(0);
@@ -143,6 +144,83 @@ describe.skipIf(!dbUrl)("lead flow", () => {
     expect(await db.meeting.findUniqueOrThrow({ where: { id: booked.meetings[0].id } })).toMatchObject({ status: "canceled" });
     expect(await db.job.count({ where: { leadId: lead.id, type: "meeting.reminder", status: "PENDING" } })).toBe(0);
     expect(await jobs.cancelMeeting(booked.meetings[0].id, "Gerente")).toBe("Essa reunião já não estava marcada.");
+  });
+
+  it("keeps answering a lead with a meeting marked: moves it to a new time, asks why before letting it go", async () => {
+    const { lead } = await leads.createLead({ name: "Bia Ramos", phone: "11955554444", email: "bia@x.com", source: "site" }, "teste");
+    const manager = await db.user.findFirstOrThrow();
+    await db.lead.update({ where: { id: lead.id }, data: { aiPaused: true } });
+    await db.job.updateMany({ where: { leadId: lead.id, status: "PENDING" }, data: { status: "CANCELLED", dedupeKey: null } });
+    const { freeSlotsFor } = await import("@/lib/calendar");
+    const slots = await freeSlotsFor(manager.id, (await (await import("@/lib/settings")).getSettings()).businessHours, 30);
+    // Booked by a person on the lead's page: the AI answers again from here
+    const { meeting } = await jobs.scheduleMeeting(await db.lead.findUniqueOrThrow({ where: { id: lead.id } }), { userId: manager.id, slot: slots[0], actor: "Gerente", notify: false });
+    let l = await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } });
+    expect(l.stage.key).toBe("reuniao");
+    expect(l.aiPaused).toBe(false);
+    await db.job.updateMany({ where: { leadId: lead.id, type: "rule.run", status: "PENDING" }, data: { status: "CANCELLED", dedupeKey: null } });
+    const reply = (over: Partial<SdrDecision>): SdrDecision => ({
+      reply: "Claro!", extracted: empty, score: 70, temperature: "morno", decision: "continue", slotIndex: null, handoffTo: null, sendCof: false, reason: "x", summary: "Bia", ...over,
+    });
+
+    // "Preciso remarcar": the AI offers times, the meeting stays marked meanwhile
+    sent.length = 0;
+    await leads.handleInbound({ phone: "5511955554444", body: "Preciso remarcar", externalId: "rm1", at: new Date() });
+    nextDecision.value = reply({ decision: "offer_meeting", reply: "Sem problema! 1) ... 2) ... 3) ..." });
+    await drain();
+    l = await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } });
+    expect(l.stage.key).toBe("reuniao");
+    expect(sent.map((m) => m.body)).toEqual(["Sem problema! 1) ... 2) ... 3) ..."]);
+
+    // It picks one: the same meeting moves, the reminders follow, and the new day goes with the answer
+    await leads.handleInbound({ phone: "5511955554444", body: "A 2", externalId: "rm2", at: new Date() });
+    nextDecision.value = reply({ decision: "reschedule_meeting", slotIndex: 3, reply: "Pronto, remarcado!" });
+    await drain();
+    const meetings = await db.meeting.findMany({ where: { leadId: lead.id } });
+    expect(meetings).toHaveLength(1);
+    expect(meetings[0]).toMatchObject({ id: meeting.id, status: "scheduled" });
+    const moved = await db.meeting.findUniqueOrThrow({ where: { id: meeting.id } });
+    expect(moved.startsAt.getTime()).not.toBe(slots[0].startsAt.getTime());
+    expect(sent.at(-1)?.body).toMatch(/^Pronto, remarcado!\n\nNova data da reunião: .+ \(horário de Brasília\)/);
+    l = await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } });
+    expect(l.stage.key).toBe("reuniao");
+    expect(l.aiPaused).toBe(false);
+    expect(await db.leadEvent.count({ where: { leadId: lead.id, type: "meeting.rescheduled" } })).toBe(1);
+
+    // "Não tenho mais interesse": the AI asks why first, the meeting stays
+    await leads.handleInbound({ phone: "5511955554444", body: "Não tenho mais interesse", externalId: "rm3", at: new Date() });
+    nextDecision.value = reply({ reply: "Posso saber o motivo? Você não está buscando abrir um novo negócio com ganhos atrativos?" });
+    await drain();
+    expect(await db.meeting.findUniqueOrThrow({ where: { id: meeting.id } })).toMatchObject({ status: "scheduled" });
+    expect(sent.at(-1)?.body).toContain("Posso saber o motivo?");
+
+    // It confirms: the meeting comes off the agenda and the lead goes to nurture
+    await leads.handleInbound({ phone: "5511955554444", body: "Não quero mesmo, obrigada", externalId: "rm4", at: new Date() });
+    nextDecision.value = reply({ decision: "cancel_meeting", reply: "Entendi, desmarquei. Obrigada!" });
+    await drain();
+    expect(await db.meeting.findUniqueOrThrow({ where: { id: meeting.id } })).toMatchObject({ status: "canceled" });
+    expect(await db.job.count({ where: { leadId: lead.id, type: "meeting.reminder", status: "PENDING" } })).toBe(0);
+    l = await db.lead.findUniqueOrThrow({ where: { id: lead.id }, include: { stage: true } });
+    expect(l.stage.key).toBe("nutricao");
+    expect(l.aiPaused).toBe(true);
+  });
+
+  it("leaves a lead whose meeting already happened to the business manager", async () => {
+    const { lead } = await leads.createLead({ name: "Davi", phone: "11944443333", source: "site" }, "teste");
+    const manager = await db.user.findFirstOrThrow();
+    const stage = await db.stage.findFirstOrThrow({ where: { pipelineId: lead.pipelineId, key: "reuniao" } });
+    await leads.moveLead(lead.id, stage.id, "Duda", { aiPaused: false, sdrId: (await db.sdrAgent.findFirstOrThrow()).id });
+    await db.job.updateMany({ where: { leadId: lead.id, status: "PENDING" }, data: { status: "CANCELLED", dedupeKey: null } });
+    const held = await db.meeting.create({ data: { leadId: lead.id, userId: manager.id, startsAt: new Date(Date.now() - 2 * 3600_000), endsAt: new Date(Date.now() - 3600_000) } });
+    expect(await jobs.setMeetingOutcome(held.id, "done", "Gerente")).toBe("Reunião marcada como realizada.");
+    expect((await db.lead.findUniqueOrThrow({ where: { id: lead.id } })).aiPaused).toBe(true);
+    // Even with the AI turned back on, it does not talk over the manager after the meeting
+    await db.lead.update({ where: { id: lead.id }, data: { aiPaused: false } });
+    sent.length = 0;
+    await leads.handleInbound({ phone: "5511944443333", body: "E agora, qual o próximo passo?", externalId: "dn1", at: new Date() });
+    await drain();
+    expect(sent).toEqual([]);
+    expect(await db.task.count({ where: { leadId: lead.id, title: "Responder mensagem do lead no WhatsApp", doneAt: null } })).toBe(1);
   });
 
   it("asks a lead who missed the meeting to book again, then nurtures it", async () => {

@@ -21,8 +21,12 @@ export const SdrDecision = z.object({
   }),
   score: z.number().int().min(0).max(100),
   temperature: z.enum(["frio", "morno", "quente"]),
-  decision: z.enum(["continue", "offer_meeting", "book_meeting", "handoff", "nurture", "disqualify"]),
-  slotIndex: z.number().int().nullable().describe("Com book_meeting: o número, na lista \"Horários livres\", do horário que o lead escolheu ou pediu."),
+  decision: z.enum(["continue", "offer_meeting", "book_meeting", "reschedule_meeting", "cancel_meeting", "handoff", "nurture", "disqualify"]),
+  slotIndex: z
+    .number()
+    .int()
+    .nullable()
+    .describe("Com book_meeting ou reschedule_meeting: o número, na lista \"Horários livres\", do horário que o lead escolheu ou pediu."),
   handoffTo: z
     .string()
     .nullable()
@@ -88,6 +92,15 @@ Como decidir (campo "decision"):
 - handoff: o lead pede para falar com uma pessoa, reclama, quer negociar valores ou faz uma pergunta que a base de conhecimento não responde. Diga que o gerente de negócios vai continuar o atendimento.${subjects}
 - nurture: o lead tem interesse mas não agora (prazo longo, sem capital no momento). Agradeça e diga que vai mandar materiais.
 - disqualify: fora do perfil, número errado ou pediu para não receber mensagens. Despeça-se com educação.
+- reschedule_meeting: só quando o lead já tem reunião marcada (veja "Reuniões deste lead") e escolheu ou pediu outro dia e horário que está na lista "Horários livres". Preencha slotIndex; a mesma reunião muda para o novo horário, com o mesmo link do Meet.
+- cancel_meeting: só quando o lead tem reunião marcada e, depois de você perguntar o motivo, confirma que não quer mais a conversa. A reunião é desmarcada e ele passa a receber conteúdos por e-mail.
+
+Lead com reunião marcada (aparece em "Reuniões deste lead" como marcada): continue atendendo, nunca deixe uma mensagem dele sem resposta.
+- Dúvidas: responda pela base de conhecimento e lembre que o gerente aprofunda na reunião (decision continue).
+- Confirmação ou agradecimento ("ok", "obrigado", "combinado"): responda curto e cordial, por exemplo "Combinado! Até lá." (continue). Se você já respondeu ao agradecimento e ele só mandou outro "ok" ou um emoji, reply pode ficar vazio.
+- Remarcar: não pergunte o motivo. Se ele já disse o dia e a hora e o horário está na lista, use reschedule_meeting. Se não disse, ou o horário pedido não está livre, ofereça 3 opções da lista (as mais próximas do que pediu), numeradas 1, 2 e 3 (offer_meeting). A reunião atual continua marcada até ele escolher.
+- Desistência ("não tenho mais interesse", "desisti", "não vou participar"): não aceite de primeira. Com empatia, pergunte o motivo e reforce o valor, por exemplo: "Posso saber o motivo? Você não está buscando abrir um novo negócio com ganhos atrativos?". Se ele disser que o problema é o dia ou o horário, ofereça remarcar. Use continue nessa pergunta. Só use cancel_meeting se, depois disso, ele confirmar que não quer mesmo; agradeça e diga que a reunião foi desmarcada.
+- Se ele pedir para não receber mais mensagens, use disqualify (a reunião também é desmarcada).
 
 Regras:
 - Lead que diz que quer conversar ou marcar (escrevendo, ou tocando num botão como "Quero conversar" ou "Marcar conversa") vai direto para a reunião: nesta mesma resposta, ofereça os horários (offer_meeting) ou marque o dia e a hora que ele pediu (book_meeting). Não mande antes outro material, vídeo ou pergunta de qualificação. O que faltar saber, o gerente pergunta na reunião.
@@ -160,7 +173,11 @@ ${ctx.meetings.map((m) => `- ${formatSlot(m.startsAt)}: ${MEETING_STATUS[m.statu
 ${
   ctx.meetings.at(-1)?.status === "no_show"
     ? "O lead faltou à última reunião. Não cobre o motivo: se ele quiser remarcar, ofereça novos horários da lista (offer_meeting).\n"
-    : ""
+    : ctx.meetings.at(-1)?.status === "scheduled"
+      ? `O lead tem reunião marcada (${formatSlot(ctx.meetings.at(-1)!.startsAt)})${
+          ctx.meetings.at(-1)!.startsAt < ctx.now ? ", e o horário já passou" : ""
+        }: siga as regras de "Lead com reunião marcada".\n`
+      : ""
 }`
     : "";
   // The funnel's id is for the CRM, not for the conversation

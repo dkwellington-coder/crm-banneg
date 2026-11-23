@@ -36,8 +36,10 @@ async function sdrContext(lead: Lead) {
     // What never reached the lead stays out: the AI must not take a message lost to an account block as said
     db.message.findMany({ where: { leadId: lead.id, channel: "WHATSAPP", NOT: { direction: "OUT", status: "FAILED" } }, orderBy: { createdAt: "desc" }, take: 40 }),
     db.pipeline.findUnique({ where: { id: lead.pipelineId }, include: { stages: { orderBy: { position: "asc" } } } }),
-    db.meeting.findMany({ where: { leadId: lead.id }, orderBy: { startsAt: "desc" }, take: 3, select: { startsAt: true, status: true } }),
+    db.meeting.findMany({ where: { leadId: lead.id }, orderBy: { startsAt: "desc" }, take: 3, select: { id: true, startsAt: true, status: true } }),
   ]);
+  // The meeting the lead has marked and not yet held (its latest), which the AI may move or cancel
+  const meeting = meetings[0]?.status === "scheduled" ? meetings[0] : null;
   if (!agent) throw new Error("Lead sem SDR de IA atribuída.");
   const owner = lead.ownerId ? await db.user.findUnique({ where: { id: lead.ownerId } }) : await pickOwner();
   const slots: Slot[] = owner ? await freeSlotsFor(owner.id, settings.businessHours, settings.meetingMinutes) : [];
@@ -48,6 +50,7 @@ async function sdrContext(lead: Lead) {
     owner,
     slots,
     subjectStages,
+    meeting,
     ctx: {
       agentName: agent.name,
       persona: agent.persona,
@@ -67,7 +70,7 @@ async function sdrContext(lead: Lead) {
         summary: lead.aiSummary,
       },
       transcript: messages.reverse().map((m) => ({ direction: m.direction, author: m.author, body: m.body, at: m.createdAt })),
-      meetings: meetings.reverse(),
+      meetings: [...meetings].reverse(),
       slots,
       now: new Date(),
       cofReady: (await cofDocuments()).length > 0,
@@ -100,7 +103,12 @@ const handlers: Record<string, Handler> = {
   async "sdr.reply"(_job, l) {
     const lead = needLead(l);
     if (lead.aiPaused) return "Ignorado: IA pausada neste lead.";
-    const { ctx, slots, agent, owner, subjectStages } = await sdrContext(lead);
+    const { ctx, slots, agent, owner, subjectStages, meeting } = await sdrContext(lead);
+    // "Reunião marcada" after the meeting was held: the business manager carries on, not the AI
+    if (lead.status === "MEETING_BOOKED" && !meeting) {
+      await ensureTask(lead.id, lead.ownerId, "Responder mensagem do lead no WhatsApp");
+      return "Ignorado: a reunião já aconteceu; o gerente responde.";
+    }
     const decision = await runSdrTurn(ctx);
     // After a stop (no credit), the first answer clears the banner and answers the leads who waited
     await aiAnswered({ answering: lead.id });
@@ -109,7 +117,7 @@ const handlers: Record<string, Handler> = {
     const current = await db.lead.findUniqueOrThrow({ where: { id: lead.id } });
     if (current.aiPaused || current.whatsappOptOut || isClosed(current) || current.stageId !== lead.stageId)
       return "Ignorado: o lead mudou enquanto a IA respondia (atendido, pausado, encerrado, movido ou pediu para parar).";
-    const plan = planFromDecision(decision, slots);
+    const plan = planFromDecision(decision, slots, { meetingBooked: !!meeting });
 
     await db.lead.update({
       where: { id: lead.id },
@@ -136,6 +144,11 @@ const handlers: Record<string, Handler> = {
       reply = `${reply}\n\nReunião: ${formatSlot(plan.slot.startsAt)} (horário de Brasília)${meeting.meetLink ? `\nLink da reunião: ${meeting.meetLink}` : ""}`;
       booked = true;
     }
+    if (plan.reschedule && meeting) {
+      const { meeting: moved } = await rescheduleMeeting(meeting.id, { slot: plan.reschedule, actor: agent.name, notify: false });
+      reply = `${reply}\n\nNova data da reunião: ${formatSlot(moved.startsAt)} (horário de Brasília)${moved.meetLink ? `\nLink da reunião: ${moved.meetLink}` : ""}`;
+      booked = true;
+    }
     if (reply) {
       const fresh = await db.lead.findUniqueOrThrow({ where: { id: lead.id } });
       const res = await sendWhatsApp(fresh, reply, agent.name);
@@ -150,6 +163,8 @@ const handlers: Record<string, Handler> = {
     // From here the answer went out: a failure below must never run the turn again (a second, different answer)
     try {
       if (plan.stopAi) await db.lead.update({ where: { id: lead.id }, data: { aiPaused: true } });
+      // The lead still gave up after the AI asked why: off the agenda, the time free again
+      if (plan.cancelMeeting && meeting) await cancelMeeting(meeting.id, agent.name);
       // The lead asked for the COF before the meeting: it goes by e-mail now, once for the same files
       if (decision.sendCof) {
         const result = await sendCof(await db.lead.findUniqueOrThrow({ where: { id: lead.id } }), agent.name, { once: true });
@@ -315,6 +330,8 @@ const decisionLabel: Record<string, string> = {
   continue: "Qualificando",
   offer_meeting: "Ofereceu reunião",
   book_meeting: "Marcou reunião",
+  reschedule_meeting: "Remarcou a reunião",
+  cancel_meeting: "Desmarcou a reunião",
   handoff: "Passou para o gerente",
   nurture: "Enviou para nutrição",
   disqualify: "Descartou",
@@ -692,6 +709,8 @@ export async function setMeetingOutcome(meetingId: string, outcome: "done" | "no
   const when = formatSlot(meeting.startsAt);
   if (outcome === "done") {
     await db.meeting.update({ where: { id: meeting.id }, data: { status: "done" } });
+    // From here the business manager talks to the lead: the AI stops answering it
+    await db.lead.update({ where: { id: meeting.leadId }, data: { aiPaused: true } });
     await logEvent(meeting.leadId, "meeting.done", actor, `Reunião de ${when} realizada.`);
     return "Reunião marcada como realizada.";
   }
@@ -713,12 +732,15 @@ const dayOf = (d: Date) => d.toLocaleDateString("pt-BR", { timeZone: "America/Sa
 /**
  * A meeting booked by someone on the team, from the lead's page: on the Google agenda with a Meet link,
  * the lead moves to "Reunião marcada" (that stage's automations run, as when the AI books) and gets the link.
+ * The AI answers it again from there, as after a booking of its own.
  */
 export async function scheduleMeeting(lead: Lead, opts: { userId: string; slot: Slot; actor: string; notify: boolean }) {
   const meeting = await bookMeeting(lead, opts.userId, opts.slot, opts.actor);
+  // With the meeting marked, the AI answers the lead again (a new time, doubts, a lead who gives up) until it happens
+  const extra = { ownerId: lead.ownerId ?? opts.userId, ...(lead.sdrId && !lead.whatsappOptOut && { aiPaused: false }) };
   const target = await aiTargetStage(STAGE_KEYS.MEETING_BOOKED, lead.pipelineId);
-  if (target) await moveLead(lead.id, target.id, opts.actor, { ownerId: lead.ownerId ?? opts.userId });
-  else await db.lead.update({ where: { id: lead.id }, data: { status: "MEETING_BOOKED", ownerId: lead.ownerId ?? opts.userId } });
+  if (target) await moveLead(lead.id, target.id, opts.actor, extra);
+  else await db.lead.update({ where: { id: lead.id }, data: { status: "MEETING_BOOKED", ...extra } });
   const sent = opts.notify ? await sendMeetingLink(await db.lead.findUniqueOrThrow({ where: { id: lead.id } }), meeting, opts.actor) : null;
   return { meeting, sent };
 }

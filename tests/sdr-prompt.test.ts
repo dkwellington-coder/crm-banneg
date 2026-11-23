@@ -47,4 +47,22 @@ describe("SDR prompt", () => {
     expect(turn("done")).toContain("20/10, 14:30: realizada");
     expect(turn("done")).not.toContain("faltou");
   });
+
+  it("keeps answering a lead with a meeting marked: doubts, a new time, a lead who gives up", () => {
+    const s = buildSystemPrompt(base);
+    expect(s).toContain("reschedule_meeting");
+    expect(s).toContain("Você não está buscando abrir um novo negócio com ganhos atrativos?");
+    expect(s).toContain("nunca deixe uma mensagem dele sem resposta");
+    const turn = (now: string) =>
+      buildUserTurn({
+        ...base,
+        lead: { name: "Ana", phone: null, email: null, city: null, state: null, source: "site", qualification: {}, summary: null },
+        transcript: [],
+        meetings: [{ startsAt: new Date("2026-10-20T17:30:00Z"), status: "scheduled" }],
+        slots: [],
+        now: new Date(now),
+      });
+    expect(turn("2026-10-19T15:00:00Z")).toContain("O lead tem reunião marcada (terça-feira, 20/10, 14:30): siga as regras");
+    expect(turn("2026-10-20T18:00:00Z")).toContain("e o horário já passou");
+  });
 });

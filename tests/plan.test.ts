@@ -42,11 +42,41 @@ describe("planFromDecision", () => {
     expect(p.stageKey).toBe("qualificado");
   });
 
-  it("books the chosen slot and stops the AI", () => {
+  it("books the chosen slot and keeps the AI on for what the lead writes next", () => {
     const p = planFromDecision(decision({ decision: "book_meeting", score: 85, slotIndex: 1 }), slots);
     expect(p.status).toBe("MEETING_BOOKED");
     expect(p.slot).toEqual(slots[1]);
-    expect(p.stopAi).toBe(true);
+    expect(p.stopAi).toBe(false);
+  });
+
+  describe("with a meeting marked", () => {
+    const opts = { meetingBooked: true };
+    it("stays in Reunião marcada while it answers doubts or offers new times", () => {
+      for (const d of ["continue", "offer_meeting"] as const) {
+        expect(planFromDecision(decision({ decision: d }), slots, opts)).toMatchObject({ status: "MEETING_BOOKED", stageKey: "reuniao", stopAi: false, slot: null, reschedule: null, cancelMeeting: false });
+      }
+    });
+
+    it("moves the same meeting to the time the lead picked, never a second booking", () => {
+      for (const d of ["reschedule_meeting", "book_meeting"] as const) {
+        const p = planFromDecision(decision({ decision: d, slotIndex: 1 }), slots, opts);
+        expect(p).toMatchObject({ stageKey: "reuniao", slot: null, reschedule: slots[1], stopAi: false });
+      }
+      const missing = planFromDecision(decision({ decision: "reschedule_meeting", slotIndex: 9 }), slots, opts);
+      expect(missing).toMatchObject({ stageKey: "reuniao", reschedule: null });
+      expect(missing.handoffTask).toMatch(/remarcar/);
+    });
+
+    it("cancels the meeting only when the lead gives up (or asks to stop), and hands off without leaving the stage", () => {
+      expect(planFromDecision(decision({ decision: "cancel_meeting" }), slots, opts)).toMatchObject({ stageKey: "nutricao", cancelMeeting: true, startNurture: true, stopAi: true });
+      expect(planFromDecision(decision({ decision: "disqualify" }), slots, opts)).toMatchObject({ stageKey: "descartado", cancelMeeting: true });
+      expect(planFromDecision(decision({ decision: "handoff", reason: "quer desconto" }), slots, opts)).toMatchObject({ stageKey: "reuniao", cancelMeeting: false, stopAi: true, handoffTask: "Assumir conversa: quer desconto" });
+    });
+
+    it("without a meeting, a reschedule books and a cancel nurtures", () => {
+      expect(planFromDecision(decision({ decision: "reschedule_meeting", slotIndex: 0 }), slots)).toMatchObject({ stageKey: "reuniao", slot: slots[0] });
+      expect(planFromDecision(decision({ decision: "cancel_meeting" }), slots)).toMatchObject({ stageKey: "nutricao", cancelMeeting: false });
+    });
   });
 
   it("creates a task instead of booking a slot that does not exist", () => {
