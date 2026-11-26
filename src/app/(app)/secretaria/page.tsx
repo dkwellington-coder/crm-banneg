@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { Bot, CheckCircle2, FolderOpen, ListTodo, MessageSquareText, Smartphone, XCircle } from "lucide-react";
+import { Bot, CheckCircle2, FolderOpen, ListTodo, Palette, MessageSquareText, Smartphone, XCircle } from "lucide-react";
 import { requireOwnerPage } from "@/lib/access";
 import { db } from "@/lib/db";
 import { phoneLabel } from "@/lib/calendar";
@@ -9,14 +9,15 @@ import { Card, Loading, PageHeader, btnCls, btnGhostCls, inputCls, relTime } fro
 import { SecretaryQr } from "./SecretaryQr";
 import { SecretaryForm } from "./SecretaryForm";
 import { secretaryDrive } from "@/lib/secretary-drive";
-import { addTaskAction, disconnectDriveAction, removeSecretaryAction, setDriveFolderAction, setTaskStatusAction } from "./actions";
+import { CANVA_FOLDER, canvaConnected, secretaryCanva } from "@/lib/secretary-canva";
+import { addTaskAction, disconnectCanvaAction, disconnectDriveAction, removeSecretaryAction, setDriveFolderAction, setTaskStatusAction } from "./actions";
 
 /**
  * Secretária (Wellington, 2026-11-26): the AI secretary on her own WhatsApp chip, in a group with him and the team.
  * Here he connects her number, picks the group and the people, writes the registration checklist, and sees the
  * tasks she keeps and what she did.
  */
-type Search = { drive?: string; detalhe?: string };
+type Search = { drive?: string; canva?: string; detalhe?: string };
 
 export default function SecretariaPage({ searchParams }: { searchParams: Promise<Search> }) {
   return (
@@ -33,6 +34,12 @@ const DRIVE_NOTICE: Record<string, (d: string) => { ok: boolean; text: string }>
   ok: (d) => ({ ok: true, text: `Google Drive conectado${d ? ` (${d})` : ""}. Agora cole o link da pasta da equipe.` }),
   pasta: (d) => ({ ok: true, text: `Pronto: a equipe vê a pasta "${d}".` }),
   recusado: () => ({ ok: false, text: "O Google não recebeu a permissão. Clique em conectar e marque o acesso ao Drive." }),
+  erro: (d) => ({ ok: false, text: d || "Não deu certo. Tente de novo." }),
+};
+
+const CANVA_NOTICE: Record<string, (d: string) => { ok: boolean; text: string }> = {
+  ok: () => ({ ok: true, text: `Canva conectado. Coloque os modelos na pasta "${CANVA_FOLDER}" do seu Canva.` }),
+  recusado: () => ({ ok: false, text: "O Canva não recebeu a permissão. Clique em conectar e aceite." }),
   erro: (d) => ({ ok: false, text: d || "Não deu certo. Tente de novo." }),
 };
 
@@ -56,6 +63,8 @@ async function Secretaria({ searchParams }: { searchParams: Promise<Search> }) {
   const s = await getSecretary();
   const drive = await secretaryDrive();
   const notice = query.drive && DRIVE_NOTICE[query.drive]?.(query.detalhe ?? "");
+  const canva = await secretaryCanva();
+  const canvaNotice = query.canva && CANVA_NOTICE[query.canva]?.(query.detalhe ?? "");
   const status = s.token ? await secretaryStatus(s).catch((e: Error) => ({ connected: false, status: "sem resposta", reason: e.message, phone: null })) : null;
   const groups = status?.connected ? await secretaryGroups().catch(() => null) : null;
   // The saved group stays selectable even when the list could not be read
@@ -167,6 +176,30 @@ async function Secretaria({ searchParams }: { searchParams: Promise<Search> }) {
             ) : (
               <a href="/api/secretaria/drive/conectar" className={`${btnCls} inline-flex`}>
                 Conectar o Google Drive
+              </a>
+            )}
+          </div>
+        </Section>
+
+        <Section icon={Palette} title="Canva">
+          <div id="canva" className="space-y-3 text-sm text-slate-600">
+            <p>
+              Ela faz artes a partir dos seus modelos do Canva: copia o modelo, troca os textos e manda a imagem no WhatsApp. O seu original fica intacto.
+              Ela só usa o que estiver na pasta <strong>“{CANVA_FOLDER}”</strong> do seu Canva. Use fotos suas ou grátis (foto do Canva Pro sai com marca d’água).
+            </p>
+            {canvaNotice && <p className={`rounded-lg px-3 py-2 text-sm ${canvaNotice.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>{canvaNotice.text}</p>}
+            {canvaConnected(canva) ? (
+              <>
+                <p className="flex items-center gap-2 font-medium text-emerald-700">
+                  <CheckCircle2 size={18} /> Canva conectado
+                </p>
+                <form action={disconnectCanvaAction}>
+                  <button className="text-xs text-slate-500 underline">Desconectar o Canva</button>
+                </form>
+              </>
+            ) : (
+              <a href="/api/secretaria/canva/conectar" className={`${btnCls} inline-flex`}>
+                Conectar o Canva
               </a>
             )}
           </div>

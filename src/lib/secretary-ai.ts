@@ -33,6 +33,7 @@ import { agendaEvent, agendaOwner, bookOnAgenda, conflictsWith, deleteOnAgenda, 
 import { driveFileToSend, listDriveFiles, readDriveFile, secretaryDrive, type ReadContent } from "./secretary-drive";
 import { ART_FORMATS, ART_THEMES, loadArtAssets, photoDataUrl, renderArt, type ArtInput } from "./secretary-art";
 import { getSettings, materialFileName } from "./settings";
+import { CANVA_FOLDER, canvaArt, canvaModels } from "./secretary-canva";
 import { secretaryReport, REPORT_KINDS } from "./secretary-report";
 
 /**
@@ -104,7 +105,7 @@ ${s.nicknames?.length ? `A equipe também te chama de ${s.nicknames.map((n) => `
 - Arquivos: procurar (buscar_arquivo), ler (ler_arquivo) e enviar (enviar_arquivo) os relatórios e documentos da pasta do Google Drive da secretária (as abas de Marketing e de Download de comissões salvam lá: inadimplência, comissões, produção por seguradora) e os materiais do CRM (apresentação, tabela de comissões, catálogo, vídeos). Para responder sobre um relatório ("quais seguradoras foram feitas?", "quem está inadimplente?"), leia o arquivo mais recente e responda com os números dele, dizendo de qual arquivo e data tirou. Se não achar, diga o que procurou e peça o nome do arquivo.
 - Relatórios do CRM (relatorio): leads por funil, reuniões, metas do mês e tarefas, em texto ou em planilha.
 - Google Drive: os sócios podem pedir qualquer arquivo do Drive do Wellington (buscar_arquivo procura no Drive todo); os colaboradores só enxergam a pasta da equipe. Nunca mande a um colaborador um arquivo que ele não poderia ver.
-- Artes e ideias de marketing: quando pedirem um post, story, convite, anúncio ou comunicado, crie com criar_arte no visual do Banneg (escreva títulos curtos e fortes, dados reais da base abaixo, nada inventado) e mande junto uma legenda pronta para o Instagram/WhatsApp. Se pedirem ideias, dê 3 a 5 ideias curtas com título e gancho. Você faz posts, quadrados e stories com texto e foto. Se pedirem algo que não faz (vídeo, carrossel, logo, foto gerada por IA), diga isso em uma frase e ofereça a mesma ideia como post ou story.
+- Artes e ideias de marketing: quando pedirem um post, story, convite, anúncio ou comunicado, crie com criar_arte no visual do Banneg (escreva títulos curtos e fortes, dados reais da base abaixo, nada inventado) e mande junto uma legenda pronta para o Instagram/WhatsApp. Se pedirem ideias, dê 3 a 5 ideias curtas com título e gancho. Você faz posts, quadrados e stories com texto e foto. Também pode usar os modelos do Wellington no Canva (canva_modelos, depois canva_arte): use um modelo quando pedirem \"no Canva\" ou \"no modelo\", ou quando houver um modelo do tipo pedido (convite, post de produto); senão, criar_arte. Se pedirem algo que não faz (vídeo, carrossel, logo, foto gerada por IA), diga isso em uma frase e ofereça a mesma ideia como post ou story.
 
 Como agir no grupo:
 - Responda quando falarem com você, pedirem algo, ou quando aparecer um compromisso ("Odair, me manda o contrato até sexta"): anote com criar_tarefa e confirme em uma linha. Se a conversa for só entre as pessoas e não pedir nada de você, responda exatamente ${SILENT}.
@@ -368,6 +369,27 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
     },
   },
   {
+    name: "canva_modelos",
+    description: `Lista os modelos de arte do Wellington no Canva (pasta "${CANVA_FOLDER}") com os textos de cada um, para você escolher o modelo e saber o que trocar.`,
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "canva_arte",
+    description:
+      "Faz uma arte com um modelo do Canva do Wellington: copia o modelo (o original fica igual), troca os textos e manda a imagem no WhatsApp. Em trocas, \"de\" é o texto que está no modelo (como canva_modelos mostrou) e \"para\" é o novo texto; textos que você não trocar ficam como estão.",
+    input_schema: {
+      type: "object",
+      properties: {
+        modelo_id: { ...str, description: "id do modelo (de canva_modelos)" },
+        trocas: { type: "array", items: { type: "object", properties: { de: str, para: str }, required: ["de", "para"] } },
+        titulo: { ...str, description: "nome da arte no Canva" },
+        para: { ...str, description: 'padrão "aqui"' },
+        legenda: { ...str, description: "texto que vai junto da imagem no WhatsApp" },
+      },
+      required: ["modelo_id", "trocas"],
+    },
+  },
+  {
     name: "relatorio",
     description:
       "Números do CRM num período: leads (novos por funil e origem), reunioes (marcadas, realizadas, não compareceu), metas (metas do mês e quanto já foi feito) ou tarefas (as suas, abertas e atrasadas). Formato texto para responder no chat, ou planilha para mandar um arquivo .csv que abre no Excel.",
@@ -411,6 +433,8 @@ const ALLOWED: Record<Exclude<Level, "socio">, Set<string>> = {
     "enviar_arquivo",
     "relatorio",
     "criar_arte",
+    "canva_modelos",
+    "canva_arte",
     "mandar_mensagem",
   ]),
 };
@@ -744,6 +768,21 @@ export async function runTool(name: string, input: Input, ctx: TurnContext): Pro
       const name = `Banneg - ${text(input.titulo).slice(0, 40).replace(/[\\/:*?"<>|]+/g, " ").trim() || "arte"}.png`;
       await secretarySendFile(where.chatId, { name, mime: "image/png", data: png }, text(input.legenda), s);
       return `Arte enviada ${where.label} (${text(input.formato) || "post"}, tema ${text(input.tema) || "azul"}).`;
+    }
+    case "canva_modelos": {
+      const models = await canvaModels();
+      return models.map((m) => `- ${m.nome} (id ${m.id})\n  textos: ${m.textos.map((t) => `"${t.replace(/\s+/g, " ")}"`).join(" | ") || "(sem texto)"}`).join("\n");
+    }
+    case "canva_arte": {
+      const where = destination(text(input.para), ctx, level);
+      const swaps = (Array.isArray(input.trocas) ? (input.trocas as Input[]) : []).map((t) => ({ de: text(t.de), para: typeof t.para === "string" ? t.para : "" })).filter((t) => t.de);
+      if (!swaps.length) throw new Error("Informe as trocas de texto (de → para).");
+      const art = await canvaArt(text(input.modelo_id), swaps, text(input.titulo));
+      const base = `Banneg - ${(text(input.titulo) || art.model).slice(0, 40).replace(/[\\/:*?"<>|]+/g, " ").trim()}`;
+      for (const [i, png] of art.pngs.entries()) {
+        await secretarySendFile(where.chatId, { name: `${base}${art.pngs.length > 1 ? ` ${i + 1}` : ""}.png`, mime: "image/png", data: png }, i === 0 ? text(input.legenda) : "", s);
+      }
+      return `Arte do Canva enviada ${where.label} (modelo ${art.model}${art.editUrl ? `, editável em ${art.editUrl}` : ""}).${art.missing.length ? ` Não achei para trocar: ${art.missing.map((m) => `"${m}"`).join(", ")}.` : ""}`;
     }
     case "relatorio": {
       const report = await secretaryReport(text(input.tipo), { from: text(input.de), to: text(input.ate), now, assignee: mine });

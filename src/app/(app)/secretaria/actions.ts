@@ -19,6 +19,7 @@ import {
 } from "@/lib/secretary";
 import { db } from "@/lib/db";
 import { disconnectSecretaryDrive, setSecretaryFolder } from "@/lib/secretary-drive";
+import { disconnectSecretaryCanva } from "@/lib/secretary-canva";
 
 // The secretary is Wellington's own: only the owner sets her up
 async function owner() {
@@ -167,5 +168,11 @@ export async function setDriveFolderAction(formData: FormData) {
 export async function disconnectDriveAction() {
   await owner();
   await disconnectSecretaryDrive();
+  revalidatePath(PATH);
+}
+
+export async function disconnectCanvaAction() {
+  await owner();
+  await disconnectSecretaryCanva();
   revalidatePath(PATH);
 }
