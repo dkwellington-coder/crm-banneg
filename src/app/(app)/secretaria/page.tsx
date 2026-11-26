@@ -68,9 +68,10 @@ async function Secretaria() {
               <p className="flex items-center gap-2 text-sm font-medium text-emerald-700">
                 <CheckCircle2 size={18} /> Conectada{phone ? ` no ${phoneLabel(phone)}` : ""}
                 {s.group ? ` · lendo o grupo ${s.group.name}` : " · falta escolher o grupo"}
+                {s.teamGroup ? ` e acompanhando ${s.teamGroup.name}` : ""}
               </p>
               <p className="text-xs text-slate-500">
-                Ela só lê o grupo escolhido{s.privates ? " e as conversas no privado do número dela" : ""}. Outros grupos em que o chip estiver ficam de fora.
+                Ela só lê os grupos escolhidos{s.privates ? " e as conversas no privado do número dela" : ""}. Outros grupos em que o chip estiver ficam de fora.
                 Se desconectar, você recebe um e-mail.
               </p>
               <form action={removeSecretaryAction}>
@@ -103,6 +104,7 @@ async function Secretaria() {
             switches={{ active: s.active, confirmEmails: s.confirmEmails, weekly: s.weekly, daily: s.daily, privates: s.privates }}
             groups={groupList}
             groupId={s.group?.id ?? ""}
+            teamGroupId={s.teamGroup?.id ?? ""}
             canTest={!!status?.connected && !!s.group}
           />
           <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">

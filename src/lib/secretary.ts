@@ -33,6 +33,8 @@ export type SecretarySettings = {
   webhookKey: string | null;
   phone: string | null;
   group: { id: string; name: string } | null;
+  // Banneg's team group (Wellington, 2026-11-26): she follows it quietly and acts only when someone calls her by name
+  teamGroup: { id: string; name: string } | null;
   // What she calls herself in the group
   name: string;
   members: SecretaryMember[];
@@ -58,6 +60,7 @@ export const DEFAULT_SECRETARY: SecretarySettings = {
   webhookKey: null,
   phone: null,
   group: null,
+  teamGroup: null,
   name: "Jessica Montenegro",
   members: [],
   checklist: "",
@@ -255,7 +258,8 @@ export const secretaryWebhookUrl = (key: string) => `${CRM_URL}/api/secretaria/w
 /** Tells the server where to post and what: the chosen group and, when on, the private chats. */
 export async function pointWebhook(s: SecretarySettings) {
   if (!s.token || !s.webhookKey) return;
-  await api("/webhook", { url: secretaryWebhookUrl(s.webhookKey), groups: s.group ? [s.group.id] : [], privates: s.privates }, s);
+  const groups = [s.group?.id, s.teamGroup?.id].filter((g): g is string => !!g);
+  await api("/webhook", { url: secretaryWebhookUrl(s.webhookKey), groups, privates: s.privates }, s);
 }
 
 export async function secretaryStatus(s?: SecretarySettings) {
@@ -275,12 +279,47 @@ export async function secretaryGroups() {
     .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
 }
 
-export async function setSecretaryGroup(groupId: string | null) {
-  if (!groupId) return pointWebhook(await saveSecretary({ group: null }));
+export async function setSecretaryGroup(groupId: string | null, which: "group" | "teamGroup" = "group") {
+  if (!groupId) return pointWebhook(await saveSecretary({ [which]: null }));
   const group = (await secretaryGroups()).find((g) => g.id === groupId);
   if (!group) throw new Error("Esse grupo não aparece no número da secretária. Confira se ela está no grupo.");
-  await pointWebhook(await saveSecretary({ group }));
+  await pointWebhook(await saveSecretary({ [which]: group }));
   return group;
+}
+
+// ---------- The partners' group: people and photo (Wellington, 2026-11-26) ----------
+
+/** Banneg's logo for the group photo (gold monogram on the brand blue). */
+export const GROUP_PHOTO = `${CRM_URL}/brand/grupo-banneg.png`;
+
+/**
+ * Adds people to one of her groups (she must be an admin there). Whoever WhatsApp refuses to add (privacy) gets the
+ * group's invite link from her in private.
+ */
+export async function addToSecretaryGroup(groupId: string, people: { name: string; phone: string }[], s?: SecretarySettings) {
+  const settings = s ?? (await getSecretary());
+  const res = await api<{ participants?: { jid: string; status: string }[]; invite?: string | null }>(
+    "/group/updateParticipants",
+    { groupjid: groupId, action: "add", participants: people.map((p) => waNumber(p.phone)) },
+    settings,
+  );
+  const added: string[] = [];
+  const invited: string[] = [];
+  const failed: string[] = [];
+  for (const p of people) {
+    const r = res.participants?.find((x) => onlyDigits(x.jid.split("@")[0]) === waNumber(p.phone));
+    if (!r || r.status === "200" || r.status === "409") added.push(p.name);
+    else if (res.invite) {
+      await secretarySend(`${waNumber(p.phone)}@s.whatsapp.net`, `Oi, ${p.name.split(" ")[0]}! Aqui é a ${settings.name}, secretária do Banneg. O WhatsApp não me deixou colocar você direto no grupo, então segue o convite: ${res.invite}`, settings)
+        .then(() => invited.push(p.name))
+        .catch(() => failed.push(p.name));
+    } else failed.push(p.name);
+  }
+  return { added, invited, failed };
+}
+
+export async function setSecretaryGroupPhoto(groupId: string, image = GROUP_PHOTO, s?: SecretarySettings) {
+  await api("/group/updateImage", { groupjid: groupId, image }, s);
 }
 
 /** Disconnects her number (as removing the device on the phone). */
@@ -298,7 +337,8 @@ export async function secretarySend(chatId: string, text: string, s?: SecretaryS
   const settings = s ?? (await getSecretary());
   const body = text.trim();
   if (!body) return null;
-  const { text: out, mentions } = withMentions(body, settings.members);
+  const people = chatId === settings.teamGroup?.id ? await everyone(settings) : settings.members;
+  const { text: out, mentions } = withMentions(body, people);
   const res = await api<{ messageid?: string; id?: string }>("/send/text", { number: chatId, text: out, ...(mentions.length && { mentions }) }, settings);
   const externalId = res.messageid ?? res.id ?? null;
   await db.secretaryMessage
@@ -333,7 +373,8 @@ type Payload = {
     senderName?: string;
     sender_pn?: string;
     wasSentByApi?: boolean;
-    quoted?: { text?: string };
+    quoted?: { text?: string; sender?: string };
+    mentioned?: string[];
     media?: { mimetype?: string };
   };
   media?: { saved?: boolean; error?: string; mimetype?: string };
@@ -346,7 +387,7 @@ export const TURN_DEBOUNCE_MS = 6_000;
 const AUDIO_WAIT_MS = 90_000;
 
 export type SecretaryEvent =
-  | { kind: "message"; chatId: string; isGroup: boolean; externalId: string | null; fromMe: boolean; byApi: boolean; phone: string | null; name: string | null; body: string; audio: boolean; quoted: string | null; at: Date }
+  | { kind: "message"; chatId: string; isGroup: boolean; externalId: string | null; fromMe: boolean; byApi: boolean; phone: string | null; name: string | null; body: string; audio: boolean; quoted: string | null; quotedSender?: string | null; mentioned?: string[]; at: Date }
   | { kind: "media"; chatId: string; externalId: string; saved: boolean }
   | { kind: "ignore"; reason: string };
 
@@ -382,6 +423,8 @@ export function parseSecretary(p: Payload, now = new Date()): SecretaryEvent {
     body,
     audio,
     quoted: m.quoted?.text?.trim() || null,
+    quotedSender: onlyDigits(m.quoted?.sender) || null,
+    mentioned: (m.mentioned ?? []).map(onlyDigits).filter(Boolean),
     at,
   };
 }
@@ -407,8 +450,9 @@ export async function receiveSecretary(key: string, payload: Payload) {
   const event = parseSecretary(payload);
   if (event.kind === "ignore") return { ok: true as const, ignored: event.reason };
   if (event.kind === "media") return receiveAudio(s, event);
-  // Only her group and private chats (the server already filters; an old group left behind stays out)
-  if (event.isGroup && event.chatId !== s.group?.id) return { ok: true as const, ignored: "outro grupo" };
+  // Only her groups and private chats (the server already filters; an old group left behind stays out)
+  const team = event.isGroup && event.chatId === s.teamGroup?.id;
+  if (event.isGroup && event.chatId !== s.group?.id && !team) return { ok: true as const, ignored: "outro grupo" };
   if (!event.isGroup && !s.privates) return { ok: true as const, ignored: "privado desligado" };
   if (event.externalId) {
     const seen = await db.secretaryMessage.findUnique({ where: { chatId_externalId: { chatId: event.chatId, externalId: event.externalId } } });
@@ -417,6 +461,9 @@ export async function receiveSecretary(key: string, payload: Payload) {
   const member = memberByPhone(s.members, event.phone);
   // What she sent herself is already kept (secretarySend); typed on her phone, someone spoke for her: kept, not answered
   const own = event.fromMe;
+  // The team group: she learns who is who, keeps every message as context, and acts only when called by name
+  if (team && !own && event.phone && event.name) await rememberTeamPerson(event.phone, event.name);
+  const quiet = team && !event.audio && !callsHer(s, event);
   await db.secretaryMessage.create({
     data: {
       chatId: event.chatId,
@@ -431,10 +478,11 @@ export async function receiveSecretary(key: string, payload: Payload) {
       mediaStatus: event.audio ? "aguardando" : null,
       quotedText: event.quoted,
       at: event.at,
-      handledAt: own ? new Date() : null,
+      handledAt: own || quiet ? new Date() : null,
     },
   });
   if (own || !s.active) return { ok: true as const };
+  if (quiet) return { ok: true as const, quiet: true };
   await queueTurn(event.chatId, event.audio ? AUDIO_WAIT_MS : TURN_DEBOUNCE_MS);
   return { ok: true as const, queued: true };
 }
@@ -458,9 +506,48 @@ async function receiveAudio(s: SecretarySettings, event: { chatId: string; exter
       console.error("Secretária: áudio não transcrito", (e as Error).message);
     }
   }
-  await db.secretaryMessage.update({ where: { id: msg.id }, data: { body, mediaStatus: status } });
-  if (s.active && !msg.handledAt) await queueTurn(event.chatId, 2_000);
+  // In the team group an audio only wakes her when it calls her by name
+  const quiet = event.chatId === s.teamGroup?.id && !callsHer(s, { body });
+  await db.secretaryMessage.update({ where: { id: msg.id }, data: { body, mediaStatus: status, ...(quiet && !msg.handledAt && { handledAt: new Date() }) } });
+  if (s.active && !msg.handledAt && !quiet) await queueTurn(event.chatId, 2_000);
   return { ok: true as const };
+}
+
+// ---------- The team group: who is who ----------
+
+const TEAM_DIR = "secretaria_equipe";
+export type TeamPerson = { phone: string; name: string; at: string };
+
+export async function getTeamPeople(): Promise<TeamPerson[]> {
+  return ((await db.setting.findUnique({ where: { key: TEAM_DIR } }))?.value as TeamPerson[] | undefined) ?? [];
+}
+
+/** Whoever writes in the team group (name as WhatsApp shows it); kept so she can call and chase them. */
+async function rememberTeamPerson(phone: string, name: string) {
+  const list = await getTeamPeople();
+  const found = list.find((p) => p.phone === phone);
+  if (found && found.name === name && Date.now() - new Date(found.at).getTime() < 86_400_000) return;
+  const next = [...list.filter((p) => p.phone !== phone), { phone, name, at: new Date().toISOString() }].slice(-80);
+  await db.setting.upsert({ where: { key: TEAM_DIR }, create: { key: TEAM_DIR, value: next }, update: { value: next } });
+}
+
+/** The registered people plus the team group's (as collaborators), for names, @mentions and tasks. */
+export async function everyone(s: SecretarySettings): Promise<SecretaryMember[]> {
+  if (!s.teamGroup) return s.members;
+  const extra = (await getTeamPeople())
+    .filter((p) => !memberByPhone(s.members, p.phone))
+    .map((p) => ({ name: p.name, phone: p.phone, email: "", role: "colaborador" as const }));
+  return [...s.members, ...extra];
+}
+
+const plain = (v: string) => v.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+/** Someone in the team group is talking to her: her first name, an @mention of her number, or a reply to her message. */
+export function callsHer(s: Pick<SecretarySettings, "name" | "phone">, m: { body: string; mentioned?: string[]; quotedSender?: string | null }) {
+  const first = plain(s.name.split(/\s+/)[0] ?? "");
+  if (first.length >= 3 && new RegExp(`(^|[^a-z])${first}([^a-z]|$)`).test(plain(m.body))) return true;
+  const mine = s.phone ? phoneVariants(s.phone) : [];
+  return [...(m.mentioned ?? []), m.quotedSender ?? ""].some((x) => !!x && mine.includes(x));
 }
 
 // ---------- Tasks ----------
@@ -479,7 +566,9 @@ export function taskLine(t: Pick<SecretaryTask, "title" | "assignee" | "dueAt" |
 }
 
 /** Where a task's reminder and chasing go: to a collaborator in private (they are not in the group), else the group. */
-export function taskChat(s: SecretarySettings, task: Pick<SecretaryTask, "assigneePhone">) {
+export function taskChat(s: SecretarySettings, task: Pick<SecretaryTask, "assigneePhone" | "chatId">) {
+  // Noted in the team group: reminded and chased there
+  if (s.teamGroup && task.chatId === s.teamGroup.id) return s.teamGroup.id;
   const member = memberByPhone(s.members, task.assigneePhone);
   return roleOf(member) === "colaborador" ? `${waNumber(member!.phone)}@s.whatsapp.net` : s.group!.id;
 }

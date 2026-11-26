@@ -162,4 +162,33 @@ describe.skipIf(!dbUrl)("the secretary in the partners' group", () => {
     expect(lists[0].number).toBe(GROUP.id);
     expect(lists[0].text).toContain("Enviar proposta");
   });
+
+  it("the team group: keeps the chatter quiet, learns who is who, answers when called and chases there", async () => {
+    const TEAM = { id: "120363008888@g.us", name: "Equipe Banneg" };
+    await sec.saveSecretary({ teamGroup: TEAM, phone: "5517976027768" });
+    const tmsg = (id: string, text: string, from: string, name: string) => ({ ...msg(id, text, from, name), message: { ...msg(id, text, from, name).message, chatid: TEAM.id } });
+    await sec.receiveSecretary("chave", tmsg("T1", "pessoal, evento de franqueados dia 5", "5517992223333", "Carla Lima"));
+    expect(await db.job.count({ where: { type: "secretaria.turn" } })).toBe(0);
+    expect(await db.secretaryMessage.count({ where: { chatId: TEAM.id, handledAt: null } })).toBe(0);
+    expect((await sec.getTeamPeople()).map((p) => p.name)).toEqual(["Carla Lima"]);
+
+    await sec.receiveSecretary("chave", tmsg("T2", "Clara, anota pra Carla mandar os convites até quarta 18h", "5517981600088", "Wellington"));
+    expect(await db.job.count({ where: { type: "secretaria.turn", status: "PENDING" } })).toBe(1);
+    script.push(
+      { stop_reason: "tool_use", content: [{ type: "tool_use", id: "t1", name: "criar_tarefa", input: { titulo: "Mandar os convites do evento", responsavel: "Carla", prazo: "2026-12-02T18:00" } }] },
+      { stop_reason: "end_turn", content: [{ type: "text", text: "Anotado, @Carla: convites até quarta 18h." }] },
+    );
+    await ai.runSecretaryTurn(TEAM.id, new Date("2026-11-26T12:00:00Z"));
+    // The chatter came as context, the call as new
+    expect(String(seen[0].user)).toContain("evento de franqueados");
+    expect(seen[0].system).toContain("Carla Lima");
+    const task = await db.secretaryTask.findFirstOrThrow();
+    expect(task).toMatchObject({ assignee: "Carla Lima", assigneePhone: "5517992223333", chatId: TEAM.id });
+    expect(sent[0]).toEqual({ number: TEAM.id, text: "Anotado, @5517992223333: convites até quarta 18h.", mentions: ["5517992223333"] });
+    // Chased in the team group, not in private
+    sent.length = 0;
+    await sec.runSecretaryCron(new Date("2026-12-02T21:01:00Z"));
+    expect(sent.find((x) => x.text.includes("Cobrando"))?.number).toBe(TEAM.id);
+  });
 });
+

@@ -8,6 +8,7 @@ vi.mock("next/server", async (original) => ({ ...(await original<typeof import("
 
 import {
   DEFAULT_SECRETARY,
+  callsHer,
   firstNudge,
   memberByName,
   memberByPhone,
@@ -166,4 +167,22 @@ describe("her prompt and her limits", () => {
     expect(p).toMatch(/Sócios \(estão no grupo\):\n- Wellington/);
     expect(p).toMatch(/Colaboradores \(falam com você no privado\):\n- Odair Bellentani/);
   });
+
+  it("in the team group a partner asks everything and the rest of the team works as collaborators", () => {
+    expect(levelOf(ctx({ isGroup: true, team: true, member: members[0] }))).toBe("socio");
+    expect(levelOf(ctx({ isGroup: true, team: true, member: { name: "Ana", phone: "17991234567", email: "" } }))).toBe("colaborador");
+  });
 });
+
+describe("the team group", () => {
+  const her = { name: "Jessica Montenegro", phone: "5517976027768" };
+  it("she acts only when called by name, @mentioned or answered", () => {
+    expect(callsHer(her, { body: "Jéssica, anota pra Ana o relatório até sexta" })).toBe(true);
+    expect(callsHer(her, { body: "bom dia jessica!" })).toBe(true);
+    expect(callsHer(her, { body: "bom dia, pessoal" })).toBe(false);
+    expect(callsHer(her, { body: "Jessicaaa" })).toBe(false);
+    expect(callsHer(her, { body: "@5517976027768 pode ver?", mentioned: ["5517976027768"] })).toBe(true);
+    expect(callsHer(her, { body: "feito", quotedSender: "5517976027768" })).toBe(true);
+  });
+});
+

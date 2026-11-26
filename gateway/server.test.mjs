@@ -114,3 +114,20 @@ test("a send-only number takes only the first sync WhatsApp needs, never the con
   assert.ok(SEND_ONLY_SYNC.has(T.INITIAL_BOOTSTRAP));
   for (const t of [T.FULL, T.RECENT, T.ON_DEMAND]) assert.equal(SEND_ONLY_SYNC.has(t), false);
 });
+
+test("the secretary changes people and photo only in her own group", async () => {
+  const { routes } = await import("./server.mjs");
+  const calls = [];
+  const sock = {
+    groupParticipantsUpdate: async (jid, people, action) => (calls.push([jid, people, action]), people.map((j, i) => ({ jid: j, status: i ? "403" : "200" }))),
+    groupInviteCode: async () => "ABC123",
+  };
+  const sec = { status: "connected", sock, groupsOnly: true, groups: ["120363000@g.us"], sentByApi: new Set() };
+  const [code, out] = await routes["POST /group/updateParticipants"](sec, { groupjid: "120363000@g.us", participants: ["21968566974", "5517900001111"] });
+  assert.equal(code, 200);
+  assert.deepEqual(calls[0], ["120363000@g.us", ["21968566974@s.whatsapp.net", "5517900001111@s.whatsapp.net"], "add"]);
+  assert.equal(out.invite, "https://chat.whatsapp.com/ABC123");
+  assert.equal((await routes["POST /group/updateParticipants"](sec, { groupjid: "999@g.us", participants: ["1"] }))[0], 403);
+  assert.equal((await routes["POST /group/updateParticipants"]({ ...sec, groupsOnly: false }, { groupjid: "120363000@g.us", participants: ["1"] }))[0], 403);
+  assert.equal((await routes["POST /group/updateImage"](sec, { groupjid: "120363000@g.us", image: "http://x" }))[0], 400);
+});

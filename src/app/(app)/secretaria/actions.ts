@@ -76,8 +76,18 @@ export async function saveSecretaryAction(_: SaveState, form: FormData): Promise
   });
   try {
     const groupId = String(form.get("groupId") ?? "");
-    if (form.has("groupId") && groupId !== (before.group?.id ?? "")) await setSecretaryGroup(groupId || null);
-    else if (before.privates !== s.privates) await pointWebhook(s);
+    const teamGroupId = String(form.get("teamGroupId") ?? "");
+    if (teamGroupId && teamGroupId === groupId) return { ok: false, message: "O grupo da equipe precisa ser outro grupo, não o dos sócios." };
+    let pointed = false;
+    if (form.has("groupId") && groupId !== (before.group?.id ?? "")) {
+      await setSecretaryGroup(groupId || null);
+      pointed = true;
+    }
+    if (form.has("teamGroupId") && teamGroupId !== (before.teamGroup?.id ?? "")) {
+      await setSecretaryGroup(teamGroupId || null, "teamGroup");
+      pointed = true;
+    }
+    if (!pointed && before.privates !== s.privates) await pointWebhook(s);
   } catch (e) {
     revalidatePath(PATH);
     return { ok: false, message: `Salvo, mas o grupo não foi trocado: ${(e as Error).message}` };

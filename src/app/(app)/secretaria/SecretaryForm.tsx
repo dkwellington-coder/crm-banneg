@@ -14,6 +14,7 @@ type Props = {
   switches: { active: boolean; confirmEmails: boolean; weekly: boolean; daily: boolean; privates: boolean };
   groups: { id: string; name: string }[] | null;
   groupId: string;
+  teamGroupId: string;
   canTest: boolean;
 };
 
@@ -61,7 +62,23 @@ export function SecretaryForm(p: Props) {
           ) : (
             <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-500">Conecte o número dela para escolher o grupo.</p>
           )}
-          <span className="block text-xs text-slate-500">Ela só lê este grupo. Se o grupo não aparecer, coloque o número dela no grupo e recarregue a página.</span>
+          <span className="block text-xs text-slate-500">O grupo dos sócios: ela lê tudo e atende. Se o grupo não aparecer, coloque o número dela no grupo e recarregue a página.</span>
+        </label>
+        <label className="block space-y-1 md:col-start-2">
+          <span className="text-sm font-medium text-slate-700">Grupo da equipe</span>
+          {p.groups ? (
+            <select name="teamGroupId" defaultValue={p.teamGroupId} className={inputCls}>
+              <option value="">Nenhum</option>
+              {p.groups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-500">Conecte o número dela para escolher o grupo.</p>
+          )}
+          <span className="block text-xs text-slate-500">Ela acompanha em silêncio e só age quando alguém a chama pelo nome. Lembra e cobra as tarefas dos colaboradores ali.</span>
         </label>
       </div>
 

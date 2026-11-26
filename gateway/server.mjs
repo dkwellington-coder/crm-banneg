@@ -425,7 +425,7 @@ async function waitFor(s, ms) {
   while (Date.now() < until && s.status !== "connected" && !s.qr) await new Promise((r) => setTimeout(r, 250));
 }
 
-const routes = {
+export const routes = {
   "GET /health": async () => [200, { ok: true, numbers: sessions.size }],
 
   "POST /instance/init": async (_s, body, req) => {
@@ -509,6 +509,49 @@ const routes = {
     if (s.status !== "connected" || !s.sock) return [409, { error: "Número desconectado. Leia o QR code de novo no CRM." }];
     const groups = await s.sock.groupFetchAllParticipating();
     return [200, groupList(groups)];
+  },
+
+  // The secretary's group (Wellington, 2026-11-26): she adds or removes people and changes the photo when a partner asks.
+  // Only for her number and only in the group she reads; she must be an admin of it.
+  "POST /group/updateParticipants": async (s, body) => {
+    if (s.status !== "connected" || !s.sock) return [409, { error: "Número desconectado. Leia o QR code de novo no CRM." }];
+    const jid = String(body.groupjid || "");
+    if (!s.groupsOnly || !allowedGroup(s, jid)) return [403, { error: "Só no grupo da secretária." }];
+    const action = String(body.action || "add");
+    if (!["add", "remove", "promote", "demote"].includes(action)) return [400, { error: "Ação inválida." }];
+    const people = (Array.isArray(body.participants) ? body.participants : []).map((v) => (String(v).includes("@") ? String(v) : `${String(v).replace(/\D/g, "")}@s.whatsapp.net`)).slice(0, 10);
+    if (!people.length) return [400, { error: "Ninguém para incluir." }];
+    let result;
+    try {
+      result = await s.sock.groupParticipantsUpdate(jid, people, action);
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (/not-authorized|forbidden|403/i.test(msg)) return [403, { error: "A secretária não é administradora do grupo." }];
+      throw e;
+    }
+    // WhatsApp refuses to add someone whose privacy blocks it (403/408): the CRM sends that person the group's invite link
+    const out = (result || []).map((r) => ({ jid: r.jid, status: String(r.status) }));
+    let invite = null;
+    if (action === "add" && out.some((r) => r.status !== "200")) invite = `https://chat.whatsapp.com/${await s.sock.groupInviteCode(jid)}`;
+    return [200, { participants: out, invite }];
+  },
+
+  "POST /group/updateImage": async (s, body) => {
+    if (s.status !== "connected" || !s.sock) return [409, { error: "Número desconectado. Leia o QR code de novo no CRM." }];
+    const jid = String(body.groupjid || "");
+    if (!s.groupsOnly || !allowedGroup(s, jid)) return [403, { error: "Só no grupo da secretária." }];
+    const url = String(body.image || "");
+    if (!/^https:\/\//.test(url)) return [400, { error: "A imagem precisa ser um link https." }];
+    const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) return [400, { error: `Não consegui baixar a imagem (HTTP ${res.status}).` }];
+    try {
+      await s.sock.updateProfilePicture(jid, Buffer.from(await res.arrayBuffer()));
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (/not-authorized|forbidden|403/i.test(msg)) return [403, { error: "A secretária não é administradora do grupo." }];
+      throw e;
+    }
+    return [200, { ok: true }];
   },
 
   "POST /send/text": async (s, body) => {
