@@ -13,7 +13,16 @@ const POLL_MS = 4_000;
 const GIVE_UP_MS = 3 * 60_000;
 
 /** "Conectar meu número": the QR code of the number that posts in the meetings group, followed until it connects. */
-export function TeamSenderQr({ label, fresh = false }: { label: string; fresh?: boolean }) {
+export function TeamSenderQr({
+  label,
+  fresh = false,
+  done = "Agora escolha o grupo abaixo e mande a mensagem de teste.",
+}: {
+  label: string;
+  fresh?: boolean;
+  // What to do next, once connected (Integrações has the group right below; Suporte links to it)
+  done?: string;
+}) {
   const router = useRouter();
   const [step, setStep] = useState<Step | null>(null);
   const [startedAt, setStartedAt] = useState(0);
@@ -41,7 +50,7 @@ export function TeamSenderQr({ label, fresh = false }: { label: string; fresh?: 
   if (step?.connected)
     return (
       <div className="flex items-center gap-2 rounded-xl bg-emerald-50 p-3 text-sm font-medium text-emerald-800">
-        <CheckCircle2 size={18} /> Conectado{step.phone ? ` (${step.phone})` : ""}. Agora escolha o grupo abaixo e mande a mensagem de teste.
+        <CheckCircle2 size={18} /> Conectado{step.phone ? ` (${step.phone})` : ""}. {done}
       </div>
     );
   if (!step || step.error || expired)

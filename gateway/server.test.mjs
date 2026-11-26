@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 
 process.env.NODE_ENV = "test";
 process.env.ADMIN_TOKEN = "x".repeat(32);
-const { toPayload, groupList } = await import("./server.mjs");
+const { toPayload, groupList, SEND_ONLY_SYNC } = await import("./server.mjs");
+const { proto } = await import("baileys");
 const s = { sentByApi: new Set(["SENT1"]) };
 
 test("client text, with the phone and the name", () => {
@@ -106,4 +107,10 @@ test("secretary's number: a group message carries the group, who wrote, who was 
   assert.equal(secretaryPayload({ ...sec, privates: true }, dm).message.isGroup, false);
   assert.equal(secretaryPayload(sec, { ...m, key: { ...m.key, remoteJid: "999@g.us" } }), null);
   assert.equal(secretaryPayload(sec, m).message.isGroup, true);
+});
+
+test("a send-only number takes only the first sync WhatsApp needs, never the conversations", () => {
+  const T = proto.HistorySync.HistorySyncType;
+  assert.ok(SEND_ONLY_SYNC.has(T.INITIAL_BOOTSTRAP));
+  for (const t of [T.FULL, T.RECENT, T.ON_DEMAND]) assert.equal(SEND_ONLY_SYNC.has(t), false);
 });
