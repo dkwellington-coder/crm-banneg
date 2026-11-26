@@ -554,6 +554,43 @@ export const routes = {
     return [200, { ok: true }];
   },
 
+  // A file (the secretary sending a report or a material, 2026-11-26): https link or base64, up to 30 MB
+  "POST /send/media": async (s, body) => {
+    if (s.status !== "connected" || !s.sock) return [409, { error: "Número desconectado. Leia o QR code de novo no CRM." }];
+    const to = String(body.number || "");
+    const jid = to.includes("@") ? to : `${to.replace(/\D/g, "")}@s.whatsapp.net`;
+    const type = String(body.type || "document");
+    if (!["document", "image", "video", "audio"].includes(type)) return [400, { error: "Tipo inválido (document, image, video ou audio)." }];
+    const file = String(body.file || "");
+    let data;
+    let mimetype = String(body.mimetype || "");
+    if (/^https:\/\//.test(file)) {
+      const res = await fetch(file, { signal: AbortSignal.timeout(60_000) });
+      if (!res.ok) return [400, { error: `Não consegui baixar o arquivo (HTTP ${res.status}).` }];
+      data = Buffer.from(await res.arrayBuffer());
+      mimetype ||= res.headers.get("content-type")?.split(";")[0] || "";
+    } else if (file) data = Buffer.from(file.replace(/^data:[^,]*,/, ""), "base64");
+    if (!data?.length) return [400, { error: "Arquivo vazio: mande um link https ou o conteúdo em base64." }];
+    if (data.length > 30 * 1024 * 1024) return [413, { error: "Arquivo maior que 30 MB." }];
+    const caption = String(body.text || "") || undefined;
+    const fileName = String(body.docName || "") || "arquivo";
+    const content =
+      type === "image"
+        ? { image: data, caption, ...(mimetype && { mimetype }) }
+        : type === "video"
+          ? { video: data, caption, ...(mimetype && { mimetype }) }
+          : type === "audio"
+            ? { audio: data, mimetype: mimetype || "audio/ogg; codecs=opus", ptt: body.ptt === true }
+            : { document: data, fileName, caption, mimetype: mimetype || "application/octet-stream" };
+    const sent = await s.sock.sendMessage(jid, content);
+    const id = sent?.key?.id;
+    if (id) {
+      s.sentByApi.add(id);
+      if (s.sentByApi.size > 5000) s.sentByApi = new Set([...s.sentByApi].slice(-1000));
+    }
+    return [200, { messageid: id, id, status: "sent" }];
+  },
+
   "POST /send/text": async (s, body) => {
     if (s.status !== "connected" || !s.sock) return [409, { error: "Número desconectado. Leia o QR code de novo no CRM." }];
     const to = String(body.number || "");

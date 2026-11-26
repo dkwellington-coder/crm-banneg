@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { currentUser } from "@/lib/auth";
 import { GOOGLE_STATE_COOKIE, connectGoogle, googleRedirectUri } from "@/lib/google";
 import { connectSupportDrive } from "@/lib/support-drive";
+import { connectSecretaryDrive } from "@/lib/secretary-drive";
 
 /** Google sends the person back here after they allow (or refuse) the CRM on their agenda. */
 export async function GET(request: Request) {
@@ -14,12 +15,30 @@ export async function GET(request: Request) {
   };
   const user = await currentUser();
   if (!user) return NextResponse.redirect(new URL("/login", request.url));
-  if (url.searchParams.get("error"))
-    return url.searchParams.get("state")?.includes(".drive.") ? NextResponse.redirect(new URL("/suporte/numeros?drive=recusado#drive", request.url)) : back("recusado");
+  if (url.searchParams.get("error")) {
+    const st = url.searchParams.get("state") ?? "";
+    if (st.includes(".jdrive.")) return NextResponse.redirect(new URL("/secretaria?drive=recusado#drive", request.url));
+    return st.includes(".drive.") ? NextResponse.redirect(new URL("/suporte/numeros?drive=recusado#drive", request.url)) : back("recusado");
+  }
   const expected = (await cookies()).get(GOOGLE_STATE_COOKIE)?.value;
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   if (!code || !state || state !== expected || !state.startsWith(`${user.id}.`)) return back("erro", "A conexão expirou. Clique em conectar de novo.");
+  // "Pasta do Google Drive" of the secretary: read-only access to the reports folder
+  if (state.startsWith(`${user.id}.jdrive.`)) {
+    const to = (result: string, detail?: string) => {
+      const res = NextResponse.redirect(new URL(`/secretaria?drive=${result}${detail ? `&detalhe=${encodeURIComponent(detail)}` : ""}#drive`, request.url));
+      res.cookies.set(GOOGLE_STATE_COOKIE, "", { path: "/api/google", maxAge: 0 });
+      return res;
+    };
+    if (user.role !== "OWNER") return to("erro", "Só o proprietário liga o Google Drive da secretária.");
+    try {
+      const link = await connectSecretaryDrive(code, googleRedirectUri(request.url));
+      return to("ok", link.email);
+    } catch (e) {
+      return to("erro", (e as Error).message);
+    }
+  }
   // "Copiar arquivos para o Google Drive" in Suporte: the same Google sign-in, a different permission
   if (state.startsWith(`${user.id}.drive.`)) {
     const to = (result: string, detail?: string) => {

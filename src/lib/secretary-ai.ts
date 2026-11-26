@@ -23,12 +23,16 @@ import {
   roleOf,
   queueTurn,
   secretarySend,
+  secretarySendFile,
   waNumber,
   whenBr,
   type SecretaryMember,
   type SecretarySettings,
 } from "./secretary";
-import { agendaOwner, bookOnAgenda, conflictsWith, deleteOnAgenda, listAgenda, moveOnAgenda } from "./secretary-agenda";
+import { agendaEvent, agendaOwner, bookOnAgenda, conflictsWith, deleteOnAgenda, listAgenda, moveOnAgenda, ownedBy, ownerTitle } from "./secretary-agenda";
+import { driveFileToSend, listDriveFiles, readDriveFile, secretaryDrive, type ReadContent } from "./secretary-drive";
+import { getSettings, materialFileName } from "./settings";
+import { secretaryReport, REPORT_KINDS } from "./secretary-report";
 
 /**
  * The secretary's mind: one turn per burst of messages in a chat (her group or a private chat). She reads the latest
@@ -73,7 +77,9 @@ export const trusted = (ctx: Pick<TurnContext, "isGroup" | "member" | "team">) =
 
 // ---------- Prompt ----------
 
-export function buildSystemPrompt(s: SecretarySettings, people: SecretaryMember[] = s.members) {
+export type Knowledge = { title: string; content: string }[];
+
+export function buildSystemPrompt(s: SecretarySettings, people: SecretaryMember[] = s.members, knowledge: Knowledge = []) {
   const crew = people
     .filter((p) => !s.members.some((m) => m.phone === p.phone))
     .map((p) => `- ${p.name} · WhatsApp ${phoneLabel(waNumber(p.phone))}`)
@@ -86,12 +92,16 @@ export function buildSystemPrompt(s: SecretarySettings, people: SecretaryMember[
   const checklist = s.checklist.trim() || "(ainda não cadastrado: peça para o Wellington preencher na tela Secretária do CRM)";
   return `Você é ${s.name}, a secretária do escritório do Banneg (Banco de Negócios), uma franquia de seguros, consórcios e crédito de São José do Rio Preto/SP, com franqueados no Brasil todo. Você atende os sócios (Wellington Gayde, o fundador, e o sócio dele) e a equipe do escritório. Você trabalha pelo WhatsApp, com um número só seu: num grupo com os sócios, onde eles passam as demandas deles, e no privado com os colaboradores e com quem mais escrever para você.
 
-Seu trabalho é o de uma secretária executiva de verdade: ler todas as demandas e executar, sem esperar ser chamada duas vezes.
+${s.nicknames?.length ? `A equipe também te chama de ${s.nicknames.map((n) => `"${n}"`).join(" ou ")}.
+
+` : ""}Seu trabalho é o de uma secretária executiva de verdade: ler todas as demandas e executar, sem esperar ser chamada duas vezes.
 - Marcar, remarcar e desmarcar reuniões na agenda do Wellington (Google Agenda wellington@banneg.com.br), sempre com link do Meet e com os convidados certos. Reunião com um lead do CRM: busque o lead (buscar_lead) e marque pelo lead_id, assim o CRM avisa o lead e guarda tudo.
 - Escrever e enviar e-mails.
 - Anotar tarefas, retornos e lembretes com responsável e prazo, lembrar na hora e cobrar quem está devendo (o CRM manda os lembretes e as cobranças sozinho a partir do que você anota: dos sócios no grupo, dos colaboradores no privado deles). Quando um sócio passar uma tarefa para um colaborador, anote e avise o colaborador no privado (mandar_mensagem).
 - Toda segunda às 8h o grupo recebe a lista de tarefas da semana e, nos outros dias úteis, a do dia (automático). Quando alguém pedir a lista, use listar_tarefas e mande.
 - Mandar o checklist de cadastro quando pedirem (texto abaixo, exatamente como está).
+- Arquivos: procurar (buscar_arquivo), ler (ler_arquivo) e enviar (enviar_arquivo) os relatórios e documentos da pasta do Google Drive da secretária (as abas de Marketing e de Download de comissões salvam lá: inadimplência, comissões, produção por seguradora) e os materiais do CRM (apresentação, tabela de comissões, catálogo, vídeos). Para responder sobre um relatório ("quais seguradoras foram feitas?", "quem está inadimplente?"), leia o arquivo mais recente e responda com os números dele, dizendo de qual arquivo e data tirou. Se não achar, diga o que procurou e peça o nome do arquivo.
+- Relatórios do CRM (relatorio): leads por funil, reuniões, metas do mês e tarefas, em texto ou em planilha.
 
 Como agir no grupo:
 - Responda quando falarem com você, pedirem algo, ou quando aparecer um compromisso ("Odair, me manda o contrato até sexta"): anote com criar_tarefa e confirme em uma linha. Se a conversa for só entre as pessoas e não pedir nada de você, responda exatamente ${SILENT}.
@@ -110,12 +120,14 @@ ${s.confirmEmails ? `- Primeiro rascunhe (rascunhar_email) e mostre no grupo: pa
 
 No privado (quem escreve direto para o seu número):
 - Sócio: atenda como no grupo, com tudo.
-- Colaborador: pode pedir tarefas e lembretes para ele mesmo (você cobra no prazo), recado ou retorno para um sócio (tipo retorno, responsável o sócio), e-mails para clientes e parceiros (mostre o rascunho para ele e envie quando ele aprovar), o checklist de cadastro e dados de leads do CRM. Reunião com um sócio: veja os horários livres (ver_agenda), combine com o colaborador e peça o ok no grupo (mandar_mensagem para "grupo", ex.: "@Wellington, a Ana pediu reunião com você quinta às 15h sobre X. Posso marcar?"); só marque depois que um sócio aprovar no grupo, e então avise o colaborador. Colaborador não passa tarefa para os sócios nem muda a agenda deles.
+- Colaborador: pode pedir tarefas e lembretes para ele mesmo (você cobra no prazo), recado ou retorno para um sócio (tipo retorno, responsável o sócio), e-mails para clientes e parceiros (mostre o rascunho para ele e envie quando ele aprovar), o checklist de cadastro, dados de leads do CRM, arquivos e relatórios (enviados na própria conversa).
+- Reunião do próprio colaborador (com cliente, seguradora, parceiro): todas as reuniões da equipe ficam na agenda do Wellington por enquanto. Quando um colaborador pedir um link do Meet ou uma reunião dele, marque direto (marcar_reuniao com dono = o nome dele): o título começa com o nome de quem é a reunião ("Camila · Reunião com a Porto"), aparece como livre para não tomar os horários do Wellington, e ele pode remarcar ou desmarcar as reuniões dele. Mande o link do Meet na resposta.
+- Reunião com um sócio: veja os horários livres (ver_agenda), combine com o colaborador e peça o ok no grupo (mandar_mensagem para "grupo", ex.: "@Wellington, a Ana pediu reunião com você quinta às 15h sobre X. Posso marcar?"); só marque depois que um sócio aprovar no grupo, e então avise o colaborador. Colaborador não passa tarefa para os sócios nem muda as reuniões deles.
 - Outra pessoa: apresente-se como secretária do Banneg, seja cordial, entenda quem é e o que precisa (nome, assunto, melhor horário para retorno) e diga que vai passar o recado. Então mande o recado no grupo (mandar_mensagem para "grupo") e anote um retorno para o Wellington (criar_tarefa). Não marque reunião, não passe valores, condições nem dados de ninguém.
 
 ${s.teamGroup ? `No grupo da equipe ("${s.teamGroup.name}"), com os colaboradores do Banneg:
 - Você acompanha tudo em silêncio, para saber o que está acontecendo. Só chega para você o que te chama pelo nome (ou responde a uma mensagem sua); o resto aparece no histórico como contexto.
-- Quando te chamarem: um sócio pode pedir tudo; um colaborador pede como colaborador (tarefas e lembretes dele, retorno para um sócio, checklist, dados de leads).
+- Quando te chamarem: um sócio pode pedir tudo; um colaborador pede como colaborador (tarefas e lembretes dele, retorno para um sócio, checklist, dados de leads, link do Meet para uma reunião dele, arquivos e relatórios).
 - Ajude a organizar os eventos e as tarefas dos colaboradores: quando um sócio passar uma tarefa a alguém ou pedir para você anotar, anote com responsável e prazo (criar_tarefa); você lembra e cobra no próprio grupo da equipe.
 - Responda curto. Se não for com você, responda exatamente ${SILENT}.
 
@@ -132,7 +144,14 @@ ${byRole("colaborador")}
 ${crew ? `\nEquipe do grupo da equipe (colaboradores, pelo nome que aparece no WhatsApp):\n${crew}\n` : ""}
 Checklist de cadastro:
 ${checklist}
-${s.instructions.trim() ? `\nOrientações do Wellington:\n${s.instructions.trim()}\n` : ""}`;
+${s.instructions.trim() ? `\nOrientações do Wellington:\n${s.instructions.trim()}\n` : ""}${
+    knowledge.length
+      ? `
+O que você sabe do Banneg (a base de conhecimento do CRM, a mesma que a Duda e a Alice usam com os leads: franquia, seguros, consórcios, crédito, telemedicina, indicações). Use para responder a equipe; para o que não estiver aqui (marketing, jurídico, relatórios), procure na pasta do Drive (buscar_arquivo) antes de dizer que não sabe:
+${knowledge.map((k) => `### ${k.title}\n${k.content.trim()}`).join("\n\n")}
+`
+      : ""
+  }`;
 }
 
 function line(m: Pick<SecretaryMessage, "at" | "senderName" | "senderPhone" | "fromMe" | "body" | "quotedText">, s: SecretarySettings) {
@@ -204,11 +223,12 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
   {
     name: "marcar_reuniao",
     description:
-      "Marca uma reunião na agenda do Wellington com link do Meet. Com lead_id (de buscar_lead) a reunião é do lead no CRM: o lead recebe o link no WhatsApp e no e-mail. Sem lead_id, os convidados recebem o convite do Google. Confere conflitos antes; se houver, devolve CONFLITO e não marca.",
+      "Marca uma reunião na agenda do Wellington com link do Meet. Com lead_id (de buscar_lead) a reunião é do lead no CRM: o lead recebe o link no WhatsApp e no e-mail. Sem lead_id, os convidados recebem o convite do Google. O título começa com o nome do dono da reunião. Confere conflitos antes; se houver, devolve CONFLITO e não marca.",
     input_schema: {
       type: "object",
       properties: {
         titulo: str,
+        dono: { ...str, description: "de quem é a reunião (primeiro nome de quem vai conduzir, ex.: Camila); padrão: quem pediu" },
         inicio: { ...str, description: "AAAA-MM-DDTHH:MM, horário de Brasília" },
         duracao_minutos: { type: "integer", description: "padrão 30" },
         convidados: { ...strList, description: "e-mails dos convidados (sem lead_id)" },
@@ -302,6 +322,42 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
     },
   },
   {
+    name: "buscar_arquivo",
+    description:
+      "Procura arquivos na pasta do Google Drive da secretária (relatórios de inadimplência, comissões, seguradoras, documentos) e nos materiais do CRM. Devolve id, nome, pasta e data, os mais novos primeiro. Sem busca, lista os mais recentes.",
+    input_schema: { type: "object", properties: { busca: { ...str, description: "palavras do nome do arquivo ou da pasta, ex.: inadimplencia outubro" } } },
+  },
+  {
+    name: "ler_arquivo",
+    description: "Abre um arquivo da pasta do Drive (id de buscar_arquivo) para você ler: planilhas, PDFs, documentos, CSV, imagens.",
+    input_schema: { type: "object", properties: { arquivo_id: str }, required: ["arquivo_id"] },
+  },
+  {
+    name: "enviar_arquivo",
+    description:
+      'Envia um arquivo pelo WhatsApp: da pasta do Drive (arquivo_id de buscar_arquivo) ou um material do CRM (material, ex.: tabela_comissoes). "aqui" é esta conversa; "grupo" é o grupo dos sócios; ou o nome/telefone de alguém (só sócios).',
+    input_schema: {
+      type: "object",
+      properties: { arquivo_id: str, material: str, para: { ...str, description: 'padrão "aqui"' }, legenda: str },
+    },
+  },
+  {
+    name: "relatorio",
+    description:
+      "Números do CRM num período: leads (novos por funil e origem), reunioes (marcadas, realizadas, não compareceu), metas (metas do mês e quanto já foi feito) ou tarefas (as suas, abertas e atrasadas). Formato texto para responder no chat, ou planilha para mandar um arquivo .csv que abre no Excel.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tipo: { type: "string", enum: [...REPORT_KINDS] },
+        de: { ...str, description: "AAAA-MM-DD; padrão: começo do mês" },
+        ate: { ...str, description: "AAAA-MM-DD; padrão: hoje" },
+        formato: { type: "string", enum: ["texto", "planilha"] },
+        para: { ...str, description: 'onde mandar a planilha; padrão "aqui"' },
+      },
+      required: ["tipo"],
+    },
+  },
+  {
     name: "mandar_mensagem",
     description: 'Manda uma mensagem de WhatsApp do seu número: para "grupo" (o grupo da equipe) ou para um telefone (com DDD). A resposta desta conversa você escreve no final, não precisa desta ferramenta.',
     input_schema: { type: "object", properties: { para: str, texto: str }, required: ["para", "texto"] },
@@ -312,7 +368,24 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
 // and asks the partners in the group for a meeting with them
 const ALLOWED: Record<Exclude<Level, "socio">, Set<string>> = {
   fora: new Set(["criar_tarefa", "mandar_mensagem"]),
-  colaborador: new Set(["ver_agenda", "buscar_lead", "criar_tarefa", "listar_tarefas", "atualizar_tarefa", "rascunhar_email", "enviar_email", "descartar_email", "mandar_mensagem"]),
+  colaborador: new Set([
+    "ver_agenda",
+    "marcar_reuniao",
+    "remarcar_reuniao",
+    "desmarcar_reuniao",
+    "buscar_lead",
+    "criar_tarefa",
+    "listar_tarefas",
+    "atualizar_tarefa",
+    "rascunhar_email",
+    "enviar_email",
+    "descartar_email",
+    "buscar_arquivo",
+    "ler_arquivo",
+    "enviar_arquivo",
+    "relatorio",
+    "mandar_mensagem",
+  ]),
 };
 
 type Input = Record<string, unknown>;
@@ -330,11 +403,32 @@ const minutes = (v: unknown) => {
   return Number.isFinite(n) && n >= 10 && n <= 480 ? Math.round(n) : 30;
 };
 
-export async function runTool(name: string, input: Input, ctx: TurnContext): Promise<string> {
+/** Where a file goes: this chat, the partners' group, or (partners only) someone by name or phone. */
+function destination(to: string, ctx: TurnContext, level: Level) {
+  const { s } = ctx;
+  if (!to || /^(aqui|esta conversa|este chat|mim|me)$/i.test(to)) return { chatId: ctx.chatId, label: "aqui" };
+  if (/^grupo$/i.test(to)) {
+    if (!s.group) throw new Error("Nenhum grupo escolhido.");
+    return { chatId: s.group.id, label: "no grupo" };
+  }
+  if (level !== "socio") throw new Error('Colaborador recebe o arquivo aqui mesmo (para "aqui") ou no grupo dos sócios.');
+  const member = memberByName(ctx.people ?? s.members, to) ?? memberByPhone(ctx.people ?? s.members, to);
+  const digits = member ? waNumber(member.phone) : to.replace(/\D/g, "");
+  if (digits.length < 10) throw new Error("Telefone inválido: informe DDD e número.");
+  const full = digits.length <= 11 ? `55${digits}` : digits;
+  return { chatId: `${full}@s.whatsapp.net`, label: `para ${member?.name ?? phoneLabel(full)}` };
+}
+
+const firstName = (v: string | null | undefined) => (v ?? "").trim().split(/\s+/)[0] ?? "";
+const sameFirst = (a: string, b: string) => !!a && a.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase() === b.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+const MIME_BY_EXT: Record<string, string> = { pdf: "application/pdf", mp4: "video/mp4", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", ogg: "audio/ogg" };
+
+export async function runTool(name: string, input: Input, ctx: TurnContext): Promise<string | ReadContent[]> {
   const level = levelOf(ctx);
   if (level === "fora" && !ALLOWED.fora.has(name)) throw new Error("Só a equipe pode pedir isso; anote o recado para o Wellington.");
   if (level === "colaborador" && !ALLOWED.colaborador.has(name))
-    throw new Error("Colaborador não mexe direto na agenda dos sócios: peça o ok no grupo (mandar_mensagem para \"grupo\") e marque depois que um sócio aprovar.");
+    throw new Error("Colaborador não pode pedir isso: peça a um sócio no grupo (mandar_mensagem para \"grupo\").");
   const { s, now, actor } = ctx;
   // A collaborator's own things: tasks they do or asked for, e-mails they wrote
   const mine = level === "colaborador" ? ctx.member!.name : null;
@@ -363,15 +457,19 @@ export async function runTool(name: string, input: Input, ctx: TurnContext): Pro
       if (!startsAt || !text(input.inicio).includes("T")) throw new Error("Horário inválido: use AAAA-MM-DDTHH:MM.");
       if (startsAt.getTime() < now.getTime() - 5 * 60_000) throw new Error("Esse horário já passou.");
       const endsAt = new Date(startsAt.getTime() + minutes(input.duracao_minutos) * 60_000);
+      const leadId = text(input.lead_id);
+      if (mine && leadId) throw new Error("Reunião com lead do CRM é com o Wellington: peça o ok no grupo dos sócios.");
+      // Whose meeting it is: a collaborator books only their own; his own (or no name) keeps his time busy
+      const owner = await agendaOwner();
+      const dono = mine ? firstName(mine) : firstName(text(input.dono)) || firstName(actor);
+      const hisOwn = !dono || sameFirst(dono, firstName(owner.name));
       if (input.ignorar_conflito !== true) {
-        const clash = await conflictsWith(startsAt, endsAt);
+        const clash = await conflictsWith(startsAt, endsAt, undefined, hisOwn ? null : dono);
         if (clash.length) return `CONFLITO: nada foi marcado. Nesse horário já tem: ${clash.map((e) => `${whenBr(e.startsAt)} ${e.title}`).join("; ")}.`;
       }
-      const leadId = text(input.lead_id);
       if (leadId) {
         const lead = await db.lead.findUnique({ where: { id: leadId } });
         if (!lead) throw new Error("Lead não encontrado: use buscar_lead.");
-        const owner = await agendaOwner();
         const { meeting, sent } = await scheduleMeeting(lead, { userId: owner.id, slot: { startsAt, endsAt }, actor, notify: true });
         return `Marcada no CRM e na agenda: ${whenBr(meeting.startsAt)} com ${lead.name ?? "o lead"} · Meet ${meeting.meetLink ?? "(o Google não devolveu link)"} · id ${meeting.calendarEventId ?? "sem evento no Google"} · ${sent} · ficha ${CRM_URL}/leads/${lead.id}`;
       }
@@ -379,17 +477,21 @@ export async function runTool(name: string, input: Input, ctx: TurnContext): Pro
       const bad = guests.filter((g) => !EMAIL.test(g));
       if (bad.length) throw new Error(`Sem e-mail para: ${bad.join(", ")}. Pergunte o e-mail.`);
       const description = [text(input.descricao), `Marcada por ${s.name}, secretária do Banneg, a pedido de ${actor}.`].filter(Boolean).join("\n\n");
-      const ev = await bookOnAgenda({ title: text(input.titulo) || "Reunião", description, startsAt, endsAt, guests });
-      return `Marcada na agenda: ${whenBr(startsAt)}-${isoBr(endsAt).slice(11)} · Meet ${ev.meetLink ?? "(o Google não devolveu link)"} · id ${ev.id}${guests.length ? ` · convite enviado para ${guests.join(", ")}` : " · sem convidados"}`;
+      const title = ownerTitle(dono, text(input.titulo) || "Reunião");
+      const ev = await bookOnAgenda({ title, description, startsAt, endsAt, guests, free: !hisOwn });
+      return `Marcada na agenda: "${title}" ${whenBr(startsAt)}-${isoBr(endsAt).slice(11)}${hisOwn ? "" : " (aparece como livre para o Wellington)"} · Meet ${ev.meetLink ?? "(o Google não devolveu link)"} · id ${ev.id}${guests.length ? ` · convite enviado para ${guests.join(", ")}` : " · sem convidados"}`;
     }
     case "remarcar_reuniao": {
       const id = text(input.evento_id);
       const startsAt = parseBr(text(input.novo_inicio));
       if (!id || !startsAt) throw new Error("Informe evento_id e novo_inicio (AAAA-MM-DDTHH:MM).");
       const meeting = await db.meeting.findFirst({ where: { calendarEventId: id, status: "scheduled" } });
+      const event = meeting ? null : await agendaEvent(id);
+      if (!meeting && !event) throw new Error("Reunião não encontrada na agenda: confira com ver_agenda.");
+      if (mine && (meeting || !ownedBy(event!.title, firstName(mine)))) throw new Error("Colaborador só remarca as reuniões dele (as que começam com o nome dele).");
       const length = meeting ? meeting.endsAt.getTime() - meeting.startsAt.getTime() : minutes(input.duracao_minutos) * 60_000;
       const endsAt = new Date(startsAt.getTime() + (input.duracao_minutos ? minutes(input.duracao_minutos) * 60_000 : length));
-      const clash = await conflictsWith(startsAt, endsAt, id);
+      const clash = await conflictsWith(startsAt, endsAt, id, event?.free ? event.title.split(" · ")[0] : null);
       if (clash.length) return `CONFLITO: nada mudou. Nesse horário já tem: ${clash.map((e) => `${whenBr(e.startsAt)} ${e.title}`).join("; ")}.`;
       if (meeting) return (await rescheduleMeeting(meeting.id, { slot: { startsAt, endsAt }, actor, notify: true })).message;
       const ev = await moveOnAgenda(id, startsAt, endsAt);
@@ -399,6 +501,10 @@ export async function runTool(name: string, input: Input, ctx: TurnContext): Pro
       const id = text(input.evento_id);
       if (!id) throw new Error("Informe evento_id.");
       const meeting = await db.meeting.findFirst({ where: { calendarEventId: id, status: "scheduled" } });
+      if (mine) {
+        const event = meeting ? null : await agendaEvent(id);
+        if (meeting || !event || !ownedBy(event.title, firstName(mine))) throw new Error("Colaborador só desmarca as reuniões dele (as que começam com o nome dele).");
+      }
       if (meeting) return cancelMeeting(meeting.id, actor);
       await deleteOnAgenda(id);
       return "Desmarcada; os convidados receberam o cancelamento do Google.";
@@ -547,6 +653,54 @@ export async function runTool(name: string, input: Input, ctx: TurnContext): Pro
       }
       return out.join(" · ") || "Nada para ajustar.";
     }
+    case "buscar_arquivo": {
+      const q = text(input.busca);
+      const lines: string[] = [];
+      const drive = await secretaryDrive();
+      if (drive?.folderId) {
+        const files = await listDriveFiles(q);
+        lines.push(
+          files.length
+            ? `Na pasta do Drive "${drive.folderName ?? ""}" (${files.length} ${files.length === 1 ? "arquivo" : "arquivos"}${files.length > 15 ? ", os 15 mais novos" : ""}):\n${files
+                .slice(0, 15)
+                .map((f) => `${f.id} · ${f.name}${f.path ? ` · pasta ${f.path}` : ""} · ${whenBr(new Date(f.modifiedTime))}`)
+                .join("\n")}`
+            : `Nada com "${q}" na pasta do Drive "${drive.folderName ?? ""}".`,
+        );
+      } else lines.push("A pasta do Google Drive da secretária ainda não foi ligada (tela Secretária no CRM).");
+      const materials = Object.entries((await getSettings()).materials).filter(([key, url]) => !q || q.split(/\s+/).some((w) => w.length > 2 && `${key} ${materialFileName(url)}`.toLowerCase().includes(w.toLowerCase())));
+      if (materials.length) lines.push(`Materiais do CRM (enviar_arquivo com material):\n${materials.map(([key, url]) => `${key} · ${materialFileName(url)}`).join("\n")}`);
+      return lines.join("\n\n");
+    }
+    case "ler_arquivo": {
+      const id = text(input.arquivo_id);
+      if (!id) throw new Error("Informe arquivo_id (de buscar_arquivo).");
+      return readDriveFile(id);
+    }
+    case "enviar_arquivo": {
+      const where = destination(text(input.para), ctx, level);
+      const caption = text(input.legenda);
+      const key = text(input.material);
+      if (key) {
+        const url = (await getSettings()).materials[key];
+        if (!url) throw new Error(`Material "${key}" não existe: use buscar_arquivo.`);
+        const file = materialFileName(url);
+        await secretarySendFile(where.chatId, { name: file, mime: MIME_BY_EXT[file.split(".").pop()?.toLowerCase() ?? ""] ?? "application/octet-stream", url }, caption, s);
+        return `Enviado ${where.label}: ${file}.`;
+      }
+      const id = text(input.arquivo_id);
+      if (!id) throw new Error("Informe arquivo_id (de buscar_arquivo) ou material.");
+      const file = await driveFileToSend(id);
+      await secretarySendFile(where.chatId, file, caption, s);
+      return `Enviado ${where.label}: ${file.name}.`;
+    }
+    case "relatorio": {
+      const report = await secretaryReport(text(input.tipo), { from: text(input.de), to: text(input.ate), now, assignee: mine });
+      if (text(input.formato) !== "planilha") return report.text;
+      const where = destination(text(input.para), ctx, level);
+      await secretarySendFile(where.chatId, { name: report.fileName, mime: "text/csv", data: Buffer.from(`\uFEFF${report.csv}`, "utf8") }, report.title, s);
+      return `Planilha enviada ${where.label} (${report.fileName}).\n${report.text}`;
+    }
     case "mandar_mensagem": {
       const to = text(input.para);
       const body = text(input.texto);
@@ -619,7 +773,8 @@ export async function think(system: string, userTurn: string, ctx: TurnContext) 
     for (const call of calls) {
       try {
         const out = await runTool(call.name, (call.input ?? {}) as Input, ctx);
-        did.push(`${call.name}: ${out.slice(0, 200)}`);
+        const summary = typeof out === "string" ? out : out.map((b) => (b.type === "text" ? b.text : `[${b.type}]`)).join(" ");
+        did.push(`${call.name}: ${summary.slice(0, 200)}`);
         results.push({ type: "tool_result", tool_use_id: call.id, content: out });
       } catch (e) {
         did.push(`${call.name} falhou: ${(e as Error).message.slice(0, 200)}`);
@@ -650,7 +805,7 @@ export async function runSecretaryTurn(chatId: string, now = new Date()) {
   if (!claimed.count) return "Já respondido.";
   const isGroup = chatId.endsWith("@g.us");
   const team = !!s.teamGroup && chatId === s.teamGroup.id;
-  const people = await everyone(s);
+  const [people, knowledge] = await Promise.all([everyone(s), db.knowledgeItem.findMany({ orderBy: { title: "asc" }, select: { title: true, content: true } })]);
   const last = fresh.at(-1)!;
   // In the team group everyone is someone of the team (a collaborator unless registered as a partner)
   const member =
@@ -673,7 +828,7 @@ export async function runSecretaryTurn(chatId: string, now = new Date()) {
     db.secretaryEmail.findMany({ where: { status: "rascunho" }, orderBy: { createdAt: "desc" }, take: 5, select: { id: true, to: true, subject: true } }),
   ]);
   try {
-    const { reply, did } = await think(buildSystemPrompt(s, people), buildUserTurn({ ctx, history: history.reverse(), fresh, tasks, drafts }), ctx);
+    const { reply, did } = await think(buildSystemPrompt(s, people, knowledge), buildUserTurn({ ctx, history: history.reverse(), fresh, tasks, drafts }), ctx);
     if (reply) await secretarySend(chatId, reply, s);
     return [reply ? `Respondeu: ${reply.slice(0, 160)}` : "Ficou em silêncio.", ...did].join(" | ").slice(0, 1500);
   } catch (e) {

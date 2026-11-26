@@ -131,3 +131,24 @@ test("the secretary changes people and photo only in her own group", async () =>
   assert.equal((await routes["POST /group/updateParticipants"]({ ...sec, groupsOnly: false }, { groupjid: "120363000@g.us", participants: ["1"] }))[0], 403);
   assert.equal((await routes["POST /group/updateImage"](sec, { groupjid: "120363000@g.us", image: "http://x" }))[0], 400);
 });
+
+test("a file goes out as a document with its name, or as an image with its caption", async () => {
+  const { routes } = await import("./server.mjs");
+  const sent = [];
+  const sock = { sendMessage: async (jid, content) => (sent.push([jid, content]), { key: { id: `M${sent.length}` } }) };
+  const sec = { status: "connected", sock, groupsOnly: true, groups: [], sentByApi: new Set() };
+  const pdf = Buffer.from("%PDF-1.4 teste").toString("base64");
+  const [code, out] = await routes["POST /send/media"](sec, { number: "120363000@g.us", type: "document", file: pdf, docName: "Inadimplência.pdf", mimetype: "application/pdf", text: "Segue" });
+  assert.equal(code, 200);
+  assert.equal(out.id, "M1");
+  assert.ok(sec.sentByApi.has("M1"));
+  assert.equal(sent[0][0], "120363000@g.us");
+  assert.equal(sent[0][1].fileName, "Inadimplência.pdf");
+  assert.equal(sent[0][1].caption, "Segue");
+  assert.equal(sent[0][1].document.toString(), "%PDF-1.4 teste");
+  await routes["POST /send/media"](sec, { number: "5517999990000", type: "image", file: `data:image/png;base64,${Buffer.from("png").toString("base64")}`, text: "Logo" });
+  assert.equal(sent[1][0], "5517999990000@s.whatsapp.net");
+  assert.equal(sent[1][1].image.toString(), "png");
+  assert.equal((await routes["POST /send/media"](sec, { number: "1", type: "zip", file: pdf }))[0], 400);
+  assert.equal((await routes["POST /send/media"](sec, { number: "1", type: "document", file: "" }))[0], 400);
+});

@@ -8,6 +8,7 @@ import type { SecretaryMember } from "@/lib/secretary";
 
 type Props = {
   name: string;
+  nicknames: string[];
   members: SecretaryMember[];
   checklist: string;
   instructions: string;
@@ -47,6 +48,11 @@ export function SecretaryForm(p: Props) {
           <span className="text-sm font-medium text-slate-700">Nome dela</span>
           <input name="name" defaultValue={p.name} className={inputCls} placeholder="Ex.: Jessica Montenegro" />
           <span className="block text-xs text-slate-500">É como ela se apresenta no grupo e no privado.</span>
+        </label>
+        <label className="block space-y-1">
+          <span className="text-sm font-medium text-slate-700">Apelidos</span>
+          <input name="nicknames" defaultValue={p.nicknames.join(", ")} className={inputCls} placeholder="Ex.: Jess" />
+          <span className="block text-xs text-slate-500">Chamar por um deles no grupo da equipe também chama ela. Separe por vírgula.</span>
         </label>
         <label className="block space-y-1">
           <span className="text-sm font-medium text-slate-700">Grupo do WhatsApp</span>

@@ -185,6 +185,8 @@ export async function createCalendarEvent(input: {
   slot: Slot;
   attendeeEmail?: string | null;
   guests?: string[];
+  // Shown as "livre": a collaborator's meeting on his agenda does not take the times the AI offers leads
+  free?: boolean;
 }) {
   const agenda = await googleAgendaFor(input.user);
   if (!agenda) return null;
@@ -202,6 +204,7 @@ export async function createCalendarEvent(input: {
         attendees,
         conferenceData: { createRequest: { requestId: crypto.randomUUID(), conferenceSolutionKey: { type: "hangoutsMeet" } } },
         reminders: { useDefault: true },
+        ...(input.free && { transparency: "transparent" }),
       }),
     },
   );

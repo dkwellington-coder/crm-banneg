@@ -37,6 +37,8 @@ export type SecretarySettings = {
   teamGroup: { id: string; name: string } | null;
   // What she calls herself in the group
   name: string;
+  // What the team may call her ("Jess"): calling her by it in the team group counts as calling her
+  nicknames: string[];
   members: SecretaryMember[];
   // The registration checklist she sends when asked (Wellington's "check list de cadastro")
   checklist: string;
@@ -62,6 +64,7 @@ export const DEFAULT_SECRETARY: SecretarySettings = {
   group: null,
   teamGroup: null,
   name: "Jessica Montenegro",
+  nicknames: ["Jess"],
   members: [],
   checklist: "",
   instructions: "",
@@ -204,7 +207,7 @@ export function withMentions(text: string, members: SecretaryMember[]) {
 
 type Raw = Record<string, unknown> & { error?: string; message?: string };
 
-async function api<T>(path: string, body?: unknown, settings?: SecretarySettings): Promise<T> {
+async function api<T>(path: string, body?: unknown, settings?: SecretarySettings, timeoutMs = 20_000): Promise<T> {
   const s = settings ?? (await getSecretary());
   if (!s.token) throw new Error("A secretária ainda não tem número conectado: leia o QR code na tela Secretária.");
   const base = serverOf({ server: null });
@@ -214,10 +217,10 @@ async function api<T>(path: string, body?: unknown, settings?: SecretarySettings
       method: body === undefined ? "GET" : "POST",
       headers: { token: openToken(s.token), Accept: "application/json", "Content-Type": "application/json" },
       ...(body !== undefined && { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (e) {
-    throw new Error(`Sem resposta do servidor do WhatsApp (${(e as Error).name === "TimeoutError" ? "demorou mais de 20 s" : (e as Error).message}).`);
+    throw new Error(`Sem resposta do servidor do WhatsApp (${(e as Error).name === "TimeoutError" ? `demorou mais de ${Math.round(timeoutMs / 1000)} s` : (e as Error).message}).`);
   }
   const json = (await res.json().catch(() => ({}))) as T & Raw;
   if (!res.ok) throw new Error(`O servidor do WhatsApp respondeu ${res.status}: ${json.error ?? json.message ?? "erro"}`);
@@ -344,6 +347,44 @@ export async function secretarySend(chatId: string, text: string, s?: SecretaryS
   await db.secretaryMessage
     .create({
       data: { chatId, isGroup: chatId.endsWith("@g.us"), externalId, fromMe: true, byApi: true, senderName: settings.name, body, at: new Date(), handledAt: new Date() },
+    })
+    .catch(() => {});
+  return externalId;
+}
+
+export type SecretaryFile = { name: string; mime: string; url?: string; data?: Buffer };
+
+/** WhatsApp shows pictures and videos inline; everything else goes as a document with its name. */
+export function mediaKind(mime: string): "image" | "video" | "document" {
+  if (/^image\/(jpeg|png|webp)$/.test(mime)) return "image";
+  if (mime === "video/mp4") return "video";
+  return "document";
+}
+
+/** Sends a file from her number (a report from the Drive, a CRM material) and keeps a line of it in the chat. */
+export async function secretarySendFile(chatId: string, file: SecretaryFile, caption = "", s?: SecretarySettings) {
+  const settings = s ?? (await getSecretary());
+  if (!file.url && !file.data?.length) throw new Error("Arquivo vazio.");
+  const res = await api<{ messageid?: string; id?: string }>(
+    "/send/media",
+    { number: chatId, type: mediaKind(file.mime), file: file.url ?? file.data!.toString("base64"), docName: file.name, mimetype: file.mime, text: caption.trim() },
+    settings,
+    90_000,
+  );
+  const externalId = res.messageid ?? res.id ?? null;
+  await db.secretaryMessage
+    .create({
+      data: {
+        chatId,
+        isGroup: chatId.endsWith("@g.us"),
+        externalId,
+        fromMe: true,
+        byApi: true,
+        senderName: settings.name,
+        body: `[Arquivo enviado: ${file.name}]${caption.trim() ? ` ${caption.trim()}` : ""}`,
+        at: new Date(),
+        handledAt: new Date(),
+      },
     })
     .catch(() => {});
   return externalId;
@@ -543,9 +584,10 @@ export async function everyone(s: SecretarySettings): Promise<SecretaryMember[]>
 const plain = (v: string) => v.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
 /** Someone in the team group is talking to her: her first name, an @mention of her number, or a reply to her message. */
-export function callsHer(s: Pick<SecretarySettings, "name" | "phone">, m: { body: string; mentioned?: string[]; quotedSender?: string | null }) {
-  const first = plain(s.name.split(/\s+/)[0] ?? "");
-  if (first.length >= 3 && new RegExp(`(^|[^a-z])${first}([^a-z]|$)`).test(plain(m.body))) return true;
+export function callsHer(s: Pick<SecretarySettings, "name" | "phone"> & { nicknames?: string[] }, m: { body: string; mentioned?: string[]; quotedSender?: string | null }) {
+  const text = plain(m.body);
+  const names = [s.name.split(/\s+/)[0] ?? "", ...(s.nicknames ?? [])].map((n) => plain(n.trim())).filter((n) => n.length >= 3);
+  if (names.some((n) => new RegExp(`(^|[^a-z])${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z]|$)`).test(text))) return true;
   const mine = s.phone ? phoneVariants(s.phone) : [];
   return [...(m.mentioned ?? []), m.quotedSender ?? ""].some((x) => !!x && mine.includes(x));
 }

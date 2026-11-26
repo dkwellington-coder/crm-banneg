@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { Bot, CheckCircle2, ListTodo, MessageSquareText, Smartphone, XCircle } from "lucide-react";
+import { Bot, CheckCircle2, FolderOpen, ListTodo, MessageSquareText, Smartphone, XCircle } from "lucide-react";
 import { requireOwnerPage } from "@/lib/access";
 import { db } from "@/lib/db";
 import { phoneLabel } from "@/lib/calendar";
@@ -8,23 +8,33 @@ import { getSecretary, getSecretaryHealth, secretaryGroups, secretaryStatus, TAS
 import { Card, Loading, PageHeader, btnCls, btnGhostCls, inputCls, relTime } from "@/components/ui";
 import { SecretaryQr } from "./SecretaryQr";
 import { SecretaryForm } from "./SecretaryForm";
-import { addTaskAction, removeSecretaryAction, setTaskStatusAction } from "./actions";
+import { secretaryDrive } from "@/lib/secretary-drive";
+import { addTaskAction, disconnectDriveAction, removeSecretaryAction, setDriveFolderAction, setTaskStatusAction } from "./actions";
 
 /**
  * Secretária (Wellington, 2026-11-26): the AI secretary on her own WhatsApp chip, in a group with him and the team.
  * Here he connects her number, picks the group and the people, writes the registration checklist, and sees the
  * tasks she keeps and what she did.
  */
-export default function SecretariaPage() {
+type Search = { drive?: string; detalhe?: string };
+
+export default function SecretariaPage({ searchParams }: { searchParams: Promise<Search> }) {
   return (
     <>
       <PageHeader title="Secretária" subtitle="Sua secretária no WhatsApp: agenda com Meet, e-mails, tarefas, lembretes e cobranças no grupo." />
       <Suspense fallback={<Loading />}>
-        <Secretaria />
+        <Secretaria searchParams={searchParams} />
       </Suspense>
     </>
   );
 }
+
+const DRIVE_NOTICE: Record<string, (d: string) => { ok: boolean; text: string }> = {
+  ok: (d) => ({ ok: true, text: `Google Drive conectado${d ? ` (${d})` : ""}. Agora cole o link da pasta.` }),
+  pasta: (d) => ({ ok: true, text: `Pronto: ela lê a pasta "${d}".` }),
+  recusado: () => ({ ok: false, text: "O Google não recebeu a permissão. Clique em conectar e marque o acesso ao Drive." }),
+  erro: (d) => ({ ok: false, text: d || "Não deu certo. Tente de novo." }),
+};
 
 function Section({ icon: Icon, title, children, className = "" }: { icon: typeof Bot; title: string; children: React.ReactNode; className?: string }) {
   return (
@@ -40,9 +50,12 @@ function Section({ icon: Icon, title, children, className = "" }: { icon: typeof
   );
 }
 
-async function Secretaria() {
+async function Secretaria({ searchParams }: { searchParams: Promise<Search> }) {
   await requireOwnerPage();
+  const query = await searchParams;
   const s = await getSecretary();
+  const drive = await secretaryDrive();
+  const notice = query.drive && DRIVE_NOTICE[query.drive]?.(query.detalhe ?? "");
   const status = s.token ? await secretaryStatus(s).catch((e: Error) => ({ connected: false, status: "sem resposta", reason: e.message, phone: null })) : null;
   const groups = status?.connected ? await secretaryGroups().catch(() => null) : null;
   // The saved group stays selectable even when the list could not be read
@@ -98,6 +111,7 @@ async function Secretaria() {
         <Section icon={Bot} title="Como ela trabalha">
           <SecretaryForm
             name={s.name}
+            nicknames={s.nicknames}
             members={s.members}
             checklist={s.checklist}
             instructions={s.instructions}
@@ -115,7 +129,45 @@ async function Secretaria() {
               <li>“Odair, me manda o contrato até sexta.” (ela anota e cobra na sexta)</li>
               <li>“Me lembra de ligar para a seguradora às 16h.”</li>
               <li>“Quais são as tarefas da semana?” · “Manda o checklist de cadastro.”</li>
+              <li>“Jessica, me manda o relatório de inadimplência.” · “Quais seguradoras foram feitas em outubro?”</li>
+              <li>“Manda a tabela de comissões aqui.” · “Quantos leads entraram essa semana? Manda em planilha.”</li>
             </ul>
+          </div>
+        </Section>
+
+        <Section icon={FolderOpen} title="Pasta do Google Drive">
+          <div id="drive" className="space-y-3 text-sm text-slate-600">
+            <p>
+              Os relatórios que as outras abas salvam no Drive (inadimplência, comissões, seguradoras) ficam numa pasta. Ela procura, lê e manda esses
+              arquivos quando pedirem. Ela só enxerga essa pasta e o que está dentro dela.
+            </p>
+            {notice && <p className={`rounded-lg px-3 py-2 text-sm ${notice.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>{notice.text}</p>}
+            {drive ? (
+              <>
+                <p className="flex items-center gap-2 font-medium text-emerald-700">
+                  <CheckCircle2 size={18} /> Conectado em {drive.email}
+                  {drive.folderName ? ` · lendo a pasta "${drive.folderName}"` : " · falta escolher a pasta"}
+                </p>
+                <form action={setDriveFolderAction} className="flex flex-col gap-2 sm:flex-row">
+                  <input
+                    name="folder"
+                    required
+                    placeholder="Link da pasta: drive.google.com/drive/folders/..."
+                    defaultValue={drive.folderId ? `https://drive.google.com/drive/folders/${drive.folderId}` : ""}
+                    className={inputCls}
+                    aria-label="Link da pasta do Google Drive"
+                  />
+                  <button className={btnCls}>{drive.folderId ? "Trocar pasta" : "Usar esta pasta"}</button>
+                </form>
+                <form action={disconnectDriveAction}>
+                  <button className="text-xs text-slate-500 underline">Desconectar o Drive</button>
+                </form>
+              </>
+            ) : (
+              <a href="/api/secretaria/drive/conectar" className={`${btnCls} inline-flex`}>
+                Conectar o Google Drive
+              </a>
+            )}
           </div>
         </Section>
       </div>

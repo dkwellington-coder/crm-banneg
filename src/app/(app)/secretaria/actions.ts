@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import {
   connectSecretary,
@@ -17,6 +18,7 @@ import {
   type SecretaryMember,
 } from "@/lib/secretary";
 import { db } from "@/lib/db";
+import { disconnectSecretaryDrive, setSecretaryFolder } from "@/lib/secretary-drive";
 
 // The secretary is Wellington's own: only the owner sets her up
 async function owner() {
@@ -65,6 +67,11 @@ export async function saveSecretaryAction(_: SaveState, form: FormData): Promise
   const before = await getSecretary();
   const s = await saveSecretary({
     name: String(form.get("name") ?? "").trim() || "Secretária",
+    nicknames: String(form.get("nicknames") ?? "")
+      .split(/[,;\n]/)
+      .map((n) => n.trim())
+      .filter((n) => n.length >= 3)
+      .slice(0, 5),
     members,
     checklist: String(form.get("checklist") ?? "").trim(),
     instructions: String(form.get("instructions") ?? "").trim(),
@@ -139,5 +146,26 @@ export async function setTaskStatusAction(id: string, status: "feita" | "cancela
     where: { id },
     data: status === "aberta" ? { status, doneAt: null, doneBy: null } : { status, doneAt: new Date(), doneBy: user.name, nextNudgeAt: null },
   });
+  revalidatePath(PATH);
+}
+
+// ---------- Her Google Drive folder (the reports the other Claude tabs save) ----------
+
+export async function setDriveFolderAction(formData: FormData) {
+  await owner();
+  let to: string;
+  try {
+    const name = await setSecretaryFolder(String(formData.get("folder") ?? ""));
+    to = `${PATH}?drive=pasta&detalhe=${encodeURIComponent(name)}#drive`;
+  } catch (e) {
+    to = `${PATH}?drive=erro&detalhe=${encodeURIComponent((e as Error).message)}#drive`;
+  }
+  revalidatePath(PATH);
+  redirect(to);
+}
+
+export async function disconnectDriveAction() {
+  await owner();
+  await disconnectSecretaryDrive();
   revalidatePath(PATH);
 }

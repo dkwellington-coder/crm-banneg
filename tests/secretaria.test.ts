@@ -154,10 +154,10 @@ describe("her prompt and her limits", () => {
     await expect(runTool("mandar_mensagem", { para: "5511988887777", texto: "oi" }, ctx())).rejects.toThrow("só dá para mandar recado no grupo");
   });
 
-  it("a collaborator works on their own things and asks the partners in the group for a meeting", async () => {
+  it("a collaborator works on their own things and asks the partners in the group for a meeting with a lead", async () => {
     const odair = ctx({ member: members[1], actor: "Odair Bellentani" });
-    await expect(runTool("marcar_reuniao", { titulo: "x", inicio: "2026-11-27T10:00" }, odair)).rejects.toThrow("peça o ok no grupo");
-    await expect(runTool("desmarcar_reuniao", { evento_id: "e1" }, odair)).rejects.toThrow("peça o ok no grupo");
+    await expect(runTool("marcar_reuniao", { titulo: "x", inicio: "2026-11-27T10:00", lead_id: "l1" }, odair)).rejects.toThrow("peça o ok no grupo");
+    await expect(runTool("ajustar_grupo", { foto_logo: true }, odair)).rejects.toThrow("peça a um sócio no grupo");
     await expect(runTool("criar_tarefa", { titulo: "Ligar para a seguradora", tipo: "tarefa", responsavel: "Wellington" }, odair)).rejects.toThrow("só anota tarefa ou lembrete para si mesmo");
     await expect(runTool("mandar_mensagem", { para: "Wellington", texto: "oi" }, odair)).rejects.toThrow("recado no grupo");
   });
