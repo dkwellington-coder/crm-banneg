@@ -138,7 +138,7 @@ export function readQr(raw: { instance?: RawInstance; qrcode?: string | { base64
   const status = readStatus(raw as RawStatus);
   const qrRaw = raw.instance?.qrcode || (typeof raw.qrcode === "string" ? raw.qrcode : raw.qrcode?.base64) || raw.base64 || "";
   const qr = qrRaw ? (qrRaw.startsWith("data:") ? qrRaw : `data:image/png;base64,${qrRaw}`) : null;
-  return { connected: status.connected, phone: status.phone, qr: status.connected ? null : qr, pairCode: raw.instance?.paircode || null };
+  return { connected: status.connected, phone: status.phone, qr: status.connected ? null : qr, pairCode: raw.instance?.paircode || null, reason: status.reason };
 }
 
 /** Asks Uazapi for a QR code (first call) or how the reading is going (next calls). */
@@ -411,7 +411,13 @@ export async function checkSupportNumbers() {
       results.push({ name: n.name, error });
     }
   }
-  const value = { at: new Date().toISOString(), results };
+  // Our own server also gives its last warnings (why WhatsApp closed a connection), kept here to be read without Railway
+  const gateway = canCreateInstances()
+    ? await fetch(`${serverOf({ server: null })}/debug/log`, { headers: { admintoken: supportAdmin(), Accept: "application/json" }, signal: AbortSignal.timeout(10_000) })
+        .then((r) => (r.ok ? (r.json() as Promise<{ lines?: string[]; waVersion?: string | null }>) : null))
+        .catch(() => null)
+    : null;
+  const value = { at: new Date().toISOString(), results, ...(gateway && { gateway: { waVersion: gateway.waVersion ?? null, lines: (gateway.lines ?? []).slice(-40) } }) };
   await db.setting.upsert({ where: { key: "suporte_check" }, create: { key: "suporte_check", value }, update: { value } });
   return results;
 }
