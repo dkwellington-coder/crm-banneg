@@ -63,7 +63,10 @@ async function Config() {
     db.emailTemplate.findMany({ orderBy: [{ key: "asc" }] }),
     db.whatsAppTemplate.findMany({ orderBy: { name: "asc" } }),
     db.macro.findMany({ orderBy: { title: "asc" } }),
-    db.job.findMany({ orderBy: { createdAt: "desc" }, take: 60, include: { lead: { select: { name: true, phone: true } } } }),
+    Promise.all([
+      db.job.findMany({ orderBy: { createdAt: "desc" }, take: 60, include: { lead: { select: { name: true, phone: true } } } }),
+      db.job.findMany({ where: { status: "FAILED" }, orderBy: { createdAt: "desc" }, include: { lead: { select: { name: true, phone: true } } } }),
+    ]).then(([recent, failed]) => [...new Map([...failed, ...recent].map(job => [job.id, job])).values()]),
     db.franchiseDocument.findMany({
       where: { active: true },
       orderBy: { createdAt: "asc" },
