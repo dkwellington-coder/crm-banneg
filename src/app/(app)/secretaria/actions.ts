@@ -139,6 +139,7 @@ export async function addTaskAction(form: FormData) {
     },
   });
   revalidatePath(PATH);
+  revalidatePath("/tarefas");
 }
 
 export async function setTaskStatusAction(id: string, status: "feita" | "cancelada" | "aberta") {
@@ -148,6 +149,7 @@ export async function setTaskStatusAction(id: string, status: "feita" | "cancela
     data: status === "aberta" ? { status, doneAt: null, doneBy: null } : { status, doneAt: new Date(), doneBy: user.name, nextNudgeAt: null },
   });
   revalidatePath(PATH);
+  revalidatePath("/tarefas");
 }
 
 // ---------- Her Google Drive folder (the reports the other Claude tabs save) ----------

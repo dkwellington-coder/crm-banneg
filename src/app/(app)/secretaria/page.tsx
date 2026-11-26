@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Suspense } from "react";
 import { Bot, CheckCircle2, FolderOpen, ListTodo, Palette, MessageSquareText, Smartphone, XCircle } from "lucide-react";
 import { requireOwnerPage } from "@/lib/access";
@@ -208,6 +209,7 @@ async function Secretaria({ searchParams }: { searchParams: Promise<Search> }) {
 
       <div className="space-y-4">
         <Section icon={ListTodo} title={`Tarefas em aberto (${open.length})`}>
+          <Link href="/tarefas" className="-mt-2 block text-xs font-medium text-brand underline">Abrir a lista resumida</Link>
           <form action={addTaskAction} className="grid gap-2 md:grid-cols-[1.6fr_1fr_1fr_auto]">
             <input name="title" required placeholder="Nova tarefa" className={inputCls} aria-label="Nova tarefa" />
             <input name="assignee" placeholder="Responsável" list="secretaria-people" className={inputCls} aria-label="Responsável" />
