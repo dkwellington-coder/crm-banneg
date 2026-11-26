@@ -136,14 +136,17 @@ async function start(s) {
     auth: state,
     logger: log,
     ...(waVersion && { version: waVersion }),
-    // A desktop browser with full sync: WhatsApp then sends the number's history when it is connected
+    // A desktop browser: WhatsApp then sends the number's recent history when it is connected
     browser: Browsers.macOS("Desktop"),
     // Not "online": the attendant's phone keeps getting its notifications
     markOnlineOnConnect: false,
     // A send-only number and the secretary's (which reads only its group) ask for no history: only the small first sync
     // WhatsApp needs to keep the session stable (it carries the number's LID mappings; Baileys warns of session errors
     // without it). Their history is dropped on arrival (messaging-history.set returns early for both), so nothing is kept or posted.
-    syncFullHistory: !s.sendOnly && !s.groupsOnly,
+    // Never "full sync" (Wellington, 2026-11-26): since 11-19, when it was turned on, WhatsApp ended every connection
+    // of the support numbers with 428 before even giving a QR code, while the send-only number (without it) connected
+    // on the same server. Without it WhatsApp still sends the recent history when a number is connected.
+    syncFullHistory: false,
     shouldSyncHistoryMessage: (m) => (!s.sendOnly && !s.groupsOnly) || SEND_ONLY_SYNC.has(m.syncType),
   });
   s.sock = sock;

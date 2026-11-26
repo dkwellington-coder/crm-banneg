@@ -118,7 +118,7 @@ export function QrReconnect({ id, fresh = false }: { id: string; fresh?: boolean
   if (fresh && ask)
     return (
       <div className="space-y-2 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">
-        <p>O número sai do CRM por alguns segundos e volta quando o QR for lido. O WhatsApp então manda o histórico dos últimos 30 dias, com os arquivos. Tenha o celular do número na mão.</p>
+        <p>O número sai do CRM por alguns segundos e volta quando o QR for lido. O WhatsApp então manda as conversas recentes (o CRM guarda até 30 dias para trás), com os arquivos. Tenha o celular do número na mão.</p>
         <div className="flex flex-wrap gap-2">
           <button type="button" className={btnCls} disabled={pending} onClick={() => start(async () => setState(await numberQrAction(id, true, true)))}>
             <QrCode size={16} /> {pending ? "Gerando…" : "Mostrar o QR code"}
