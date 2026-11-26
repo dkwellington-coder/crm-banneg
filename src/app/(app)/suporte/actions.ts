@@ -123,7 +123,7 @@ export async function sendSupportAction(chatId: string, form: FormData): Promise
   return { ok: true };
 }
 
-export type QrState = { error?: string; id?: string; qr?: string | null; connected?: boolean; phone?: string | null };
+export type QrState = { error?: string; id?: string; qr?: string | null; connected?: boolean; phone?: string | null; reason?: string | null };
 
 /** "Conectar com QR code": creates the number's Uazapi instance and brings the first QR code. */
 export async function createNumberByQrAction(form: FormData): Promise<QrState> {
@@ -165,7 +165,7 @@ async function qrStep(id: string, start: boolean, fresh = false) {
     await db.supportNumber.update({ where: { id }, data: { status: "connected", statusAt: new Date(), ...(step.phone && { phone: step.phone }) } });
     revalidatePath("/suporte", "layout");
   }
-  return { qr: step.qr, connected: step.connected, phone: step.phone };
+  return { qr: step.qr, connected: step.connected, phone: step.phone, reason: step.qr ? null : step.reason };
 }
 
 /** Stops copying the support files to the Google Drive (what is already there stays). */
