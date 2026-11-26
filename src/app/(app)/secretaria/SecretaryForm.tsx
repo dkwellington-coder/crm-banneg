@@ -44,7 +44,7 @@ export function SecretaryForm(p: Props) {
       <div className="grid gap-4 md:grid-cols-2">
         <label className="block space-y-1">
           <span className="text-sm font-medium text-slate-700">Nome dela</span>
-          <input name="name" defaultValue={p.name} className={inputCls} placeholder="Ex.: Clara" />
+          <input name="name" defaultValue={p.name} className={inputCls} placeholder="Ex.: Jessica Montenegro" />
           <span className="block text-xs text-slate-500">É como ela se apresenta no grupo e no privado.</span>
         </label>
         <label className="block space-y-1">

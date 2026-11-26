@@ -58,7 +58,7 @@ export const DEFAULT_SECRETARY: SecretarySettings = {
   webhookKey: null,
   phone: null,
   group: null,
-  name: "Secretária",
+  name: "Jessica Montenegro",
   members: [],
   checklist: "",
   instructions: "",
