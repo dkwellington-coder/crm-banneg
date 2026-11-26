@@ -17,6 +17,7 @@ import makeWASocket, {
   isJidGroup,
   jidNormalizedUser,
   normalizeMessageContent,
+  proto,
   useMultiFileAuthState,
 } from "baileys";
 import pino from "pino";
@@ -57,6 +58,13 @@ const SESSIONS_FILE = path.join(DATA, "sessions.json");
 // nothing it sends or receives goes to the CRM, no history and no files are kept
 /** @type {Map<string, {token: string, name: string, webhook: string, sendOnly?: boolean, sock?: any, qr?: string|null, status: string, owner?: string|null, sentByApi: Set<string>, retry?: NodeJS.Timeout, chain?: Promise<void>, tries?: number, lastError?: {code: number, reason: string, at: string}|null}>} */
 const sessions = new Map();
+
+// The history syncs a send-only number still accepts (no FULL, RECENT or ON_DEMAND: those are the conversations)
+export const SEND_ONLY_SYNC = new Set([
+  proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
+  proto.HistorySync.HistorySyncType.PUSH_NAME,
+  proto.HistorySync.HistorySyncType.NON_BLOCKING_DATA,
+]);
 
 async function save() {
   const list = [...sessions.values()].map(({ token, name, webhook, sendOnly }) => ({ token, name, webhook, ...(sendOnly && { sendOnly: true }) }));
@@ -124,9 +132,11 @@ async function start(s) {
     browser: Browsers.macOS("Desktop"),
     // Not "online": the attendant's phone keeps getting its notifications
     markOnlineOnConnect: false,
-    // A send-only number asks for no history at all
+    // A send-only number asks for no history: only the small first sync WhatsApp needs to keep the session stable (it
+    // carries the number's LID mappings; Baileys warns of session errors without it). Its messages are dropped on
+    // arrival (messaging-history.set returns early for sendOnly), so nothing of them is kept or posted.
     syncFullHistory: !s.sendOnly,
-    shouldSyncHistoryMessage: () => !s.sendOnly,
+    shouldSyncHistoryMessage: (m) => !s.sendOnly || SEND_ONLY_SYNC.has(m.syncType),
   });
   s.sock = sock;
   s.status = "connecting";
