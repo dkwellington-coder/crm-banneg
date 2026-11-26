@@ -38,6 +38,7 @@ import { ART_FORMATS, ART_THEMES, COLLAGE_LAYOUTS, loadArtAssets, photoDataUrl, 
 import { transcribe } from "./audio";
 import { getSettings, materialFileName } from "./settings";
 import { CANVA_FOLDER, canvaArt, canvaModels } from "./secretary-canva";
+import { findGuide, getGuides } from "./secretary-guides";
 import { secretaryReport, REPORT_KINDS } from "./secretary-report";
 
 /**
@@ -85,7 +86,7 @@ export const trusted = (ctx: Pick<TurnContext, "isGroup" | "member" | "team">) =
 
 export type Knowledge = { title: string; content: string }[];
 
-export function buildSystemPrompt(s: SecretarySettings, people: SecretaryMember[] = s.members, knowledge: Knowledge = []) {
+export function buildSystemPrompt(s: SecretarySettings, people: SecretaryMember[] = s.members, knowledge: Knowledge = [], guides: string[] = []) {
   const crew = people
     .filter((p) => !s.members.some((m) => m.phone === p.phone))
     .map((p) => `- ${p.name} · WhatsApp ${phoneLabel(waNumber(p.phone))}`)
@@ -161,7 +162,16 @@ O que você sabe do Banneg (a base de conhecimento do CRM, a mesma que a Duda e 
 ${knowledge.map((k) => `### ${k.title}\n${k.content.trim()}`).join("\n\n")}
 `
       : ""
-  }`;
+  }${guides.length ? `\n${guidesRule(guides)}` : ""}`;
+}
+
+/** The standard she keeps: the Banneg guides, read with guia_banneg before any marketing piece or consórcio answer. */
+export function guidesRule(guides: string[]) {
+  return `Padrão do Banneg (guias oficiais: ${guides.map((g) => `"${g}"`).join(", ")}). Antes de criar arte, legenda, vídeo, texto de campanha ou de responder sobre consórcio, leia o guia certo com guia_banneg e siga o que ele diz (tom, frases aprovadas, rodapés, o que nunca dizer). O essencial, sempre:
+- No título da arte, marque a palavra-chave entre asteriscos (ex.: "Seu jet ski com *meia parcela* até a contemplação"): ela sai em dourado itálico. Use a chamada como chapéu (ex.: CONSÓRCIO LINHA AQUÁTICA) e o rodapé para a linha legal do produto.
+- Telefone na arte só se o Wellington pedir. Uma ideia por peça. Valores só da tabela ou do que mandarem, nunca inventados.
+- Nunca prometa contemplação, data, aprovação de crédito ou renda. Consórcio não tem juros: tem taxa de administração; contemplação por sorteio ou lance.
+- Legenda: gancho na primeira linha, 2 ou 3 linhas de explicação, chamada por comentário ("Comente CONSÓRCIO que a gente te explica") e 5 a 8 hashtags com #TemBannegPraIsso e #Banneg.`;
 }
 
 const SEEN_KINDS = ["image", "video", "document"];
@@ -358,19 +368,19 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
   {
     name: "criar_arte",
     description:
-      "Cria uma arte no visual do Banneg (azul abissal e dourado, fonte Montserrat, logo) e manda a imagem no WhatsApp. Você escreve as palavras: título curto e forte, um texto de apoio, até 5 itens, um destaque (número ou oferta) e o rodapé. Pode usar uma foto de fundo.",
+      "Cria uma arte no visual do Banneg (azul abissal e dourado imperial, logo nova no topo, título em Lora com a palavra-chave entre *asteriscos* em dourado itálico) e manda a imagem no WhatsApp. Você escreve as palavras: chapéu (chamada), título curto e forte, um texto de apoio, até 5 itens (selos), um destaque (número ou oferta) e o rodapé (linha legal). Pode usar uma foto real de fundo.",
     input_schema: {
       type: "object",
       properties: {
         formato: { type: "string", enum: Object.keys(ART_FORMATS), description: "post (1080x1350, feed), quadrado (1080x1080) ou story (1080x1920); padrão post" },
         tema: { type: "string", enum: [...ART_THEMES], description: "azul (fundo azul escuro, padrão), claro (fundo creme) ou dourado" },
         chamada: { ...str, description: "linha pequena acima do título, ex.: FRANQUIA HOME OFFICE" },
-        titulo: { ...str, description: "até ~60 caracteres" },
+        titulo: { ...str, description: 'até ~60 caracteres; a palavra-chave entre asteriscos, ex.: "Seu jet ski com *meia parcela* até a contemplação"' },
         texto: { ...str, description: "1 ou 2 frases" },
         itens: strList,
         destaque: { ...str, description: "número ou oferta em destaque, ex.: R$ 19.900" },
         destaque_legenda: str,
-        rodape: { ...str, description: 'padrão "banneg.com.br"; pode levar telefone ou @' },
+        rodape: { ...str, description: 'linha legal pequena (ex.: "Consórcio sem juros, com taxa de administração. Lance conforme as regras do grupo."); padrão "banneg.com.br". Telefone só se o Wellington pedir' },
         foto: { ...str, description: "foto de fundo: midia_id de uma imagem da conversa, material do CRM (foto_fachada, foto_fundador) ou arquivo_id de uma imagem do Drive" },
         para: { ...str, description: 'padrão "aqui"' },
         legenda: { ...str, description: "texto que vai junto da imagem no WhatsApp" },
@@ -421,6 +431,12 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
       },
       required: ["cenas"],
     },
+  },
+  {
+    name: "guia_banneg",
+    description:
+      "Lê um guia oficial do Banneg (por exemplo Marketing ou Consórcios): tom de voz, cores, estrutura dos posts, textos aprovados, regras, tabelas e o que nunca dizer. Sem nome, lista os guias.",
+    input_schema: { type: "object", properties: { guia: { ...str, description: "nome do guia, ex.: marketing, consórcios" } } },
   },
   {
     name: "canva_modelos",
@@ -492,6 +508,7 @@ const ALLOWED: Record<Exclude<Level, "socio">, Set<string>> = {
     "criar_video",
     "canva_modelos",
     "canva_arte",
+    "guia_banneg",
     "mandar_mensagem",
   ]),
 };
@@ -890,6 +907,13 @@ export async function runTool(name: string, input: Input, ctx: TurnContext): Pro
       await secretarySendFile(where.chatId, { name: "Banneg - video.mp4", mime: "video/mp4", data: mp4 }, text(input.legenda), s);
       return `Vídeo de ${frames.length} cenas (${Math.round(frames.length * seconds)} s, ${formato}) enviado ${where.label}.`;
     }
+    case "guia_banneg": {
+      const guias = await getGuides();
+      if (!guias.length) return "Nenhum guia do Banneg cadastrado ainda (tela Secretária > Padrão do Banneg).";
+      const g = findGuide(guias, text(input.guia));
+      if (!g) return `Guias: ${guias.map((x) => x.nome).join(", ")}. Peça um pelo nome.`;
+      return `# ${g.nome} (lido em ${whenBr(new Date(g.lidoEm), false)})\n\n${g.texto}`;
+    }
     case "canva_modelos": {
       const models = await canvaModels();
       return models.map((m) => `- ${m.nome} (id ${m.id})\n  textos: ${m.textos.map((t) => `"${t.replace(/\s+/g, " ")}"`).join(" | ") || "(sem texto)"}`).join("\n");
@@ -1032,7 +1056,11 @@ export async function runSecretaryTurn(chatId: string, now = new Date()) {
   if (!claimed.count) return "Já respondido.";
   const isGroup = chatId.endsWith("@g.us");
   const team = !!s.teamGroup && chatId === s.teamGroup.id;
-  const [people, knowledge] = await Promise.all([everyone(s), db.knowledgeItem.findMany({ orderBy: { title: "asc" }, select: { title: true, content: true } })]);
+  const [people, knowledge, guides] = await Promise.all([
+    everyone(s),
+    db.knowledgeItem.findMany({ orderBy: { title: "asc" }, select: { title: true, content: true } }),
+    getGuides().catch(() => []),
+  ]);
   const last = fresh.at(-1)!;
   // In the team group everyone is someone of the team (a collaborator unless registered as a partner)
   const member =
@@ -1057,7 +1085,7 @@ export async function runSecretaryTurn(chatId: string, now = new Date()) {
   try {
     const turn = buildUserTurn({ ctx, history: history.reverse(), fresh, tasks, drafts });
     const pictures = await freshPictures(fresh, s);
-    const { reply, did } = await think(buildSystemPrompt(s, people, knowledge), pictures.length ? [{ type: "text", text: turn }, ...pictures] : turn, ctx);
+    const { reply, did } = await think(buildSystemPrompt(s, people, knowledge, guides.map((g) => g.nome)), pictures.length ? [{ type: "text", text: turn }, ...pictures] : turn, ctx);
     if (reply) await secretarySend(chatId, reply, s);
     return [reply ? `Respondeu: ${reply.slice(0, 160)}` : "Ficou em silêncio.", ...did].join(" | ").slice(0, 1500);
   } catch (e) {

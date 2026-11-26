@@ -242,3 +242,12 @@ export async function readDriveFile(fileId: string, scope: DriveScope = {}) {
   const file = await download(token, meta, "read");
   return contentFor(file);
 }
+
+/** A Google Doc as plain text, from the whole Drive (the Banneg guides). */
+export async function driveDocText(fileId: string) {
+  const { token } = await tokenAndFolder({ all: true });
+  const meta = await fileMeta(token, fileId);
+  if (meta.mimeType !== "application/vnd.google-apps.document") throw new Error("Esse link não é de um Google Docs.");
+  const file = await download(token, meta, "read");
+  return file.data.toString("utf8").replace(/^\uFEFF/, "").trim();
+}

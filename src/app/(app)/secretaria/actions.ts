@@ -20,6 +20,7 @@ import {
 import { db } from "@/lib/db";
 import { disconnectSecretaryDrive, setSecretaryFolder } from "@/lib/secretary-drive";
 import { disconnectSecretaryCanva } from "@/lib/secretary-canva";
+import { addGuide, refreshGuides, removeGuide } from "@/lib/secretary-guides";
 
 // The secretary is Wellington's own: only the owner sets her up
 async function owner() {
@@ -176,5 +177,39 @@ export async function disconnectDriveAction() {
 export async function disconnectCanvaAction() {
   await owner();
   await disconnectSecretaryCanva();
+  revalidatePath(PATH);
+}
+
+// ---------- Banneg's standard guides (marketing, consórcios), read from Google Docs ----------
+
+export async function addGuideAction(formData: FormData) {
+  await owner();
+  let to: string;
+  try {
+    const g = await addGuide(String(formData.get("nome") ?? ""), String(formData.get("link") ?? ""));
+    to = `${PATH}?guia=ok&detalhe=${encodeURIComponent(g.nome)}#guias`;
+  } catch (e) {
+    to = `${PATH}?guia=erro&detalhe=${encodeURIComponent((e as Error).message)}#guias`;
+  }
+  revalidatePath(PATH);
+  redirect(to);
+}
+
+export async function refreshGuidesAction() {
+  await owner();
+  let to: string;
+  try {
+    const failed = await refreshGuides();
+    to = failed.length ? `${PATH}?guia=erro&detalhe=${encodeURIComponent(failed.join(" · "))}#guias` : `${PATH}?guia=atualizado#guias`;
+  } catch (e) {
+    to = `${PATH}?guia=erro&detalhe=${encodeURIComponent((e as Error).message)}#guias`;
+  }
+  revalidatePath(PATH);
+  redirect(to);
+}
+
+export async function removeGuideAction(docId: string) {
+  await owner();
+  await removeGuide(docId);
   revalidatePath(PATH);
 }

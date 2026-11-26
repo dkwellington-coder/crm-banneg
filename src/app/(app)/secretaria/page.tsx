@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Suspense } from "react";
-import { Bot, CheckCircle2, FolderOpen, ListTodo, Palette, MessageSquareText, Smartphone, XCircle } from "lucide-react";
+import { BookOpen, Bot, CheckCircle2, FolderOpen, ListTodo, Palette, MessageSquareText, Smartphone, XCircle } from "lucide-react";
 import { requireOwnerPage } from "@/lib/access";
 import { db } from "@/lib/db";
 import { phoneLabel } from "@/lib/calendar";
@@ -11,14 +11,15 @@ import { SecretaryQr } from "./SecretaryQr";
 import { SecretaryForm } from "./SecretaryForm";
 import { secretaryDrive } from "@/lib/secretary-drive";
 import { CANVA_FOLDER, canvaConnected, secretaryCanva } from "@/lib/secretary-canva";
-import { addTaskAction, disconnectCanvaAction, disconnectDriveAction, removeSecretaryAction, setDriveFolderAction, setTaskStatusAction } from "./actions";
+import { getGuides } from "@/lib/secretary-guides";
+import { addGuideAction, addTaskAction, disconnectCanvaAction, refreshGuidesAction, removeGuideAction, disconnectDriveAction, removeSecretaryAction, setDriveFolderAction, setTaskStatusAction } from "./actions";
 
 /**
  * Secretária (Wellington, 2026-11-26): the AI secretary on her own WhatsApp chip, in a group with him and the team.
  * Here he connects her number, picks the group and the people, writes the registration checklist, and sees the
  * tasks she keeps and what she did.
  */
-type Search = { drive?: string; canva?: string; detalhe?: string };
+type Search = { drive?: string; canva?: string; guia?: string; detalhe?: string };
 
 export default function SecretariaPage({ searchParams }: { searchParams: Promise<Search> }) {
   return (
@@ -35,6 +36,12 @@ const DRIVE_NOTICE: Record<string, (d: string) => { ok: boolean; text: string }>
   ok: (d) => ({ ok: true, text: `Google Drive conectado${d ? ` (${d})` : ""}. Agora cole o link da pasta da equipe.` }),
   pasta: (d) => ({ ok: true, text: `Pronto: a equipe vê a pasta "${d}".` }),
   recusado: () => ({ ok: false, text: "O Google não recebeu a permissão. Clique em conectar e marque o acesso ao Drive." }),
+  erro: (d) => ({ ok: false, text: d || "Não deu certo. Tente de novo." }),
+};
+
+const GUIDE_NOTICE: Record<string, (d: string) => { ok: boolean; text: string }> = {
+  ok: (d) => ({ ok: true, text: `Guia "${d}" lido. Ela segue esse padrão a partir de agora.` }),
+  atualizado: () => ({ ok: true, text: "Guias lidos de novo no Google Docs." }),
   erro: (d) => ({ ok: false, text: d || "Não deu certo. Tente de novo." }),
 };
 
@@ -66,6 +73,8 @@ async function Secretaria({ searchParams }: { searchParams: Promise<Search> }) {
   const notice = query.drive && DRIVE_NOTICE[query.drive]?.(query.detalhe ?? "");
   const canva = await secretaryCanva();
   const canvaNotice = query.canva && CANVA_NOTICE[query.canva]?.(query.detalhe ?? "");
+  const guideNotice = query.guia && GUIDE_NOTICE[query.guia]?.(query.detalhe ?? "");
+  const guides = await getGuides();
   const status = s.token ? await secretaryStatus(s).catch((e: Error) => ({ connected: false, status: "sem resposta", reason: e.message, phone: null })) : null;
   const groups = status?.connected ? await secretaryGroups().catch(() => null) : null;
   // The saved group stays selectable even when the list could not be read
@@ -178,6 +187,46 @@ async function Secretaria({ searchParams }: { searchParams: Promise<Search> }) {
               <a href="/api/secretaria/drive/conectar" className={`${btnCls} inline-flex`}>
                 Conectar o Google Drive
               </a>
+            )}
+          </div>
+        </Section>
+
+        <Section icon={BookOpen} title="Padrão do Banneg">
+          <div id="guias" className="space-y-3 text-sm text-slate-600">
+            <p>Os guias que ela segue em artes, legendas, vídeos e respostas sobre consórcio. Edite no Google Docs e clique em atualizar.</p>
+            {guideNotice && <p className={`rounded-lg px-3 py-2 text-sm ${guideNotice.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>{guideNotice.text}</p>}
+            {guides.length > 0 && (
+              <ul className="divide-y divide-slate-100">
+                {guides.map((g) => (
+                  <li key={g.docId} className="flex items-center justify-between gap-2 py-2">
+                    <div className="min-w-0">
+                      <a href={`https://docs.google.com/document/d/${g.docId}/edit`} target="_blank" rel="noreferrer" className="font-medium text-slate-800 underline">
+                        {g.nome}
+                      </a>
+                      <p className="text-xs text-slate-500">lido {relTime(new Date(g.lidoEm))} · {Math.round(g.texto.length / 1000)} mil caracteres</p>
+                    </div>
+                    <form action={removeGuideAction.bind(null, g.docId)}>
+                      <button className="text-xs text-slate-500 hover:text-red-600">Tirar</button>
+                    </form>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {drive ? (
+              <>
+                <form action={addGuideAction} className="flex flex-col gap-2 sm:flex-row">
+                  <input name="nome" required placeholder="Nome (ex.: Marketing)" className={`${inputCls} sm:w-44!`} aria-label="Nome do guia" />
+                  <input name="link" required placeholder="Link do Google Docs" className={inputCls} aria-label="Link do guia no Google Docs" />
+                  <button className={btnCls}>Adicionar</button>
+                </form>
+                {guides.length > 0 && (
+                  <form action={refreshGuidesAction}>
+                    <button className={btnGhostCls}>Atualizar os guias</button>
+                  </form>
+                )}
+              </>
+            ) : (
+              <p className="text-xs text-slate-500">Para adicionar ou atualizar guias, conecte o Google Drive acima.</p>
             )}
           </div>
         </Section>

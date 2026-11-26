@@ -24,14 +24,23 @@ export type ArtInput = {
   rodape?: string;
 };
 
-export type ArtAssets = { fonts: { weight: 400 | 700 | 800; data: ArrayBuffer }[]; logoGold: string; logoBlue: string; photo?: string | null };
+// serif: Lora for titles (Guia de Marketing Banneg, 2026-11-26); without it the title falls back to Montserrat
+export type ArtAssets = {
+  fonts: { weight: 400 | 700 | 800; data: ArrayBuffer }[];
+  serif?: { normal: ArrayBuffer; italic: ArrayBuffer } | null;
+  logoGold: string;
+  logoBlue: string;
+  photo?: string | null;
+};
 
 const NAVY = "#000314";
 const GOLD = "#e2b124";
 const CREAM = "#f7f6f2";
+// Marfim: light text on the blue, instead of pure white (Guia de Marketing Banneg)
+const IVORY = "#f4efe3";
 
 const THEMES: Record<ArtTheme, { bg: string; ink: string; soft: string; accent: string; accentInk: string; logo: "gold" | "blue" }> = {
-  azul: { bg: NAVY, ink: "#ffffff", soft: "#c9cbd6", accent: GOLD, accentInk: NAVY, logo: "gold" },
+  azul: { bg: NAVY, ink: IVORY, soft: "#c9cbd6", accent: GOLD, accentInk: NAVY, logo: "gold" },
   claro: { bg: CREAM, ink: NAVY, soft: "#4a4f66", accent: GOLD, accentInk: NAVY, logo: "blue" },
   dourado: { bg: GOLD, ink: NAVY, soft: "#2c2a20", accent: NAVY, accentInk: GOLD, logo: "blue" },
 };
@@ -53,14 +62,30 @@ export function normalizeArt(input: ArtInput) {
     destaque: clean(input.destaque, 24),
     destaqueLegenda: clean(input.destaque_legenda, 60),
     itens: (Array.isArray(input.itens) ? input.itens : []).map((i) => clean(i, 80)).filter(Boolean).slice(0, 5),
-    rodape: clean(input.rodape, 70) || "banneg.com.br",
+    rodape: clean(input.rodape, 140) || "banneg.com.br",
   };
+}
+
+/** The title without the *marks* around its key word. */
+export const plainTitle = (title: string) => title.replace(/\*/g, "");
+
+/**
+ * The title's words, with the ones between *asterisks* marked: the key word goes in gold italic, as in the approved
+ * Banneg arts ("Seu jet ski com *meia parcela* até a contemplação").
+ */
+export function titleWords(title: string) {
+  const words: { word: string; key: boolean }[] = [];
+  title.split(/(\*[^*]+\*)/).forEach((part) => {
+    const key = /^\*[^*]+\*$/.test(part);
+    for (const word of part.replace(/\*/g, "").split(" ").filter(Boolean)) words.push({ word, key });
+  });
+  return words;
 }
 
 /** Bigger letters for short titles, smaller for long ones, so the title always fits. */
 export function titleSize(title: string, width: number, tall: boolean) {
   const base = width / 1080;
-  const n = title.length;
+  const n = plainTitle(title).length;
   const size = n <= 22 ? 104 : n <= 40 ? 88 : n <= 60 ? 74 : n <= 85 ? 62 : 52;
   return Math.round(size * base * (tall ? 1.08 : 1));
 }
@@ -76,10 +101,12 @@ const dataUrl = (buf: ArrayBuffer | Buffer, mime: string) => `data:${mime};base6
 /** The fonts and the monograms, from the CRM's own public folder. */
 export async function loadArtAssets(): Promise<ArtAssets> {
   const base = `${CRM_URL}/brand`;
-  const [f400, f700, f800, gold, blue] = await Promise.all([
+  const [f400, f700, f800, lora, loraItalic, gold, blue] = await Promise.all([
     fetchBuffer(`${base}/fonts/montserrat-400.woff`),
     fetchBuffer(`${base}/fonts/montserrat-700.woff`),
     fetchBuffer(`${base}/fonts/montserrat-800.woff`),
+    fetchBuffer(`${base}/fonts/lora-600.woff`),
+    fetchBuffer(`${base}/fonts/lora-600-italic.woff`),
     fetchBuffer(`${base}/monograma-dourado.png`),
     fetchBuffer(`${base}/monograma-azul.png`),
   ]);
@@ -89,6 +116,7 @@ export async function loadArtAssets(): Promise<ArtAssets> {
       { weight: 700, data: f700 },
       { weight: 800, data: f800 },
     ],
+    serif: { normal: lora, italic: loraItalic },
     logoGold: dataUrl(gold, "image/png"),
     logoBlue: dataUrl(blue, "image/png"),
   };
@@ -98,6 +126,41 @@ export function photoDataUrl(data: Buffer, mime: string) {
   if (!/^image\/(jpeg|png)$/.test(mime)) throw new Error("A foto da arte precisa ser JPG ou PNG.");
   if (data.length > 8 * 1024 * 1024) throw new Error("Foto grande demais para a arte (mais de 8 MB).");
   return dataUrl(data, mime);
+}
+
+function responseFonts(assets: ArtAssets) {
+  const fonts: { name: string; data: ArrayBuffer; weight: 400 | 600 | 700 | 800; style: "normal" | "italic" }[] = assets.fonts.map((f) => ({
+    name: "Montserrat",
+    data: f.data,
+    weight: f.weight,
+    style: "normal",
+  }));
+  if (assets.serif) {
+    fonts.push({ name: "Lora", data: assets.serif.normal, weight: 600, style: "normal" }, { name: "Lora", data: assets.serif.italic, weight: 600, style: "italic" });
+  }
+  return fonts;
+}
+
+/** The title in Lora, its *key word* in gold italic, centered. */
+function Title({ title, size, ink, accent, serif }: { title: string; size: number; ink: string; accent: string; serif: boolean }) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", columnGap: Math.round(size * 0.26), lineHeight: 1.12 }}>
+      {titleWords(title).map((w, i) => (
+        <span
+          key={i}
+          style={{
+            fontFamily: serif ? "Lora" : "Montserrat",
+            fontWeight: serif ? 600 : 800,
+            fontStyle: w.key && serif ? "italic" : "normal",
+            color: w.key ? accent : ink,
+            fontSize: size,
+          }}
+        >
+          {w.word}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 /** The art as a PNG. */
@@ -111,7 +174,7 @@ export async function renderArt(input: ArtInput, assets: ArtAssets): Promise<Buf
   const photo = assets.photo ?? null;
   const logo = photo ? assets.logoGold : t.logo === "gold" ? assets.logoGold : assets.logoBlue;
   // With a photo, the text sits on a dark band over it and the colors follow the dark theme
-  const ink = photo ? "#ffffff" : t.ink;
+  const ink = photo ? IVORY : t.ink;
   const soft = photo ? "#e4e5ec" : t.soft;
   const accent = photo ? GOLD : t.accent;
   const accentInk = photo ? NAVY : t.accentInk;
@@ -140,16 +203,25 @@ export async function renderArt(input: ArtInput, assets: ArtAssets): Promise<Buf
       <div
         style={{ display: "flex", flexDirection: "column", flex: 1, padding: `${Math.round(64 * s)}px ${pad}px ${pad}px`, justifyContent: photo ? "flex-start" : "space-between", gap: photo ? Math.round(56 * s) : 0 }}
       >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        {/* The new logo on top, centered: the monogram, BANNEG spaced out and BANCO DE NEGÓCIOS under it */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: Math.round(8 * s) }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={logo} alt="" width={Math.round(150 * s)} height={Math.round(77 * s)} style={{ width: Math.round(150 * s), height: Math.round(77 * s) }} />
-          <div style={{ display: "flex", fontSize: Math.round(24 * s), letterSpacing: 6 * s, fontWeight: 700, color: accent }}>BANNEG</div>
+          <img src={logo} alt="" width={Math.round(120 * s)} height={Math.round(62 * s)} style={{ width: Math.round(120 * s), height: Math.round(62 * s) }} />
+          <div style={{ display: "flex", fontSize: Math.round(26 * s), letterSpacing: 12 * s, fontWeight: 400, color: ink, paddingLeft: 12 * s }}>BANNEG</div>
+          <div style={{ display: "flex", fontSize: Math.round(12 * s), letterSpacing: 5 * s, fontWeight: 700, color: accent, paddingLeft: 5 * s }}>BANCO DE NEGÓCIOS</div>
         </div>
         {/* Over a photo the words go down to the dark band, under the picture's subject */}
-        <div style={{ display: "flex", flexDirection: "column", gap: Math.round(30 * s), marginTop: photo ? "auto" : 0 }}>
-          {a.chamada && <div style={{ display: "flex", fontSize: Math.round(30 * s), fontWeight: 700, letterSpacing: 4 * s, color: accent }}>{a.chamada}</div>}
-          <div style={{ display: "flex", fontSize: titleSize(a.titulo, width, tall), fontWeight: 800, lineHeight: 1.06, color: ink, letterSpacing: -1.5 * s }}>{a.titulo}</div>
-          {a.texto && <div style={{ display: "flex", fontSize: Math.round(38 * s), fontWeight: 400, lineHeight: 1.4, color: soft }}>{a.texto}</div>}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: Math.round(30 * s), marginTop: photo ? "auto" : 0 }}>
+          {/* The "chapéu": caps, spaced, between two gold lines */}
+          {a.chamada && (
+            <div style={{ display: "flex", alignItems: "center", gap: Math.round(18 * s) }}>
+              <div style={{ display: "flex", width: Math.round(48 * s), height: Math.round(3 * s), background: accent }} />
+              <div style={{ display: "flex", fontSize: Math.round(26 * s), fontWeight: 700, letterSpacing: 5 * s, color: accent }}>{a.chamada}</div>
+              <div style={{ display: "flex", width: Math.round(48 * s), height: Math.round(3 * s), background: accent }} />
+            </div>
+          )}
+          <Title title={a.titulo} size={Math.round(titleSize(a.titulo, width, tall) * (assets.serif ? 0.9 : 1))} ink={ink} accent={accent} serif={!!assets.serif} />
+          {a.texto && <div style={{ display: "flex", fontSize: Math.round(36 * s), fontWeight: 400, lineHeight: 1.4, color: soft, textAlign: "center", justifyContent: "center" }}>{a.texto}</div>}
           {a.itens.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: Math.round(16 * s) }}>
               {a.itens.map((item, i) => (
@@ -175,14 +247,12 @@ export async function renderArt(input: ArtInput, assets: ArtAssets): Promise<Buf
               >
                 {a.destaque}
               </div>
-              {a.destaqueLegenda && <div style={{ display: "flex", flex: 1, fontSize: Math.round(32 * s), fontWeight: 700, color: ink, lineHeight: 1.25 }}>{a.destaqueLegenda}</div>}
+              {a.destaqueLegenda && <div style={{ display: "flex", maxWidth: Math.round(420 * s), fontSize: Math.round(32 * s), fontWeight: 700, color: ink, lineHeight: 1.25 }}>{a.destaqueLegenda}</div>}
             </div>
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: Math.round(22 * s) }}>
-          <div style={{ display: "flex", width: Math.round(60 * s), height: Math.round(4 * s), background: accent }} />
-          <div style={{ display: "flex", fontSize: Math.round(28 * s), fontWeight: 700, color: ink }}>{a.rodape}</div>
-        </div>
+        {/* The small legal line at the bottom */}
+        <div style={{ display: "flex", justifyContent: "center", fontSize: Math.round(22 * s), fontWeight: 400, color: soft, textAlign: "center" }}>{a.rodape}</div>
       </div>
     </div>
   );
@@ -190,7 +260,7 @@ export async function renderArt(input: ArtInput, assets: ArtAssets): Promise<Buf
   const res = new ImageResponse(element, {
     width,
     height,
-    fonts: assets.fonts.map((f) => ({ name: "Montserrat", data: f.data, weight: f.weight, style: "normal" as const })),
+    fonts: responseFonts(assets),
   });
   return Buffer.from(await res.arrayBuffer());
 }
@@ -221,7 +291,7 @@ export async function renderCollage(
   const s = width / 1080;
   const pad = Math.round(48 * s);
   const gap = Math.round(16 * s);
-  const titulo = clean(input.titulo, 80);
+  const titulo = plainTitle(clean(input.titulo, 80));
   const rodape = clean(input.rodape, 70) || "banneg.com.br";
   const { cols, rows } = collageGrid(fotos.length, input.layout ?? "grade");
   const headH = titulo ? Math.round(150 * s) : Math.round(40 * s);
