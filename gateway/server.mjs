@@ -32,7 +32,24 @@ if (ADMIN.length < 24) {
   console.error("Defina ADMIN_TOKEN (pelo menos 24 caracteres) antes de ligar o servidor.");
   process.exit(1);
 }
-const log = pino({ level: process.env.LOG_LEVEL || "warn" });
+// The last warnings and errors stay in memory too: the CRM reads them (GET /debug/log), so a problem can be seen
+// without opening Railway (Wellington, 2026-11-26: QR code not showing for the support numbers)
+const recent = [];
+const log = pino(
+  { level: process.env.LOG_LEVEL || "warn" },
+  pino.multistream([
+    { level: "warn", stream: process.stdout },
+    {
+      level: "warn",
+      stream: {
+        write(line) {
+          recent.push(String(line).slice(0, 600));
+          if (recent.length > 150) recent.shift();
+        },
+      },
+    },
+  ]),
+);
 
 // ---- Saved numbers: token, name and where to post. The WhatsApp keys live in data/auth/<token>/
 const SESSIONS_FILE = path.join(DATA, "sessions.json");
@@ -89,12 +106,15 @@ function reconnect(s, ms) {
   }, ms);
 }
 
+// The WhatsApp Web version is asked again every 6 hours: an old one makes WhatsApp close new connections
 let waVersion;
+let waVersionAt = 0;
 async function start(s) {
   clearTimeout(s.retry);
-  waVersion ??= await fetchLatestBaileysVersion()
-    .then((r) => r.version)
-    .catch(() => undefined);
+  if (!waVersion || Date.now() - waVersionAt > 6 * 3_600_000) {
+    const latest = await fetchLatestBaileysVersion().catch(() => undefined);
+    if (latest?.version) [waVersion, waVersionAt] = [latest.version, Date.now()];
+  }
   const { state, saveCreds } = await useMultiFileAuthState(authDir(s.token));
   const sock = makeWASocket({
     auth: state,
@@ -112,8 +132,8 @@ async function start(s) {
   s.status = "connecting";
   sock.ev.on("creds.update", saveCreds);
   sock.ev.on("connection.update", async (u) => {
-    // An old connection closing after a new one started must not touch the new one
-    if (s.sock !== sock && s.sock) return;
+    // Only the number's current connection counts: an old one closing (after "read the QR again") touches nothing
+    if (s.sock !== sock) return;
     if (u.qr) {
       s.qr = await QRCode.toDataURL(u.qr, { margin: 1, width: 320 });
       s.status = "qrcode";
@@ -386,22 +406,35 @@ const routes = {
       const old = s.sock;
       s.sock = undefined;
       clearTimeout(s.retry);
-      await old?.logout().catch(() => {});
+      // Logging out only works on an open connection; a closed one would wait a minute for nothing
+      if (old && s.status === "connected") await Promise.race([old.logout().catch(() => {}), new Promise((r) => setTimeout(r, 5_000))]);
       old?.end?.(undefined);
       await rm(authDir(s.token), { recursive: true, force: true });
       s.status = "disconnected";
       s.qr = null;
     }
-    if (s.status !== "connected" && !s.sock)
-      await start(s).catch((e) => {
-        reconnect(s, 5_000);
-        throw e;
-      });
-    await waitFor(s, 10_000);
+    // Someone is waiting with the phone in hand: no waiting from earlier failures
+    s.tries = 0;
+    for (let attempt = 0; attempt < 3 && s.status !== "connected" && !s.qr; attempt++) {
+      if (!s.sock) {
+        clearTimeout(s.retry);
+        await start(s).catch((e) => {
+          reconnect(s, 5_000);
+          throw e;
+        });
+      }
+      await waitFor(s, 12_000);
+      if (s.status !== "connected" && !s.qr) log.warn({ number: s.name, attempt, lastError: s.lastError }, "QR code não veio");
+    }
     return [200, { connected: s.status === "connected", ...statusOf(s) }];
   },
 
   "GET /instance/status": async (s) => [200, statusOf(s)],
+
+  "GET /debug/log": async (_s, _b, req) => {
+    if (!same(req.headers.admintoken, ADMIN)) return [401, { error: "admintoken inválido" }];
+    return [200, { lines: recent.slice(-80), waVersion: waVersion?.join(".") || null }];
+  },
 
   "POST /instance/logout": async (s) => {
     await s.sock?.logout().catch(() => {});
@@ -457,7 +490,7 @@ const server = createServer(async (req, res) => {
       for await (const c of req) chunks.push(c);
       body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") : {};
     }
-    const open = url.pathname === "/health" || url.pathname.startsWith("/instance/init") || url.pathname === "/instance/all";
+    const open = url.pathname === "/health" || url.pathname.startsWith("/instance/init") || url.pathname === "/instance/all" || url.pathname === "/debug/log";
     const s = open ? null : sessions.get(String(req.headers.token || ""));
     if (!open && !s) return reply(401, { error: "token inválido" });
     if (req.method === "GET" && url.pathname === "/media") {

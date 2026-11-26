@@ -47,7 +47,11 @@ function QrPanel({ state, onState }: { state: QrState; onState: (s: QrState) => 
         // eslint-disable-next-line @next/next/no-img-element
         <img src={state.qr} alt="QR code para conectar o WhatsApp" className="size-56 rounded-xl bg-white p-2 ring-1 ring-slate-200" />
       ) : (
-        <div className="flex size-56 items-center justify-center rounded-xl bg-slate-100 text-sm text-slate-500">Gerando o QR code…</div>
+        <div className="flex size-56 flex-col items-center justify-center gap-2 rounded-xl bg-slate-100 p-3 text-center text-sm text-slate-500">
+          Gerando o QR code…
+          {/* WhatsApp closed the connection before giving a QR code: say why instead of spinning in silence */}
+          {state.reason && <span className="text-xs font-medium text-red-700">O WhatsApp fechou a conexão: {state.reason}. Tentando de novo…</span>}
+        </div>
       )}
       <ol className="max-w-xs list-decimal space-y-1 pl-5 text-sm text-slate-600">
         <li>No celular do número de suporte, abra o WhatsApp.</li>
