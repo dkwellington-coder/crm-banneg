@@ -74,8 +74,60 @@ test("group list in Uazapi's shape: only groups, with their names", () => {
   );
 });
 
+test("secretary's number: a group message carries the group, who wrote, who was mentioned and what it answers", async () => {
+  const { allowedGroup } = await import("./server.mjs");
+  const sec = { sentByApi: new Set(), groupsOnly: true, groups: ["120363000@g.us"] };
+  assert.equal(allowedGroup(sec, "120363000@g.us"), true);
+  assert.equal(allowedGroup(sec, "999@g.us"), false);
+  assert.equal(allowedGroup(sec, "5517999990000@s.whatsapp.net"), false);
+  const m = {
+    key: { remoteJid: "120363000@g.us", participant: "777@lid", participantAlt: "5517981600088@s.whatsapp.net", fromMe: false, id: "G1" },
+    pushName: "Wellington",
+    messageTimestamp: 1764150000,
+    message: {
+      extendedTextMessage: {
+        text: "@5517911110000 marca reunião amanhã 10h",
+        contextInfo: { mentionedJid: ["5517911110000@s.whatsapp.net"], stanzaId: "Q1", participant: "5517911110000@s.whatsapp.net", quotedMessage: { conversation: "Qual horário?" } },
+      },
+    },
+  };
+  const p = toPayload(sec, m, undefined, { group: true });
+  assert.equal(p.message.isGroup, true);
+  assert.equal(p.chat.wa_chatid, "120363000@g.us");
+  assert.equal(p.message.sender_pn, "5517981600088@s.whatsapp.net");
+  assert.equal(p.message.sender_lid, "777");
+  assert.equal(p.message.senderName, "Wellington");
+  assert.deepEqual(p.message.mentioned, ["5517911110000"]);
+  assert.deepEqual(p.message.quoted, { id: "Q1", text: "Qual horário?", sender: "5517911110000" });
+  // A group never goes out from a support number
+  assert.equal(toPayload(s, m), null);
+  const { secretaryPayload } = await import("./server.mjs");
+  const dm = { key: { remoteJid: "5517999990000@s.whatsapp.net", id: "P9" }, message: { conversation: "x" } };
+  assert.equal(secretaryPayload(sec, dm), null);
+  assert.equal(secretaryPayload({ ...sec, privates: true }, dm).message.isGroup, false);
+  assert.equal(secretaryPayload(sec, { ...m, key: { ...m.key, remoteJid: "999@g.us" } }), null);
+  assert.equal(secretaryPayload(sec, m).message.isGroup, true);
+});
+
 test("a send-only number takes only the first sync WhatsApp needs, never the conversations", () => {
   const T = proto.HistorySync.HistorySyncType;
   assert.ok(SEND_ONLY_SYNC.has(T.INITIAL_BOOTSTRAP));
   for (const t of [T.FULL, T.RECENT, T.ON_DEMAND]) assert.equal(SEND_ONLY_SYNC.has(t), false);
+});
+
+test("the secretary changes people and photo only in her own group", async () => {
+  const { routes } = await import("./server.mjs");
+  const calls = [];
+  const sock = {
+    groupParticipantsUpdate: async (jid, people, action) => (calls.push([jid, people, action]), people.map((j, i) => ({ jid: j, status: i ? "403" : "200" }))),
+    groupInviteCode: async () => "ABC123",
+  };
+  const sec = { status: "connected", sock, groupsOnly: true, groups: ["120363000@g.us"], sentByApi: new Set() };
+  const [code, out] = await routes["POST /group/updateParticipants"](sec, { groupjid: "120363000@g.us", participants: ["21968566974", "5517900001111"] });
+  assert.equal(code, 200);
+  assert.deepEqual(calls[0], ["120363000@g.us", ["21968566974@s.whatsapp.net", "5517900001111@s.whatsapp.net"], "add"]);
+  assert.equal(out.invite, "https://chat.whatsapp.com/ABC123");
+  assert.equal((await routes["POST /group/updateParticipants"](sec, { groupjid: "999@g.us", participants: ["1"] }))[0], 403);
+  assert.equal((await routes["POST /group/updateParticipants"]({ ...sec, groupsOnly: false }, { groupjid: "120363000@g.us", participants: ["1"] }))[0], 403);
+  assert.equal((await routes["POST /group/updateImage"](sec, { groupjid: "120363000@g.us", image: "http://x" }))[0], 400);
 });

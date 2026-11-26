@@ -56,7 +56,9 @@ const log = pino(
 const SESSIONS_FILE = path.join(DATA, "sessions.json");
 // sendOnly: a number that only sends (Wellington's own WhatsApp posting the meetings in the team's group, 2026-11-23):
 // nothing it sends or receives goes to the CRM, no history and no files are kept
-/** @type {Map<string, {token: string, name: string, webhook: string, sendOnly?: boolean, sock?: any, qr?: string|null, status: string, owner?: string|null, sentByApi: Set<string>, retry?: NodeJS.Timeout, chain?: Promise<void>, tries?: number, lastError?: {code: number, reason: string, at: string}|null}>} */
+// groupsOnly: the secretary's number (Wellington, 2026-11-26): only the messages of the groups listed in `groups` go to
+// the CRM; private chats, other groups and the history never leave this server
+/** @type {Map<string, {token: string, name: string, webhook: string, sendOnly?: boolean, groupsOnly?: boolean, groups?: string[], privates?: boolean, sock?: any, qr?: string|null, status: string, owner?: string|null, sentByApi: Set<string>, retry?: NodeJS.Timeout, chain?: Promise<void>, tries?: number, lastError?: {code: number, reason: string, at: string}|null}>} */
 const sessions = new Map();
 
 // The history syncs a send-only number still accepts (no FULL, RECENT or ON_DEMAND: those are the conversations)
@@ -67,7 +69,13 @@ export const SEND_ONLY_SYNC = new Set([
 ]);
 
 async function save() {
-  const list = [...sessions.values()].map(({ token, name, webhook, sendOnly }) => ({ token, name, webhook, ...(sendOnly && { sendOnly: true }) }));
+  const list = [...sessions.values()].map(({ token, name, webhook, sendOnly, groupsOnly, groups, privates }) => ({
+    token,
+    name,
+    webhook,
+    ...(sendOnly && { sendOnly: true }),
+    ...(groupsOnly && { groupsOnly: true, groups: groups || [], privates: !!privates }),
+  }));
   await writeFile(SESSIONS_FILE, JSON.stringify(list, null, 2));
 }
 
@@ -132,14 +140,14 @@ async function start(s) {
     browser: Browsers.macOS("Desktop"),
     // Not "online": the attendant's phone keeps getting its notifications
     markOnlineOnConnect: false,
-    // A send-only number asks for no history: only the small first sync WhatsApp needs to keep the session stable (it
-    // carries the number's LID mappings; Baileys warns of session errors without it). Its messages are dropped on
-    // arrival (messaging-history.set returns early for sendOnly), so nothing of them is kept or posted.
+    // A send-only number and the secretary's (which reads only its group) ask for no history: only the small first sync
+    // WhatsApp needs to keep the session stable (it carries the number's LID mappings; Baileys warns of session errors
+    // without it). Their history is dropped on arrival (messaging-history.set returns early for both), so nothing is kept or posted.
     // Never "full sync" (Wellington, 2026-11-26): since 11-19, when it was turned on, WhatsApp ended every connection
     // of the support numbers with 428 before even giving a QR code, while the send-only number (without it) connected
     // on the same server. Without it WhatsApp still sends the recent history when a number is connected.
     syncFullHistory: false,
-    shouldSyncHistoryMessage: (m) => !s.sendOnly || SEND_ONLY_SYNC.has(m.syncType),
+    shouldSyncHistoryMessage: (m) => (!s.sendOnly && !s.groupsOnly) || SEND_ONLY_SYNC.has(m.syncType),
   });
   s.sock = sock;
   s.status = "connecting";
@@ -179,13 +187,13 @@ async function start(s) {
   sock.ev.on("messages.upsert", ({ messages }) => {
     if (s.sendOnly) return;
     for (const m of messages) {
-      const payload = toPayload(s, m);
+      const payload = s.groupsOnly ? secretaryPayload(s, m) : toPayload(s, m);
       // The message first, then its file: the CRM already has the message when the file arrives
       if (payload) post(s, payload).then(() => payload.message.media && saveMedia(s, m, payload));
     }
   });
   sock.ev.on("messaging-history.set", ({ messages, contacts, chats, lidPnMappings }) => {
-    if (s.sendOnly) return;
+    if (s.sendOnly || s.groupsOnly) return;
     const names = new Map();
     for (const c of contacts || []) if (c.id) names.set(c.id, c.name || c.notify || c.verifiedName || "");
     for (const c of chats || []) if (c.id && c.name && !names.get(c.id)) names.set(c.id, c.name);
@@ -265,12 +273,34 @@ async function download(s, m, payload) {
   return post(s, { ...done, media: { ...payload.message.media, size, saved: true } });
 }
 
+/** The secretary's number posts only the groups the CRM chose (none until one is chosen). */
+export function allowedGroup(s, jid) {
+  return !!jid && isJidGroup(jid) && (s.groups || []).includes(jid);
+}
+
+/**
+ * What the secretary's number posts: the chosen group's messages and, when the CRM asked (privates), the private chats
+ * too: the chip is hers alone (Wellington, 2026-11-26: "você poderá receber msg e responder"). Other groups stay here.
+ */
+export function secretaryPayload(s, m) {
+  const jid = m.key?.remoteJid;
+  if (!jid) return null;
+  if (isJidGroup(jid)) return allowedGroup(s, jid) ? toPayload(s, m, undefined, { group: true }) : null;
+  return s.privates ? toPayload(s, m) : null;
+}
+
 const MEDIA = { audioMessage: "audio", imageMessage: "image", videoMessage: "video", documentMessage: "document", documentWithCaptionMessage: "document", stickerMessage: "sticker" };
 
-/** A WhatsApp message in the shape Uazapi posts, which the CRM reads. Groups, status and system messages stay out. */
-export function toPayload(s, m, history) {
+/**
+ * A WhatsApp message in the shape Uazapi posts, which the CRM reads. Groups, status and system messages stay out, except
+ * a group's messages when opts.group (the secretary's number): then the sender, who was mentioned and the message it answers
+ * come along.
+ */
+export function toPayload(s, m, history, opts = {}) {
   const jid = m.key?.remoteJid;
-  if (!jid || isJidGroup(jid) || jid === "status@broadcast" || jid.endsWith("@newsletter")) return null;
+  if (!jid || jid === "status@broadcast" || jid.endsWith("@newsletter")) return null;
+  const group = !!isJidGroup(jid);
+  if (group !== !!opts.group) return null;
   const content = normalizeMessageContent(m.message);
   const type = getContentType(content);
   if (!type || ["protocolMessage", "senderKeyDistributionMessage", "messageContextInfo"].includes(type)) return null;
@@ -278,7 +308,12 @@ export function toPayload(s, m, history) {
   const text = content.conversation || content.extendedTextMessage?.text || c.caption || content.documentWithCaptionMessage?.message?.documentMessage?.caption || "";
   const mediaType = type === "audioMessage" ? (c.ptt ? "ptt" : "audio") : MEDIA[type] || "";
   const kind = type === "reactionMessage" ? "reaction" : type === "locationMessage" ? "location" : type === "contactMessage" ? "contact" : mediaType ? "media" : "text";
-  const pn = jid.endsWith("@lid") ? m.key.remoteJidAlt || history?.lids.get(jid) || "" : jid;
+  // In a group the person who wrote is the participant (a LID in newer groups, with the phone alongside)
+  const who = group ? [m.key.participant, m.key.participantAlt].find((j) => j?.endsWith("@s.whatsapp.net")) || m.key.participant || "" : jid;
+  const pn = who.endsWith("@lid") ? (group ? "" : m.key.remoteJidAlt || history?.lids.get(jid) || "") : who;
+  const ctx = c.contextInfo || content.extendedTextMessage?.contextInfo || {};
+  const quoted = ctx.quotedMessage ? normalizeMessageContent(ctx.quotedMessage) : null;
+  const quotedText = quoted ? quoted.conversation || quoted.extendedTextMessage?.text || quoted[getContentType(quoted)]?.caption || "" : "";
   // In the history the contact's name comes from the address book, for the client's and the attendant's messages
   const known = history?.names.get(jid) || (pn && history?.names.get(jidNormalizedUser(pn))) || "";
   const file = mediaType && mediaType !== "sticker" ? c : null;
@@ -286,12 +321,17 @@ export function toPayload(s, m, history) {
   const ts = Number(m.messageTimestamp?.toNumber?.() ?? m.messageTimestamp ?? 0);
   return {
     EventType: "messages",
-    chat: { wa_chatid: jid, phone: digits(pn), wa_contactName: (m.key.fromMe ? "" : m.pushName) || known || "" },
+    chat: group ? { wa_chatid: jid, phone: "", wa_contactName: "", wa_isGroup: true } : { wa_chatid: jid, phone: digits(pn), wa_contactName: (m.key.fromMe ? "" : m.pushName) || known || "" },
     message: {
       chatid: jid,
       messageid: id,
       fromMe: !!m.key.fromMe,
-      isGroup: false,
+      isGroup: group,
+      ...(group && {
+        sender_lid: [m.key.participant, m.key.participantAlt].find((j) => j?.endsWith("@lid")) ? digits([m.key.participant, m.key.participantAlt].find((j) => j?.endsWith("@lid"))) : "",
+        mentioned: (ctx.mentionedJid || []).map(digits).filter(Boolean),
+        ...(quoted && { quoted: { id: ctx.stanzaId || "", text: String(quotedText).slice(0, 1000), sender: digits(ctx.participant) } }),
+      }),
       messageTimestamp: ts ? ts * 1000 : Date.now(),
       text,
       type: kind,
@@ -388,7 +428,7 @@ async function waitFor(s, ms) {
   while (Date.now() < until && s.status !== "connected" && !s.qr) await new Promise((r) => setTimeout(r, 250));
 }
 
-const routes = {
+export const routes = {
   "GET /health": async () => [200, { ok: true, numbers: sessions.size }],
 
   "POST /instance/init": async (_s, body, req) => {
@@ -399,6 +439,7 @@ const routes = {
       name: String(body.name || "suporte").slice(0, 60),
       webhook: "",
       ...(body.sendOnly === true && { sendOnly: true }),
+      ...(body.groupsOnly === true && body.sendOnly !== true && { groupsOnly: true, groups: [] }),
       status: "disconnected",
       qr: null,
       sentByApi: new Set(),
@@ -459,6 +500,9 @@ const routes = {
     const url = String(body.url || "");
     if (url && !/^https:\/\//.test(url)) return [400, { error: "O webhook precisa ser https." }];
     s.webhook = url;
+    // The secretary's number: which groups it reads (the rest never leaves this server)
+    if (s.groupsOnly && Array.isArray(body.groups)) s.groups = body.groups.map(String).filter((g) => isJidGroup(g)).slice(0, 5);
+    if (s.groupsOnly && typeof body.privates === "boolean") s.privates = body.privates;
     await save();
     return [200, { url, events: ["messages", "connection"] }];
   },
@@ -470,13 +514,58 @@ const routes = {
     return [200, groupList(groups)];
   },
 
+  // The secretary's group (Wellington, 2026-11-26): she adds or removes people and changes the photo when a partner asks.
+  // Only for her number and only in the group she reads; she must be an admin of it.
+  "POST /group/updateParticipants": async (s, body) => {
+    if (s.status !== "connected" || !s.sock) return [409, { error: "Número desconectado. Leia o QR code de novo no CRM." }];
+    const jid = String(body.groupjid || "");
+    if (!s.groupsOnly || !allowedGroup(s, jid)) return [403, { error: "Só no grupo da secretária." }];
+    const action = String(body.action || "add");
+    if (!["add", "remove", "promote", "demote"].includes(action)) return [400, { error: "Ação inválida." }];
+    const people = (Array.isArray(body.participants) ? body.participants : []).map((v) => (String(v).includes("@") ? String(v) : `${String(v).replace(/\D/g, "")}@s.whatsapp.net`)).slice(0, 10);
+    if (!people.length) return [400, { error: "Ninguém para incluir." }];
+    let result;
+    try {
+      result = await s.sock.groupParticipantsUpdate(jid, people, action);
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (/not-authorized|forbidden|403/i.test(msg)) return [403, { error: "A secretária não é administradora do grupo." }];
+      throw e;
+    }
+    // WhatsApp refuses to add someone whose privacy blocks it (403/408): the CRM sends that person the group's invite link
+    const out = (result || []).map((r) => ({ jid: r.jid, status: String(r.status) }));
+    let invite = null;
+    if (action === "add" && out.some((r) => r.status !== "200")) invite = `https://chat.whatsapp.com/${await s.sock.groupInviteCode(jid)}`;
+    return [200, { participants: out, invite }];
+  },
+
+  "POST /group/updateImage": async (s, body) => {
+    if (s.status !== "connected" || !s.sock) return [409, { error: "Número desconectado. Leia o QR code de novo no CRM." }];
+    const jid = String(body.groupjid || "");
+    if (!s.groupsOnly || !allowedGroup(s, jid)) return [403, { error: "Só no grupo da secretária." }];
+    const url = String(body.image || "");
+    if (!/^https:\/\//.test(url)) return [400, { error: "A imagem precisa ser um link https." }];
+    const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) return [400, { error: `Não consegui baixar a imagem (HTTP ${res.status}).` }];
+    try {
+      await s.sock.updateProfilePicture(jid, Buffer.from(await res.arrayBuffer()));
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (/not-authorized|forbidden|403/i.test(msg)) return [403, { error: "A secretária não é administradora do grupo." }];
+      throw e;
+    }
+    return [200, { ok: true }];
+  },
+
   "POST /send/text": async (s, body) => {
     if (s.status !== "connected" || !s.sock) return [409, { error: "Número desconectado. Leia o QR code de novo no CRM." }];
     const to = String(body.number || "");
     const jid = to.includes("@") ? to : `${to.replace(/\D/g, "")}@s.whatsapp.net`;
     const text = String(body.text || "");
     if (!text.trim()) return [400, { error: "Mensagem vazia." }];
-    const sent = await s.sock.sendMessage(jid, { text });
+    // @mentions (the secretary chasing someone in the group): phones or JIDs, written as @<phone> in the text
+    const mentions = Array.isArray(body.mentions) ? body.mentions.map((v) => (String(v).includes("@") ? String(v) : `${String(v).replace(/\D/g, "")}@s.whatsapp.net`)) : [];
+    const sent = await s.sock.sendMessage(jid, mentions.length ? { text, mentions } : { text });
     const id = sent?.key?.id;
     if (id) {
       s.sentByApi.add(id);
