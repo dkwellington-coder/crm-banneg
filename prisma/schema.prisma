@@ -544,3 +544,78 @@ model SupportMessage {
   @@index([createdAt])
   @@index([mediaStatus, driveFileId])
 }
+
+// ---------- Secretária (Wellington, 2026-11-26): an AI secretary on her own WhatsApp chip, in a group with him and 1-2
+// people and in private chats. She books meetings on his Google agenda, sends e-mails, keeps tasks and chases them.
+
+model SecretaryMessage {
+  id          String    @id @default(cuid())
+  // The group (...@g.us) or the private chat (...@s.whatsapp.net / ...@lid)
+  chatId      String
+  isGroup     Boolean   @default(true)
+  // WhatsApp's message id, so the same message never lands twice
+  externalId  String?
+  // Sent from her number: by the CRM (byApi) or typed on the chip's phone
+  fromMe      Boolean   @default(false)
+  byApi       Boolean   @default(false)
+  senderPhone String?
+  senderName  String?
+  body        String
+  // audio, image, video, document...; null = text
+  kind        String?
+  // Audio: aguardando (the server is still downloading it), transcrito, erro
+  mediaStatus String?
+  // The message it answers (WhatsApp's "responder")
+  quotedText  String?
+  at          DateTime  @default(now())
+  // When the secretary read it (null = still to read)
+  handledAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@unique([chatId, externalId])
+  @@index([chatId, at])
+  @@index([handledAt])
+}
+
+model SecretaryTask {
+  id            String    @id @default(cuid())
+  title         String
+  details       String?
+  // tarefa (someone does it), retorno (someone owes an answer), lembrete (only a reminder)
+  kind          String    @default("tarefa")
+  assignee      String?
+  assigneePhone String?
+  dueAt         DateTime?
+  remindAt      DateTime?
+  remindedAt    DateTime?
+  // When she asks about it again in the group, and how many times she already did
+  nextNudgeAt   DateTime?
+  nudges        Int       @default(0)
+  // aberta, feita, cancelada
+  status        String    @default("aberta")
+  createdBy     String?
+  chatId        String?
+  doneAt        DateTime?
+  doneBy        String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status, nextNudgeAt])
+  @@index([status, remindAt])
+}
+
+model SecretaryEmail {
+  id        String    @id @default(cuid())
+  to        String
+  cc        String?
+  subject   String
+  body      String
+  // rascunho (waiting for an ok in the group), enviado, descartado, erro
+  status    String    @default("rascunho")
+  createdBy String?
+  error     String?
+  sentAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([status])
+}

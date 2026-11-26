@@ -79,6 +79,12 @@ async function sdrContext(lead: Lead) {
 }
 
 const handlers: Record<string, Handler> = {
+  // The secretary answers a burst of messages in her group or in a private chat (lib/secretary-ai)
+  async "secretaria.turn"(job) {
+    const { runSecretaryTurn } = await import("./secretary-ai");
+    return runSecretaryTurn(String((job.payload as { chatId?: string }).chatId ?? ""));
+  },
+
   async "sdr.first_contact"(_job, l) {
     const lead = needLead(l);
     if (lead.aiPaused || lead.status !== "NEW") return "Ignorado: lead já em atendimento.";
@@ -801,19 +807,22 @@ async function failStuckJobs() {
 }
 
 /** Runs due jobs. Called every minute by the scheduler (cron hitting /api/cron). */
-export async function runDueJobs(limit = 20) {
+export async function runDueJobs(limit = 20, only?: string) {
   const deadline = Date.now() + RUN_BUDGET_MS;
-  await failStuckJobs();
+  if (!only) await failStuckJobs();
   const now = new Date();
   // The portal's notices go after the rest, a few per run: a portal that hangs never holds the AI's replies back
-  const due = [
-    ...(await db.job.findMany({
-      where: { status: "PENDING", type: { notIn: ["meta.capi", PORTAL_JOB] }, runAt: { lte: now } },
-      orderBy: { runAt: "asc" },
-      take: limit,
-    })),
-    ...(await db.job.findMany({ where: { status: "PENDING", type: PORTAL_JOB, runAt: { lte: now } }, orderBy: { runAt: "asc" }, take: PORTAL_PER_RUN })),
-  ];
+  // only: just that kind (the secretary's webhook answers right away instead of waiting for the next minute)
+  const due = only
+    ? await db.job.findMany({ where: { status: "PENDING", type: only, runAt: { lte: now } }, orderBy: { runAt: "asc" }, take: limit })
+    : [
+        ...(await db.job.findMany({
+          where: { status: "PENDING", type: { notIn: ["meta.capi", PORTAL_JOB] }, runAt: { lte: now } },
+          orderBy: { runAt: "asc" },
+          take: limit,
+        })),
+        ...(await db.job.findMany({ where: { status: "PENDING", type: PORTAL_JOB, runAt: { lte: now } }, orderBy: { runAt: "asc" }, take: PORTAL_PER_RUN })),
+      ];
   const results: { id: string; type: string; ok: boolean; result: string }[] = [];
   for (const job of due) {
     if (Date.now() > deadline) break;
@@ -833,7 +842,7 @@ export async function runDueJobs(limit = 20) {
     } catch (e) {
       const message = (e as Error).message;
       // The Anthropic account stopped (no credit, key revoked): every screen says so until the AI answers again
-      const aiProblem = job.type.startsWith("sdr.") ? aiAccountProblem(e) : null;
+      const aiProblem = job.type.startsWith("sdr.") || job.type === "secretaria.turn" ? aiAccountProblem(e) : null;
       if (aiProblem) await setAiHealth(aiProblem);
       const attempts = job.attempts + 1;
       const failed = attempts >= job.maxAttempts;

@@ -107,7 +107,7 @@ export const canCreateInstances = () => !!(supportAdmin() && supportServer());
 type RawInstance = { token?: string; qrcode?: string; paircode?: string; status?: string; owner?: string };
 
 /** A new Uazapi instance for a support number; gives back its token. */
-export async function createInstance(name: string, opts: { sendOnly?: boolean } = {}) {
+export async function createInstance(name: string, opts: { sendOnly?: boolean; groupsOnly?: boolean } = {}) {
   const base = serverOf({ server: null });
   const admin = supportAdmin();
   if (!base || !admin) throw new Error("Falta ligar o servidor do WhatsApp do suporte (SUPPORT_WA_URL e SUPPORT_WA_ADMIN_TOKEN).");
@@ -115,10 +115,12 @@ export async function createInstance(name: string, opts: { sendOnly?: boolean } 
     method: "POST",
     headers: { admintoken: admin, Accept: "application/json", "Content-Type": "application/json" },
     body: JSON.stringify({
-      name: `${opts.sendOnly ? "" : "suporte-"}${name}`.toLowerCase().normalize("NFD").replace(/[^a-z0-9-]+/g, "-").slice(0, 40),
+      name: `${opts.sendOnly || opts.groupsOnly ? "" : "suporte-"}${name}`.toLowerCase().normalize("NFD").replace(/[^a-z0-9-]+/g, "-").slice(0, 40),
       systemName: "crm-banneg",
       // Only sends (the meetings group): the server keeps nothing of what the number sends or receives
       ...(opts.sendOnly && { sendOnly: true }),
+      // The secretary's number: only her group and her private chats come to the CRM
+      ...(opts.groupsOnly && { groupsOnly: true }),
     }),
     signal: AbortSignal.timeout(20_000),
   }).catch((e: Error) => {
