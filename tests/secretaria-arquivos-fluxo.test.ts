@@ -12,6 +12,7 @@ process.env.SUPPORT_WA_URL = "https://wa.banneg.app/";
 process.env.SUPPORT_WA_ADMIN_TOKEN = "admin";
 process.env.GOOGLE_CLIENT_ID = "cliente";
 process.env.GOOGLE_CLIENT_SECRET = "segredo";
+process.env.GROQ_API_KEY = "groq";
 
 vi.mock("@/lib/email", async (orig) => ({ ...(await orig<typeof import("@/lib/email")>()), sendEmail: vi.fn(async () => "id1") }));
 vi.mock("next/server", async (original) => ({ ...(await original<typeof import("next/server")>()), connection: async () => {}, after() {} }));
@@ -48,6 +49,7 @@ describe.skipIf(!dbUrl)("Jessica: the team's Meet links, the Drive reports and t
   const texts: { number: string; text: string }[] = [];
   const media: { number: string; type: string; file: string; docName: string; mimetype: string; text: string }[] = [];
   const events: Record<string, unknown>[] = [];
+  const slides: { images: string[]; width: number; height: number; seconds: number }[] = [];
 
   beforeAll(async () => {
     db = (await import("@/lib/db")).db;
@@ -63,6 +65,17 @@ describe.skipIf(!dbUrl)("Jessica: the team's Meet links, the Drive reports and t
       // The fonts and the monograms of the arts, from the CRM's public folder
       if (url.pathname.startsWith("/brand/")) return new Response(new Uint8Array(readFileSync(`public${url.pathname}`)));
       if (url.pathname.startsWith("/materiais/")) return new Response(new Uint8Array(readFileSync(`public${url.pathname}`)), { headers: { "content-type": "image/jpeg" } });
+      // Files that arrived on her number, and the server's video work
+      if (url.pathname === "/media") {
+        const id = url.searchParams.get("id");
+        if (id === "IMG1" || id === "IMG2") return new Response(new Uint8Array(readFileSync("public/materiais/fachada-loja.jpg")), { headers: { "content-type": "image/jpeg" } });
+        if (id === "PDF1") return new Response(new Uint8Array(Buffer.from("%PDF-1.4 boleto")), { headers: { "content-type": "application/pdf" } });
+        return new Response("não", { status: 404 });
+      }
+      if (url.pathname === "/media/convert")
+        return body.to === "audio" ? Response.json({ mimetype: "audio/mpeg", data: Buffer.from("mp3").toString("base64") }) : Response.json({ mimetype: "image/jpeg", data: Buffer.from("cenas").toString("base64") });
+      if (url.pathname === "/video/slideshow") return slides.push(body), Response.json({ mimetype: "video/mp4", data: Buffer.from("....ftypmp4").toString("base64") });
+      if (url.host === "api.groq.com") return Response.json({ text: "Olha a fachada da loja nova" });
       if (url.pathname === "/send/text") return texts.push(body), Response.json({ messageid: `T${texts.length}` });
       if (url.pathname === "/send/media") return media.push(body), Response.json({ messageid: `M${media.length}` });
       if (url.pathname === "/instance/status") return Response.json({ instance: { status: "connected" }, status: { connected: true } });
@@ -99,6 +112,7 @@ describe.skipIf(!dbUrl)("Jessica: the team's Meet links, the Drive reports and t
     texts.length = 0;
     media.length = 0;
     events.length = 0;
+    slides.length = 0;
     script.length = 0;
     seen.length = 0;
     await db.$executeRawUnsafe('TRUNCATE "User","Setting","Job","SecretaryMessage","SecretaryTask","SecretaryEmail","KnowledgeItem" CASCADE');
@@ -225,5 +239,65 @@ describe.skipIf(!dbUrl)("Jessica: the team's Meet links, the Drive reports and t
     expect(png.subarray(1, 4).toString()).toBe("PNG");
     expect(png.readUInt32BE(16)).toBe(1080);
     expect(png.readUInt32BE(20)).toBe(1350);
+  });
+
+  it("sees the photo Camila sends, opens her video, and makes a montage and a short video with them", async () => {
+    const at = new Date("2026-11-26T13:59:00Z").getTime();
+    const photo = (id: string, text = "") => ({ ...pm(id, text), message: { ...pm(id, text).message, mediaType: "image", type: "media", messageTimestamp: at } });
+    await sec.receiveSecretary("chave", photo("IMG1", "Jess, o que você acha dessa foto?"));
+    await sec.receiveSecretary("chave", photo("IMG2"));
+    await sec.receiveSecretary("chave", { ...pm("VID1", "olha o vídeo"), message: { ...pm("VID1", "olha o vídeo").message, mediaType: "video", type: "media", messageTimestamp: at } });
+    // Her turn waits for the pictures to download
+    expect(await ai.runSecretaryTurn(`${CAMILA}@s.whatsapp.net`, new Date("2026-11-26T14:00:00Z"))).toContain("Esperando");
+    for (const id of ["IMG1", "IMG2", "VID1"]) await sec.receiveSecretary("chave", { EventType: "media", message: { chatid: `${CAMILA}@s.whatsapp.net`, messageid: id }, media: { saved: true } });
+    const [img1, img2, vid] = await db.secretaryMessage.findMany({ where: { externalId: { in: ["IMG1", "IMG2", "VID1"] } }, orderBy: { externalId: "asc" } }).then((r) => [r[0], r[1], r[2]]);
+    expect([img1.kind, img1.mediaStatus, vid.kind]).toEqual(["image", "salvo", "video"]);
+    script.push(
+      { stop_reason: "tool_use", content: [{ type: "tool_use", id: "t1", name: "ver_midia", input: { midia_id: vid.id } }] },
+      {
+        stop_reason: "tool_use",
+        content: [
+          { type: "tool_use", id: "t2", name: "juntar_imagens", input: { imagens: [img1.id, img2.id, "foto_fachada"], titulo: "Loja nova", legenda: "Montagem" } },
+          {
+            type: "tool_use",
+            id: "t3",
+            name: "criar_video",
+            input: { cenas: [{ imagem: img1.id }, { titulo: "Loja nova do Banneg", texto: "Venha conhecer", imagem: img2.id }], segundos: 4, legenda: "Vídeo da loja" },
+          },
+        ],
+      },
+      { stop_reason: "end_turn", content: [{ type: "text", text: "Ficou linda! Mandei a montagem e o vídeo." }] },
+    );
+    await ai.runSecretaryTurn(`${CAMILA}@s.whatsapp.net`, new Date("2026-11-26T14:00:30Z"));
+    // The two photos come with the messages, each with its id
+    const first = seen[0].messages[0].content as { type: string; text?: string }[];
+    expect(first.filter((b) => b.type === "image")).toHaveLength(2);
+    expect(first[0].text).toContain(`(midia_id ${img1.id})`);
+    expect(first[1].text).toBe(`Imagem que Camila mandou (midia_id ${img1.id}):`);
+    // The video: what is said in it and its scenes
+    const video = (seen[1].messages.at(-1)!.content as { content: { type: string; text?: string }[] }[])[0].content;
+    expect(video[0].text).toContain("Fala: Olha a fachada da loja nova");
+    expect(video.some((b) => b.type === "image")).toBe(true);
+    const [montage, clip] = seen[2].messages.at(-1)!.content as { content: string; is_error?: boolean }[];
+    expect(montage.content).toBe("Montagem com 3 fotos enviada aqui.");
+    expect(clip.content).toBe("Vídeo de 2 cenas (8 s, story) enviado aqui.");
+    expect(slides[0]).toMatchObject({ width: 1080, height: 1920, seconds: 4 });
+    expect(slides[0].images).toHaveLength(2);
+    // The second scene is an art in the story size, the first the photo as it came
+    expect(Buffer.from(slides[0].images[0], "base64").equals(readFileSync("public/materiais/fachada-loja.jpg"))).toBe(true);
+    expect(Buffer.from(slides[0].images[1], "base64").readUInt32BE(20)).toBe(1920);
+    expect(media.map((m) => [m.type, m.mimetype, m.text])).toEqual([
+      ["image", "image/png", "Montagem"],
+      ["video", "video/mp4", "Vídeo da loja"],
+    ]);
+  });
+
+  it("someone else's picture stays in their chat", async () => {
+    const other = await db.secretaryMessage.create({ data: { chatId: "5517900000000@s.whatsapp.net", isGroup: false, externalId: "PDF1", body: "[Documento] boleto", kind: "document", mediaStatus: "salvo", senderName: "Laiane" } });
+    const ctx = { s: await sec.getSecretary(), chatId: `${CAMILA}@s.whatsapp.net`, isGroup: false, member: { name: "Camila", phone: "17992223333", email: "", role: "colaborador" as const }, contact: { phone: CAMILA, name: "Camila" }, actor: "Camila", now: new Date() };
+    await expect(ai.runTool("ver_midia", { midia_id: other.id }, ctx)).rejects.toThrow("outra conversa");
+    const wellington = { ...ctx, chatId: "5517981600088@s.whatsapp.net", member: { name: "Wellington", phone: "17981600088", email: "", role: "socio" as const }, actor: "Wellington" };
+    const out = (await ai.runTool("ver_midia", { midia_id: other.id }, wellington)) as { type: string }[];
+    expect(out.map((b) => b.type)).toEqual(["text", "document"]);
   });
 });

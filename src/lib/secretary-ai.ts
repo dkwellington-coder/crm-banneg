@@ -23,15 +23,19 @@ import {
   roleOf,
   queueTurn,
   secretarySend,
+  secretaryMedia,
   secretarySendFile,
+  secretarySlideshow,
+  secretaryVideo,
   waNumber,
   whenBr,
   type SecretaryMember,
   type SecretarySettings,
 } from "./secretary";
 import { agendaEvent, agendaOwner, bookOnAgenda, conflictsWith, deleteOnAgenda, listAgenda, moveOnAgenda, ownedBy, ownerTitle } from "./secretary-agenda";
-import { driveFileToSend, listDriveFiles, readDriveFile, secretaryDrive, type ReadContent } from "./secretary-drive";
-import { ART_FORMATS, ART_THEMES, loadArtAssets, photoDataUrl, renderArt, type ArtInput } from "./secretary-art";
+import { contentFor, driveFileToSend, listDriveFiles, readDriveFile, secretaryDrive, type ReadContent } from "./secretary-drive";
+import { ART_FORMATS, ART_THEMES, COLLAGE_LAYOUTS, loadArtAssets, photoDataUrl, renderArt, renderCollage, type ArtFormat, type ArtInput } from "./secretary-art";
+import { transcribe } from "./audio";
 import { getSettings, materialFileName } from "./settings";
 import { CANVA_FOLDER, canvaArt, canvaModels } from "./secretary-canva";
 import { secretaryReport, REPORT_KINDS } from "./secretary-report";
@@ -105,6 +109,8 @@ ${s.nicknames?.length ? `A equipe também te chama de ${s.nicknames.map((n) => `
 - Arquivos: procurar (buscar_arquivo), ler (ler_arquivo) e enviar (enviar_arquivo) os relatórios e documentos da pasta do Google Drive da secretária (as abas de Marketing e de Download de comissões salvam lá: inadimplência, comissões, produção por seguradora) e os materiais do CRM (apresentação, tabela de comissões, catálogo, vídeos). Para responder sobre um relatório ("quais seguradoras foram feitas?", "quem está inadimplente?"), leia o arquivo mais recente e responda com os números dele, dizendo de qual arquivo e data tirou. Se não achar, diga o que procurou e peça o nome do arquivo.
 - Relatórios do CRM (relatorio): leads por funil, reuniões, metas do mês e tarefas, em texto ou em planilha.
 - Google Drive: os sócios podem pedir qualquer arquivo do Drive do Wellington (buscar_arquivo procura no Drive todo); os colaboradores só enxergam a pasta da equipe. Nunca mande a um colaborador um arquivo que ele não poderia ver.
+- Imagens, vídeos e documentos que mandarem: as imagens novas já chegam para você ver junto das mensagens. Para ver uma imagem, PDF ou planilha anterior, ou entender um vídeo (você recebe a fala transcrita e 6 cenas), use ver_midia com o midia_id que aparece na conversa. Áudios já chegam transcritos (🎤). Leia prints, comprovantes, documentos e fotos e responda com o que está neles.
+- Montagens e vídeos: juntar_imagens junta 2 a 9 fotos numa montagem com a moldura do Banneg; criar_video faz um vídeo curto (até 12 cenas, alguns segundos cada, passando de uma para outra) com artes que você escreve e/ou fotos (midia_id, material do CRM ou arquivo do Drive). Os vídeos não têm música nem narração.
 - Artes e ideias de marketing: quando pedirem um post, story, convite, anúncio ou comunicado, crie com criar_arte no visual do Banneg (escreva títulos curtos e fortes, dados reais da base abaixo, nada inventado) e mande junto uma legenda pronta para o Instagram/WhatsApp. Se pedirem ideias, dê 3 a 5 ideias curtas com título e gancho. Você faz posts, quadrados e stories com texto e foto. Também pode usar os modelos do Wellington no Canva (canva_modelos, depois canva_arte): use um modelo quando pedirem \"no Canva\" ou \"no modelo\", ou quando houver um modelo do tipo pedido (convite, post de produto); senão, criar_arte. Se pedirem algo que não faz (vídeo, carrossel, logo, foto gerada por IA), diga isso em uma frase e ofereça a mesma ideia como post ou story.
 
 Como agir no grupo:
@@ -158,10 +164,14 @@ ${knowledge.map((k) => `### ${k.title}\n${k.content.trim()}`).join("\n\n")}
   }`;
 }
 
-function line(m: Pick<SecretaryMessage, "at" | "senderName" | "senderPhone" | "fromMe" | "body" | "quotedText">, s: SecretarySettings) {
+const SEEN_KINDS = ["image", "video", "document"];
+
+function line(m: Pick<SecretaryMessage, "at" | "senderName" | "senderPhone" | "fromMe" | "body" | "quotedText"> & Partial<Pick<SecretaryMessage, "id" | "kind" | "mediaStatus">>, s: SecretarySettings) {
   const who = m.fromMe ? `${s.name} (você)` : m.senderName || (m.senderPhone ? phoneLabel(m.senderPhone) : "alguém");
   const quoted = m.quotedText ? ` (respondendo a: "${m.quotedText.slice(0, 200)}")` : "";
-  return `[${whenBr(m.at)}] ${who}${quoted}: ${m.body}`;
+  // A picture, video or document she can open (ver_midia) or use (arte, montagem, vídeo)
+  const media = m.id && m.kind && SEEN_KINDS.includes(m.kind) && !m.fromMe ? ` (midia_id ${m.id}${m.mediaStatus === "erro" ? ", não baixou" : ""})` : "";
+  return `[${whenBr(m.at)}] ${who}${quoted}: ${m.body}${media}`;
 }
 
 export function taskForAi(t: SecretaryTask) {
@@ -361,11 +371,55 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
         destaque: { ...str, description: "número ou oferta em destaque, ex.: R$ 19.900" },
         destaque_legenda: str,
         rodape: { ...str, description: 'padrão "banneg.com.br"; pode levar telefone ou @' },
-        foto: { ...str, description: "foto de fundo: material do CRM (foto_fachada, foto_fundador) ou arquivo_id de uma imagem do Drive" },
+        foto: { ...str, description: "foto de fundo: midia_id de uma imagem da conversa, material do CRM (foto_fachada, foto_fundador) ou arquivo_id de uma imagem do Drive" },
         para: { ...str, description: 'padrão "aqui"' },
         legenda: { ...str, description: "texto que vai junto da imagem no WhatsApp" },
       },
       required: ["titulo"],
+    },
+  },
+  {
+    name: "ver_midia",
+    description: "Abre uma imagem, vídeo ou documento que mandaram nesta conversa (midia_id que aparece na conversa): imagem e PDF você vê; planilha e Word você lê; vídeo vem com a fala transcrita e 6 cenas.",
+    input_schema: { type: "object", properties: { midia_id: str }, required: ["midia_id"] },
+  },
+  {
+    name: "juntar_imagens",
+    description: "Junta 2 a 9 fotos numa montagem com a moldura do Banneg (fundo azul, linha dourada, título opcional, logo) e manda a imagem no WhatsApp. Cada foto: midia_id de uma imagem da conversa, material do CRM ou arquivo_id de imagem do Drive.",
+    input_schema: {
+      type: "object",
+      properties: {
+        imagens: strList,
+        layout: { type: "string", enum: [...COLLAGE_LAYOUTS], description: "lado_a_lado (2 ou 3 lado a lado), vertical (uma embaixo da outra) ou grade (padrão)" },
+        formato: { type: "string", enum: Object.keys(ART_FORMATS), description: "padrão post" },
+        titulo: str,
+        rodape: str,
+        para: { ...str, description: 'padrão "aqui"' },
+        legenda: str,
+      },
+      required: ["imagens"],
+    },
+  },
+  {
+    name: "criar_video",
+    description:
+      "Faz um vídeo curto (mp4) e manda no WhatsApp: uma sequência de cenas, cada uma alguns segundos na tela, passando suavemente para a próxima. Cada cena é uma foto (imagem: midia_id, material ou arquivo do Drive) ou uma arte que você escreve (titulo, texto, itens, destaque, como em criar_arte; com imagem ela vira o fundo). Sem música e sem narração.",
+    input_schema: {
+      type: "object",
+      properties: {
+        cenas: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { imagem: str, chamada: str, titulo: str, texto: str, itens: strList, destaque: str, destaque_legenda: str, tema: { type: "string", enum: [...ART_THEMES] }, rodape: str },
+          },
+        },
+        formato: { type: "string", enum: Object.keys(ART_FORMATS), description: "story (vertical, padrão), post ou quadrado" },
+        segundos: { type: "number", description: "segundos de cada cena, 2 a 6 (padrão 3)" },
+        para: { ...str, description: 'padrão "aqui"' },
+        legenda: str,
+      },
+      required: ["cenas"],
     },
   },
   {
@@ -433,6 +487,9 @@ const ALLOWED: Record<Exclude<Level, "socio">, Set<string>> = {
     "enviar_arquivo",
     "relatorio",
     "criar_arte",
+    "ver_midia",
+    "juntar_imagens",
+    "criar_video",
     "canva_modelos",
     "canva_arte",
     "mandar_mensagem",
@@ -442,6 +499,33 @@ const ALLOWED: Record<Exclude<Level, "socio">, Set<string>> = {
 type Input = Record<string, unknown>;
 const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 const list = (v: unknown) => (Array.isArray(v) ? v.map(text).filter(Boolean) : text(v) ? [text(v)] : []);
+
+/** A picture, video or document that arrived: only from this conversation (a partner may use any of her chats). */
+async function mediaMessage(id: string, ctx: TurnContext, level: Level) {
+  if (!id) throw new Error("Informe o midia_id que aparece na conversa.");
+  const msg = await db.secretaryMessage.findUnique({ where: { id } });
+  if (!msg || !msg.kind || !SEEN_KINDS.includes(msg.kind) || !msg.externalId) throw new Error("Não achei essa mídia: use o midia_id que aparece na conversa.");
+  if (msg.chatId !== ctx.chatId && level !== "socio") throw new Error("Essa mídia é de outra conversa.");
+  if (msg.mediaStatus === "erro") throw new Error("Esse arquivo não baixou do WhatsApp: peça para mandarem de novo.");
+  return msg;
+}
+
+/** A picture for an art, a montage or a video: one sent in the chat (midia_id), a CRM material, or a Drive image. */
+async function pictureFrom(ref: string, ctx: TurnContext, level: Level) {
+  if (/^c[a-z0-9]{20,}$/.test(ref)) {
+    const msg = await mediaMessage(ref, ctx, level);
+    if (msg.kind !== "image") throw new Error("Esse midia_id não é uma imagem.");
+    return secretaryMedia(msg.externalId!, ctx.s);
+  }
+  const url = (await getSettings()).materials[ref];
+  if (url) {
+    const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) throw new Error(`Não consegui baixar a foto ${ref}.`);
+    return { data: Buffer.from(await res.arrayBuffer()), mime: res.headers.get("content-type")?.split(";")[0] ?? "image/jpeg" };
+  }
+  const file = await driveFileToSend(ref, { all: level === "socio" });
+  return { data: file.data!, mime: file.mime };
+}
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function emailsOf(v: unknown, members: SecretaryMember[]) {
@@ -754,20 +838,57 @@ export async function runTool(name: string, input: Input, ctx: TurnContext): Pro
       // A photo behind the words: a CRM material (foto_fachada, foto_fundador) or a picture from the Drive
       const foto = text(input.foto);
       if (foto) {
-        const url = (await getSettings()).materials[foto];
-        if (url) {
-          const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
-          if (!res.ok) throw new Error(`Não consegui baixar a foto ${foto}.`);
-          assets.photo = photoDataUrl(Buffer.from(await res.arrayBuffer()), res.headers.get("content-type")?.split(";")[0] ?? "image/jpeg");
-        } else {
-          const file = await driveFileToSend(foto, { all: level === "socio" });
-          assets.photo = photoDataUrl(file.data!, file.mime);
-        }
+        const pic = await pictureFrom(foto, ctx, level);
+        assets.photo = photoDataUrl(pic.data, pic.mime);
       }
       const png = await renderArt(input as unknown as ArtInput, assets);
       const name = `Banneg - ${text(input.titulo).slice(0, 40).replace(/[\\/:*?"<>|]+/g, " ").trim() || "arte"}.png`;
       await secretarySendFile(where.chatId, { name, mime: "image/png", data: png }, text(input.legenda), s);
       return `Arte enviada ${where.label} (${text(input.formato) || "post"}, tema ${text(input.tema) || "azul"}).`;
+    }
+    case "ver_midia": {
+      const msg = await mediaMessage(text(input.midia_id), ctx, level);
+      if (msg.kind === "video") {
+        const [sound, frames] = await Promise.allSettled([secretaryVideo(msg.externalId!, "audio", s), secretaryVideo(msg.externalId!, "frames", s)]);
+        const said = sound.status === "fulfilled" ? await transcribe(new Uint8Array(sound.value.data), sound.value.mime).catch(() => "") : "";
+        const out: ReadContent[] = [{ type: "text", text: `Vídeo de ${msg.senderName ?? "alguém"}${msg.body ? ` (${msg.body})` : ""}. Fala: ${said || "(sem fala ou não consegui ouvir)"}` }];
+        if (frames.status === "fulfilled") out.push({ type: "text", text: "6 cenas do vídeo, em ordem (da esquerda para a direita, de cima para baixo):" }, { type: "image", source: { type: "base64", media_type: "image/jpeg", data: frames.value.data.toString("base64") } });
+        return out;
+      }
+      const file = await secretaryMedia(msg.externalId!, s);
+      return contentFor({ name: msg.body.replace(/^\[[^\]]*\]\s*/, "") || msg.kind!, mime: file.mime, data: file.data });
+    }
+    case "juntar_imagens": {
+      const where = destination(text(input.para), ctx, level);
+      const refs = list(input.imagens).slice(0, 9);
+      if (refs.length < 2) throw new Error("Informe pelo menos 2 imagens.");
+      const fotos: string[] = [];
+      for (const ref of refs) {
+        const pic = await pictureFrom(ref, ctx, level);
+        fotos.push(photoDataUrl(pic.data, pic.mime));
+      }
+      const png = await renderCollage({ fotos, layout: text(input.layout), formato: text(input.formato), titulo: text(input.titulo), rodape: text(input.rodape) }, await loadArtAssets());
+      await secretarySendFile(where.chatId, { name: `Banneg - ${text(input.titulo).slice(0, 40).replace(/[\\/:*?"<>|]+/g, " ").trim() || "montagem"}.png`, mime: "image/png", data: png }, text(input.legenda), s);
+      return `Montagem com ${fotos.length} fotos enviada ${where.label}.`;
+    }
+    case "criar_video": {
+      const where = destination(text(input.para), ctx, level);
+      const cenas = (Array.isArray(input.cenas) ? (input.cenas as Input[]) : []).slice(0, 12);
+      if (!cenas.length) throw new Error("Informe as cenas do vídeo.");
+      const formato = (Object.keys(ART_FORMATS) as ArtFormat[]).includes(text(input.formato) as ArtFormat) ? (text(input.formato) as ArtFormat) : "story";
+      const [width, height] = ART_FORMATS[formato];
+      const assets = await loadArtAssets();
+      const frames: Buffer[] = [];
+      for (const cena of cenas) {
+        const pic = text(cena.imagem) ? await pictureFrom(text(cena.imagem), ctx, level) : null;
+        if (text(cena.titulo)) frames.push(await renderArt({ ...(cena as unknown as ArtInput), formato }, { ...assets, photo: pic ? photoDataUrl(pic.data, pic.mime) : null }));
+        else if (pic) frames.push(pic.data);
+        else throw new Error("Cada cena precisa de uma imagem ou de um título.");
+      }
+      const seconds = Math.min(Math.max(Number(input.segundos) || 3, 2), 6);
+      const mp4 = await secretarySlideshow(frames, { width, height }, seconds, s);
+      await secretarySendFile(where.chatId, { name: "Banneg - video.mp4", mime: "video/mp4", data: mp4 }, text(input.legenda), s);
+      return `Vídeo de ${frames.length} cenas (${Math.round(frames.length * seconds)} s, ${formato}) enviado ${where.label}.`;
     }
     case "canva_modelos": {
       const models = await canvaModels();
@@ -833,7 +954,7 @@ async function sendDraft(id: string, actor: string) {
 let client: Anthropic | null = null;
 
 /** Her answer: the text she writes after acting ([nada] = silent). Tool errors go back to her as errors, never thrown. */
-export async function think(system: string, userTurn: string, ctx: TurnContext) {
+export async function think(system: string, userTurn: string | Anthropic.Beta.BetaContentBlockParam[], ctx: TurnContext) {
   client ??= new Anthropic();
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content: userTurn }];
   const did: string[] = [];
@@ -874,6 +995,22 @@ export async function think(system: string, userTurn: string, ctx: TurnContext) 
     messages.push({ role: "user", content: results });
   }
   return { reply: "Fiz parte do pedido, mas ele ficou longo demais para mim de uma vez. Pode me dizer o que falta?", did };
+}
+
+/** The pictures in the new messages, for her to see right away (up to 4, each up to 5 MB). */
+async function freshPictures(fresh: SecretaryMessage[], s: SecretarySettings) {
+  const out: Anthropic.Beta.BetaContentBlockParam[] = [];
+  for (const m of fresh.filter((x) => x.kind === "image" && x.mediaStatus === "salvo" && x.externalId).slice(-4)) {
+    try {
+      const file = await secretaryMedia(m.externalId!, s);
+      if (!/^image\/(jpeg|png|gif|webp)$/.test(file.mime) || file.data.length > 5 * 1024 * 1024) continue;
+      out.push({ type: "text", text: `Imagem que ${m.senderName ?? "alguém"} mandou (midia_id ${m.id}):` });
+      out.push({ type: "image", source: { type: "base64", media_type: file.mime as "image/jpeg", data: file.data.toString("base64") } });
+    } catch (e) {
+      console.error("Secretária: imagem não abriu", (e as Error).message);
+    }
+  }
+  return out;
 }
 
 // An audio she is still waiting for holds the turn at most this long
@@ -918,7 +1055,9 @@ export async function runSecretaryTurn(chatId: string, now = new Date()) {
     db.secretaryEmail.findMany({ where: { status: "rascunho" }, orderBy: { createdAt: "desc" }, take: 5, select: { id: true, to: true, subject: true } }),
   ]);
   try {
-    const { reply, did } = await think(buildSystemPrompt(s, people, knowledge), buildUserTurn({ ctx, history: history.reverse(), fresh, tasks, drafts }), ctx);
+    const turn = buildUserTurn({ ctx, history: history.reverse(), fresh, tasks, drafts });
+    const pictures = await freshPictures(fresh, s);
+    const { reply, did } = await think(buildSystemPrompt(s, people, knowledge), pictures.length ? [{ type: "text", text: turn }, ...pictures] : turn, ctx);
     if (reply) await secretarySend(chatId, reply, s);
     return [reply ? `Respondeu: ${reply.slice(0, 160)}` : "Ficou em silêncio.", ...did].join(" | ").slice(0, 1500);
   } catch (e) {

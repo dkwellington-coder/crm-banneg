@@ -4,7 +4,9 @@
 // works with either one. Runs on a small server that stays on (Vercel cannot hold a WhatsApp connection open).
 import { createServer } from "node:http";
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import os from "node:os";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
@@ -428,6 +430,97 @@ async function waitFor(s, ms) {
   while (Date.now() < until && s.status !== "connected" && !s.qr) await new Promise((r) => setTimeout(r, 250));
 }
 
+// ---- Video work for the secretary (2026-11-26, Wellington: "interpretar áudio, ler imagens, fazer vídeos curtos"): ffmpeg
+const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
+let ffmpegBusy = 0;
+
+/** Runs ffmpeg with these arguments (at most 2 at once, 2 minutes each); rejects with its last lines on error. */
+export function ffmpeg(args, timeoutMs = 120_000) {
+  if (ffmpegBusy >= 2) return Promise.reject(new Error("Servidor ocupado com outro vídeo. Tente em um minuto."));
+  ffmpegBusy++;
+  return new Promise((resolve, reject) => {
+    let done = false;
+    let err = "";
+    const finish = (e) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      ffmpegBusy--;
+      if (e) reject(e);
+      else resolve();
+    };
+    const p = spawn(FFMPEG, ["-hide_banner", "-loglevel", "error", "-y", ...args]);
+    const timer = setTimeout(() => p.kill("SIGKILL"), timeoutMs);
+    p.stderr.on("data", (d) => (err = (err + d).slice(-2000)));
+    p.on("error", (e) => finish(new Error(`ffmpeg não está instalado (${e.message}).`)));
+    p.on("close", (code) => finish(code === 0 ? null : new Error(`ffmpeg falhou: ${err.trim().split("\n").slice(-3).join(" ") || `código ${code}`}`)));
+  });
+}
+
+async function scratch(fn) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "jess-"));
+  try {
+    return await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+const even = (n) => Math.max(2, Math.round(Number(n) / 2) * 2);
+
+/**
+ * A short video from pictures (her arts, photos): each one on screen a few seconds, crossfading into the next, in the
+ * size asked (story 1080x1920 by default), H.264 with a silent track so every phone plays it.
+ */
+export async function slideshow(images, { width = 1080, height = 1920, seconds = 3, fade = 0.6 } = {}) {
+  const w = even(Math.min(Math.max(width, 240), 1920));
+  const h = even(Math.min(Math.max(height, 240), 1920));
+  const d = Math.min(Math.max(Number(seconds) || 3, 1.5), 8);
+  const f = Math.min(fade, d / 3);
+  return scratch(async (dir) => {
+    const inputs = [];
+    for (const [i, img] of images.entries()) {
+      const file = path.join(dir, `${i}.img`);
+      await writeFile(file, img);
+      inputs.push("-loop", "1", "-t", String(d), "-i", file);
+    }
+    const n = images.length;
+    const fit = images.map((_, i) => `[${i}:v]scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=0x000314,setsar=1,fps=30,format=yuv420p[v${i}]`);
+    const chain = [];
+    let last = "v0";
+    for (let i = 1; i < n; i++) {
+      chain.push(`[${last}][v${i}]xfade=transition=fade:duration=${f}:offset=${(i * (d - f)).toFixed(2)}[x${i}]`);
+      last = `x${i}`;
+    }
+    const total = n * d - (n - 1) * f;
+    const out = path.join(dir, "out.mp4");
+    await ffmpeg([
+      ...inputs,
+      "-f", "lavfi", "-t", total.toFixed(2), "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+      "-filter_complex", [...fit, ...chain].join(";"),
+      "-map", `[${last}]`, "-map", `${n}:a`,
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+      "-c:a", "aac", "-shortest", "-movflags", "+faststart", out,
+    ]);
+    return readFile(out);
+  });
+}
+
+/** From a video that arrived: its sound as audio (to transcribe), or a sheet of 6 frames (to look at). */
+export async function fromVideo(file, what) {
+  return scratch(async (dir) => {
+    if (what === "audio") {
+      const out = path.join(dir, "a.mp3");
+      await ffmpeg(["-i", file, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k", "-t", "600", out]);
+      return { mimetype: "audio/mpeg", data: await readFile(out) };
+    }
+    const out = path.join(dir, "f.jpg");
+    // One frame every few seconds, 6 in a 3x2 sheet, each 480 wide
+    await ffmpeg(["-i", file, "-vf", "fps=1/3,scale=480:-2,tile=3x2", "-frames:v", "1", "-q:v", "4", out]);
+    return { mimetype: "image/jpeg", data: await readFile(out) };
+  });
+}
+
 export const routes = {
   "GET /health": async () => [200, { ok: true, numbers: sessions.size }],
 
@@ -555,6 +648,24 @@ export const routes = {
       throw e;
     }
     return [200, { ok: true }];
+  },
+
+  // The secretary's video work: a short video from pictures, and the sound or the scenes of a video that arrived
+  "POST /video/slideshow": async (_s, body) => {
+    const images = (Array.isArray(body.images) ? body.images : []).map((v) => Buffer.from(String(v).replace(/^data:[^,]*,/, ""), "base64")).filter((b) => b.length);
+    if (images.length < 1 || images.length > 12) return [400, { error: "Mande de 1 a 12 imagens." }];
+    if (images.reduce((a, b) => a + b.length, 0) > 40 * 1024 * 1024) return [413, { error: "Imagens grandes demais (mais de 40 MB)." }];
+    const mp4 = await slideshow(images, { width: Number(body.width) || 1080, height: Number(body.height) || 1920, seconds: Number(body.seconds) || 3 });
+    return [200, { mimetype: "video/mp4", data: mp4.toString("base64") }];
+  },
+
+  "POST /media/convert": async (s, body) => {
+    const what = String(body.to || "");
+    if (!["audio", "frames"].includes(what)) return [400, { error: "to: audio ou frames" }];
+    const file = path.join(mediaDir(s.token), safeId(body.id));
+    if (!body.id || !existsSync(file)) return [404, { error: "arquivo não está aqui (ainda baixando ou não veio do WhatsApp)" }];
+    const out = await fromVideo(file, what);
+    return [200, { mimetype: out.mimetype, data: out.data.toString("base64") }];
   },
 
   // A file (the secretary sending a report or a material, 2026-11-26): https link or base64, up to 30 MB

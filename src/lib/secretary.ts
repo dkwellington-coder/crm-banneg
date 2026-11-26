@@ -421,6 +421,10 @@ type Payload = {
   media?: { saved?: boolean; error?: string; mimetype?: string };
 };
 
+/** What she can open of what arrives (2026-11-26): pictures, videos (sound and scenes) and documents. */
+export type SeenMedia = "image" | "video" | "document";
+const SEEN: SeenMedia[] = ["image", "video", "document"];
+
 const LABEL: Record<string, string> = { image: "Imagem", video: "Vídeo", document: "Documento", sticker: "Figurinha", location: "Localização", contact: "Contato" };
 // How long she waits for the reader to finish typing before she answers
 export const TURN_DEBOUNCE_MS = 6_000;
@@ -428,7 +432,7 @@ export const TURN_DEBOUNCE_MS = 6_000;
 const AUDIO_WAIT_MS = 90_000;
 
 export type SecretaryEvent =
-  | { kind: "message"; chatId: string; isGroup: boolean; externalId: string | null; fromMe: boolean; byApi: boolean; phone: string | null; name: string | null; body: string; audio: boolean; quoted: string | null; quotedSender?: string | null; mentioned?: string[]; at: Date }
+  | { kind: "message"; chatId: string; isGroup: boolean; externalId: string | null; fromMe: boolean; byApi: boolean; phone: string | null; name: string | null; body: string; audio: boolean; media?: SeenMedia | null; quoted: string | null; quotedSender?: string | null; mentioned?: string[]; at: Date }
   | { kind: "media"; chatId: string; externalId: string; saved: boolean }
   | { kind: "ignore"; reason: string };
 
@@ -446,6 +450,7 @@ export function parseSecretary(p: Payload, now = new Date()): SecretaryEvent {
   if (m.type === "reaction") return { kind: "ignore", reason: "reação" };
   const isGroup = chatId.endsWith("@g.us");
   const audio = m.mediaType === "ptt" || m.mediaType === "audio";
+  const media = SEEN.includes(m.mediaType as SeenMedia) ? (m.mediaType as SeenMedia) : null;
   const label = audio ? "🎤 (áudio, ouvindo…)" : m.mediaType ? `[${LABEL[m.mediaType] ?? "Arquivo"}]` : m.type === "location" || m.type === "contact" ? `[${LABEL[m.type]}]` : "";
   const body = [label, (m.text ?? "").trim()].filter(Boolean).join(" ");
   if (!body) return { kind: "ignore", reason: "mensagem vazia" };
@@ -463,6 +468,7 @@ export function parseSecretary(p: Payload, now = new Date()): SecretaryEvent {
     name: (m.senderName || p.chat?.wa_contactName || "").trim() || null,
     body,
     audio,
+    media,
     quoted: m.quoted?.text?.trim() || null,
     quotedSender: onlyDigits(m.quoted?.sender) || null,
     mentioned: (m.mentioned ?? []).map(onlyDigits).filter(Boolean),
@@ -490,7 +496,7 @@ export async function receiveSecretary(key: string, payload: Payload) {
   if (payload.token && payload.token !== openToken(s.token)) return { ok: false as const, status: 401, reason: "token diferente" };
   const event = parseSecretary(payload);
   if (event.kind === "ignore") return { ok: true as const, ignored: event.reason };
-  if (event.kind === "media") return receiveAudio(s, event);
+  if (event.kind === "media") return receiveMedia(s, event);
   // Only her groups and private chats (the server already filters; an old group left behind stays out)
   const team = event.isGroup && event.chatId === s.teamGroup?.id;
   if (event.isGroup && event.chatId !== s.group?.id && !team) return { ok: true as const, ignored: "outro grupo" };
@@ -515,8 +521,8 @@ export async function receiveSecretary(key: string, payload: Payload) {
       senderPhone: event.phone,
       senderName: own ? s.name : member?.name ?? event.name,
       body: event.body,
-      kind: event.audio ? "audio" : null,
-      mediaStatus: event.audio ? "aguardando" : null,
+      kind: event.audio ? "audio" : event.media ?? null,
+      mediaStatus: event.audio || event.media ? "aguardando" : null,
       quotedText: event.quoted,
       at: event.at,
       handledAt: own || quiet ? new Date() : null,
@@ -528,10 +534,16 @@ export async function receiveSecretary(key: string, payload: Payload) {
   return { ok: true as const, queued: true };
 }
 
-/** The server finished downloading an audio: transcribed, and her turn comes right after. */
-async function receiveAudio(s: SecretarySettings, event: { chatId: string; externalId: string; saved: boolean }) {
+/** The server finished downloading a file: an audio gets transcribed; a picture, video or document is ready to open. */
+async function receiveMedia(s: SecretarySettings, event: { chatId: string; externalId: string; saved: boolean }) {
   const msg = await db.secretaryMessage.findUnique({ where: { chatId_externalId: { chatId: event.chatId, externalId: event.externalId } } });
-  if (!msg || msg.kind !== "audio" || msg.mediaStatus !== "aguardando") return { ok: true as const, ignored: "arquivo que não é áudio esperado" };
+  if (!msg || msg.mediaStatus !== "aguardando") return { ok: true as const, ignored: "arquivo que não era esperado" };
+  if (msg.kind !== "audio") {
+    await db.secretaryMessage.update({ where: { id: msg.id }, data: { mediaStatus: event.saved ? "salvo" : "erro" } });
+    // Her turn was waiting for it
+    if (s.active && !msg.handledAt) await queueTurn(event.chatId, 2_000);
+    return { ok: true as const };
+  }
   let body = "🎤 (mandou um áudio que não consegui ouvir)";
   let status = "erro";
   if (event.saved) {
@@ -552,6 +564,32 @@ async function receiveAudio(s: SecretarySettings, event: { chatId: string; exter
   await db.secretaryMessage.update({ where: { id: msg.id }, data: { body, mediaStatus: status, ...(quiet && !msg.handledAt && { handledAt: new Date() }) } });
   if (s.active && !msg.handledAt && !quiet) await queueTurn(event.chatId, 2_000);
   return { ok: true as const };
+}
+
+/** A file that arrived on her number, from the WhatsApp server (as it was downloaded there). */
+export async function secretaryMedia(externalId: string, s?: SecretarySettings) {
+  const sec = s ?? (await getSecretary());
+  if (!sec.token) throw new Error("A secretária não está conectada.");
+  const res = await fetchSupportMedia({ server: null, token: sec.token }, externalId);
+  if (!res.ok) throw new Error(`O arquivo não está no servidor (HTTP ${res.status}).`);
+  return { data: Buffer.from(await res.arrayBuffer()), mime: (res.headers.get("content-type") ?? "application/octet-stream").split(";")[0].trim() };
+}
+
+/** A video that arrived: its sound (audio) or a sheet of 6 scenes (frames), made by the WhatsApp server. */
+export async function secretaryVideo(externalId: string, to: "audio" | "frames", s?: SecretarySettings) {
+  const r = await api<{ mimetype: string; data: string }>("/media/convert", { id: externalId, to }, s, 150_000);
+  return { mime: r.mimetype, data: Buffer.from(r.data, "base64") };
+}
+
+/** A short video (mp4) from pictures, made by the WhatsApp server. */
+export async function secretarySlideshow(images: Buffer[], size: { width: number; height: number }, seconds: number, s?: SecretarySettings) {
+  const r = await api<{ mimetype: string; data: string }>(
+    "/video/slideshow",
+    { images: images.map((b) => b.toString("base64")), width: size.width, height: size.height, seconds },
+    s,
+    170_000,
+  );
+  return Buffer.from(r.data, "base64");
 }
 
 // ---------- The team group: who is who ----------

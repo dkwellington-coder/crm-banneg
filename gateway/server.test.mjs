@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 process.env.NODE_ENV = "test";
+process.env.DATA_DIR ??= (await import("node:path")).join((await import("node:os")).tmpdir(), "gateway-test");
 process.env.ADMIN_TOKEN = "x".repeat(32);
 const { toPayload, groupList, SEND_ONLY_SYNC } = await import("./server.mjs");
 const { proto } = await import("baileys");
@@ -151,4 +152,50 @@ test("a file goes out as a document with its name, or as an image with its capti
   assert.equal(sent[1][1].image.toString(), "png");
   assert.equal((await routes["POST /send/media"](sec, { number: "1", type: "zip", file: pdf }))[0], 400);
   assert.equal((await routes["POST /send/media"](sec, { number: "1", type: "document", file: "" }))[0], 400);
+});
+
+test("the secretary's short video: pictures crossfading, in the story size, with sound track", async () => {
+  const { routes: r, ffmpeg } = await import("./server.mjs");
+  const { mkdtemp, readFile } = await import("node:fs/promises");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "t-"));
+  const png = async (color) => {
+    const f = path.join(dir, `${color}.png`);
+    await ffmpeg(["-f", "lavfi", "-i", `color=c=${color}:s=540x960`, "-frames:v", "1", f]);
+    return (await readFile(f)).toString("base64");
+  };
+  const [code, out] = await r["POST /video/slideshow"]({}, { images: [await png("navy"), `data:image/png;base64,${await png("gold")}`], seconds: 2 });
+  assert.equal(code, 200);
+  const mp4 = Buffer.from(out.data, "base64");
+  assert.equal(out.mimetype, "video/mp4");
+  assert.equal(mp4.subarray(4, 8).toString(), "ftyp");
+  const f = path.join(dir, "v.mp4");
+  await (await import("node:fs/promises")).writeFile(f, mp4);
+  const { execFileSync } = await import("node:child_process");
+  const probe = JSON.parse(execFileSync("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", f]).toString());
+  const video = probe.streams.find((x) => x.codec_type === "video");
+  assert.deepEqual([video.width, video.height], [1080, 1920]);
+  assert.ok(probe.streams.some((x) => x.codec_type === "audio"));
+  assert.ok(Math.abs(Number(probe.format.duration) - 3.4) < 0.3);
+  assert.equal((await r["POST /video/slideshow"]({}, { images: [] }))[0], 400);
+});
+
+test("a video that arrived: its sound and a sheet of its scenes", async () => {
+  const { routes: r, ffmpeg } = await import("./server.mjs");
+  const { mkdir } = await import("node:fs/promises");
+  const path = await import("node:path");
+  const { createHash } = await import("node:crypto");
+  const token = "tok-video";
+  const dir = path.join(process.env.DATA_DIR, "media", createHash("sha256").update(token).digest("hex").slice(0, 16));
+  await mkdir(dir, { recursive: true });
+  await ffmpeg(["-f", "lavfi", "-i", "testsrc=s=320x240:d=7", "-f", "lavfi", "-i", "sine=d=7", "-shortest", "-c:v", "libx264", "-c:a", "aac", "-f", "mp4", path.join(dir, "VID1")]);
+  const audio = await r["POST /media/convert"]({ token }, { id: "VID1", to: "audio" });
+  assert.equal(audio[0], 200);
+  assert.equal(audio[1].mimetype, "audio/mpeg");
+  assert.ok(Buffer.from(audio[1].data, "base64").length > 1000);
+  const frames = await r["POST /media/convert"]({ token }, { id: "VID1", to: "frames" });
+  assert.equal(frames[1].mimetype, "image/jpeg");
+  assert.equal(Buffer.from(frames[1].data, "base64").subarray(0, 2).toString("hex"), "ffd8");
+  assert.equal((await r["POST /media/convert"]({ token }, { id: "NAO", to: "audio" }))[0], 404);
 });

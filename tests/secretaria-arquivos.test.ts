@@ -7,11 +7,11 @@ vi.mock("next/server", async (original) => ({ ...(await original<typeof import("
 import { INADIMPLENCIA_XLSX, zip } from "./fixtures/office";
 import { docxToText, excelDate, unzip, xlsxToText } from "@/lib/office-read";
 import { contentFor, driveQuery, folderIdFrom, matches } from "@/lib/secretary-drive";
-import { normalizeArt, renderArt, titleSize } from "@/lib/secretary-art";
+import { collageGrid, normalizeArt, renderArt, renderCollage, titleSize } from "@/lib/secretary-art";
 import { readFileSync } from "node:fs";
 import { overlapping, ownedBy, ownerTitle, type AgendaEvent } from "@/lib/secretary-agenda";
 import { reportRange, toCsv } from "@/lib/secretary-report";
-import { DEFAULT_SECRETARY, callsHer, mediaKind } from "@/lib/secretary";
+import { DEFAULT_SECRETARY, callsHer, mediaKind, parseSecretary } from "@/lib/secretary";
 import { buildSystemPrompt, runTool, type TurnContext } from "@/lib/secretary-ai";
 
 describe("reading the reports", () => {
@@ -170,5 +170,31 @@ describe("arts", () => {
       "trashed = false and mimeType != 'application/vnd.google-apps.folder' and (name contains 'contrato' or fullText contains 'contrato') and (name contains 'd\\'Ávila' or fullText contains 'd\\'Ávila')",
     );
     expect(driveQuery("")).toBe("trashed = false and mimeType != 'application/vnd.google-apps.folder'");
+  });
+
+  it("lays out a montage and draws it", async () => {
+    expect(collageGrid(2, "lado_a_lado")).toEqual({ cols: 2, rows: 1 });
+    expect(collageGrid(3, "vertical")).toEqual({ cols: 1, rows: 3 });
+    expect(collageGrid(4, "grade")).toEqual({ cols: 2, rows: 2 });
+    expect(collageGrid(7, "lado_a_lado")).toEqual({ cols: 3, rows: 3 });
+    const ab = (p: string) => {
+      const b = readFileSync(p);
+      return b.buffer.slice(b.byteOffset, b.byteOffset + b.length) as ArrayBuffer;
+    };
+    const logo = `data:image/png;base64,${readFileSync("public/brand/monograma-dourado.png").toString("base64")}`;
+    const foto = `data:image/jpeg;base64,${readFileSync("public/materiais/fachada-loja.jpg").toString("base64")}`;
+    const assets = { fonts: ([400, 700, 800] as const).map((w) => ({ weight: w, data: ab(`public/brand/fonts/montserrat-${w}.woff`) })), logoGold: logo, logoBlue: logo };
+    const png = await renderCollage({ fotos: [foto, foto, foto], titulo: "Inauguração", formato: "quadrado" }, assets);
+    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1080, 1080]);
+    await expect(renderCollage({ fotos: [foto] }, assets)).rejects.toThrow("pelo menos 2");
+  }, 30_000);
+
+  it("a picture, video or document that arrives waits to be downloaded; a sticker does not", () => {
+    const msg = (mediaType: string) => parseSecretary({ EventType: "messages", message: { chatid: "5517@s.whatsapp.net", messageid: "X", mediaType, type: "media", text: "" } });
+    expect(msg("image")).toMatchObject({ kind: "message", media: "image", body: "[Imagem]" });
+    expect(msg("video")).toMatchObject({ media: "video" });
+    expect(msg("document")).toMatchObject({ media: "document" });
+    expect(msg("sticker")).toMatchObject({ media: null });
+    expect(msg("ptt")).toMatchObject({ audio: true, media: null });
   });
 });

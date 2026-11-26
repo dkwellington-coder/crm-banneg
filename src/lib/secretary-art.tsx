@@ -194,3 +194,70 @@ export async function renderArt(input: ArtInput, assets: ArtAssets): Promise<Buf
   });
   return Buffer.from(await res.arrayBuffer());
 }
+
+export const COLLAGE_LAYOUTS = ["lado_a_lado", "vertical", "grade"] as const;
+export type CollageLayout = (typeof COLLAGE_LAYOUTS)[number];
+
+/** How the pictures sit: 2 side by side, stacked, or a grid (2x2, 3x3...) for the rest. */
+export function collageGrid(n: number, layout: string) {
+  if (layout === "vertical") return { cols: 1, rows: n };
+  if (layout === "lado_a_lado" && n <= 3) return { cols: n, rows: 1 };
+  const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3;
+  return { cols, rows: Math.ceil(n / cols) };
+}
+
+/**
+ * A montage of pictures (2026-11-26, Wellington: "junção de imagens") in Banneg's frame: navy background, the gold line,
+ * an optional title, the pictures in a grid and the monogram with the footer.
+ */
+export async function renderCollage(
+  input: { fotos: string[]; layout?: string; formato?: string; titulo?: string; rodape?: string },
+  assets: ArtAssets,
+): Promise<Buffer> {
+  const fotos = input.fotos.slice(0, 9);
+  if (fotos.length < 2) throw new Error("A montagem precisa de pelo menos 2 imagens.");
+  const formato = (Object.keys(ART_FORMATS) as ArtFormat[]).includes(input.formato as ArtFormat) ? (input.formato as ArtFormat) : "post";
+  const [width, height] = ART_FORMATS[formato];
+  const s = width / 1080;
+  const pad = Math.round(48 * s);
+  const gap = Math.round(16 * s);
+  const titulo = clean(input.titulo, 80);
+  const rodape = clean(input.rodape, 70) || "banneg.com.br";
+  const { cols, rows } = collageGrid(fotos.length, input.layout ?? "grade");
+  const headH = titulo ? Math.round(150 * s) : Math.round(40 * s);
+  const footH = Math.round(110 * s);
+  const top = Math.round(14 * s);
+  const areaW = width - pad * 2;
+  const areaH = height - top - headH - footH - pad;
+  const cellW = Math.floor((areaW - gap * (cols - 1)) / cols);
+  const cellH = Math.floor((areaH - gap * (rows - 1)) / rows);
+
+  const element = (
+    <div style={{ width, height, display: "flex", flexDirection: "column", background: NAVY, fontFamily: "Montserrat" }}>
+      <div style={{ display: "flex", width, height: top, background: GOLD }} />
+      <div style={{ display: "flex", height: headH, alignItems: "center", padding: `0 ${pad}px`, color: "#ffffff", fontSize: titleSize(titulo, width, false) * 0.62, fontWeight: 800, lineHeight: 1.1 }}>
+        {titulo}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap, padding: `0 ${pad}px`, width, height: areaH }}>
+        {fotos.map((src, i) => (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img key={i} src={src} alt="" width={cellW} height={cellH} style={{ width: cellW, height: cellH, objectFit: "cover", borderRadius: Math.round(18 * s) }} />
+        ))}
+      </div>
+      <div style={{ display: "flex", height: footH, marginTop: pad, alignItems: "center", justifyContent: "space-between", padding: `0 ${pad}px` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: Math.round(22 * s) }}>
+          <div style={{ display: "flex", width: Math.round(60 * s), height: Math.round(4 * s), background: GOLD }} />
+          <div style={{ display: "flex", fontSize: Math.round(28 * s), fontWeight: 700, color: "#ffffff" }}>{rodape}</div>
+        </div>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={assets.logoGold} alt="" width={Math.round(117 * s)} height={Math.round(60 * s)} style={{ width: Math.round(117 * s), height: Math.round(60 * s) }} />
+      </div>
+    </div>
+  );
+  const res = new ImageResponse(element, {
+    width,
+    height,
+    fonts: assets.fonts.map((f) => ({ name: "Montserrat", data: f.data, weight: f.weight, style: "normal" as const })),
+  });
+  return Buffer.from(await res.arrayBuffer());
+}
