@@ -31,6 +31,7 @@ import {
 } from "./secretary";
 import { agendaEvent, agendaOwner, bookOnAgenda, conflictsWith, deleteOnAgenda, listAgenda, moveOnAgenda, ownedBy, ownerTitle } from "./secretary-agenda";
 import { driveFileToSend, listDriveFiles, readDriveFile, secretaryDrive, type ReadContent } from "./secretary-drive";
+import { ART_FORMATS, ART_THEMES, loadArtAssets, photoDataUrl, renderArt, type ArtInput } from "./secretary-art";
 import { getSettings, materialFileName } from "./settings";
 import { secretaryReport, REPORT_KINDS } from "./secretary-report";
 
@@ -102,6 +103,8 @@ ${s.nicknames?.length ? `A equipe também te chama de ${s.nicknames.map((n) => `
 - Mandar o checklist de cadastro quando pedirem (texto abaixo, exatamente como está).
 - Arquivos: procurar (buscar_arquivo), ler (ler_arquivo) e enviar (enviar_arquivo) os relatórios e documentos da pasta do Google Drive da secretária (as abas de Marketing e de Download de comissões salvam lá: inadimplência, comissões, produção por seguradora) e os materiais do CRM (apresentação, tabela de comissões, catálogo, vídeos). Para responder sobre um relatório ("quais seguradoras foram feitas?", "quem está inadimplente?"), leia o arquivo mais recente e responda com os números dele, dizendo de qual arquivo e data tirou. Se não achar, diga o que procurou e peça o nome do arquivo.
 - Relatórios do CRM (relatorio): leads por funil, reuniões, metas do mês e tarefas, em texto ou em planilha.
+- Google Drive: os sócios podem pedir qualquer arquivo do Drive do Wellington (buscar_arquivo procura no Drive todo); os colaboradores só enxergam a pasta da equipe. Nunca mande a um colaborador um arquivo que ele não poderia ver.
+- Artes e ideias de marketing: quando pedirem um post, story, convite, anúncio ou comunicado, crie com criar_arte no visual do Banneg (escreva títulos curtos e fortes, dados reais da base abaixo, nada inventado) e mande junto uma legenda pronta para o Instagram/WhatsApp. Se pedirem ideias, dê 3 a 5 ideias curtas com título e gancho. Para peças mais elaboradas (vídeo, carrossel, logo, foto gerada), sugira pedir ao Claude do Wellington, que usa o Canva.
 
 Como agir no grupo:
 - Responda quando falarem com você, pedirem algo, ou quando aparecer um compromisso ("Odair, me manda o contrato até sexta"): anote com criar_tarefa e confirme em uma linha. Se a conversa for só entre as pessoas e não pedir nada de você, responda exatamente ${SILENT}.
@@ -342,6 +345,29 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
     },
   },
   {
+    name: "criar_arte",
+    description:
+      "Cria uma arte no visual do Banneg (azul abissal e dourado, fonte Montserrat, logo) e manda a imagem no WhatsApp. Você escreve as palavras: título curto e forte, um texto de apoio, até 5 itens, um destaque (número ou oferta) e o rodapé. Pode usar uma foto de fundo.",
+    input_schema: {
+      type: "object",
+      properties: {
+        formato: { type: "string", enum: Object.keys(ART_FORMATS), description: "post (1080x1350, feed), quadrado (1080x1080) ou story (1080x1920); padrão post" },
+        tema: { type: "string", enum: [...ART_THEMES], description: "azul (fundo azul escuro, padrão), claro (fundo creme) ou dourado" },
+        chamada: { ...str, description: "linha pequena acima do título, ex.: FRANQUIA HOME OFFICE" },
+        titulo: { ...str, description: "até ~60 caracteres" },
+        texto: { ...str, description: "1 ou 2 frases" },
+        itens: strList,
+        destaque: { ...str, description: "número ou oferta em destaque, ex.: R$ 19.900" },
+        destaque_legenda: str,
+        rodape: { ...str, description: 'padrão "banneg.com.br"; pode levar telefone ou @' },
+        foto: { ...str, description: "foto de fundo: material do CRM (foto_fachada, foto_fundador) ou arquivo_id de uma imagem do Drive" },
+        para: { ...str, description: 'padrão "aqui"' },
+        legenda: { ...str, description: "texto que vai junto da imagem no WhatsApp" },
+      },
+      required: ["titulo"],
+    },
+  },
+  {
     name: "relatorio",
     description:
       "Números do CRM num período: leads (novos por funil e origem), reunioes (marcadas, realizadas, não compareceu), metas (metas do mês e quanto já foi feito) ou tarefas (as suas, abertas e atrasadas). Formato texto para responder no chat, ou planilha para mandar um arquivo .csv que abre no Excel.",
@@ -384,6 +410,7 @@ const ALLOWED: Record<Exclude<Level, "socio">, Set<string>> = {
     "ler_arquivo",
     "enviar_arquivo",
     "relatorio",
+    "criar_arte",
     "mandar_mensagem",
   ]),
 };
@@ -657,17 +684,20 @@ export async function runTool(name: string, input: Input, ctx: TurnContext): Pro
       const q = text(input.busca);
       const lines: string[] = [];
       const drive = await secretaryDrive();
-      if (drive?.folderId) {
-        const files = await listDriveFiles(q);
+      // Partners search his whole Drive; the team only the team folder
+      const all = level === "socio";
+      const where = all ? "no Google Drive do Wellington" : `na pasta da equipe "${drive?.folderName ?? ""}"`;
+      if (drive && (all || drive.folderId)) {
+        const files = await listDriveFiles(q, { all });
         lines.push(
           files.length
-            ? `Na pasta do Drive "${drive.folderName ?? ""}" (${files.length} ${files.length === 1 ? "arquivo" : "arquivos"}${files.length > 15 ? ", os 15 mais novos" : ""}):\n${files
+            ? `${where[0].toUpperCase()}${where.slice(1)} (${files.length} ${files.length === 1 ? "arquivo" : "arquivos"}${files.length > 15 ? ", os 15 mais novos" : ""}):\n${files
                 .slice(0, 15)
                 .map((f) => `${f.id} · ${f.name}${f.path ? ` · pasta ${f.path}` : ""} · ${whenBr(new Date(f.modifiedTime))}`)
                 .join("\n")}`
-            : `Nada com "${q}" na pasta do Drive "${drive.folderName ?? ""}".`,
+            : `Nada com "${q}" ${where}.`,
         );
-      } else lines.push("A pasta do Google Drive da secretária ainda não foi ligada (tela Secretária no CRM).");
+      } else lines.push(drive ? "A pasta da equipe no Google Drive ainda não foi escolhida (tela Secretária no CRM)." : "O Google Drive ainda não foi conectado (tela Secretária no CRM).");
       const materials = Object.entries((await getSettings()).materials).filter(([key, url]) => !q || q.split(/\s+/).some((w) => w.length > 2 && `${key} ${materialFileName(url)}`.toLowerCase().includes(w.toLowerCase())));
       if (materials.length) lines.push(`Materiais do CRM (enviar_arquivo com material):\n${materials.map(([key, url]) => `${key} · ${materialFileName(url)}`).join("\n")}`);
       return lines.join("\n\n");
@@ -675,7 +705,7 @@ export async function runTool(name: string, input: Input, ctx: TurnContext): Pro
     case "ler_arquivo": {
       const id = text(input.arquivo_id);
       if (!id) throw new Error("Informe arquivo_id (de buscar_arquivo).");
-      return readDriveFile(id);
+      return readDriveFile(id, { all: level === "socio" });
     }
     case "enviar_arquivo": {
       const where = destination(text(input.para), ctx, level);
@@ -690,9 +720,30 @@ export async function runTool(name: string, input: Input, ctx: TurnContext): Pro
       }
       const id = text(input.arquivo_id);
       if (!id) throw new Error("Informe arquivo_id (de buscar_arquivo) ou material.");
-      const file = await driveFileToSend(id);
+      const file = await driveFileToSend(id, { all: level === "socio" });
       await secretarySendFile(where.chatId, file, caption, s);
       return `Enviado ${where.label}: ${file.name}.`;
+    }
+    case "criar_arte": {
+      const where = destination(text(input.para), ctx, level);
+      const assets = await loadArtAssets();
+      // A photo behind the words: a CRM material (foto_fachada, foto_fundador) or a picture from the Drive
+      const foto = text(input.foto);
+      if (foto) {
+        const url = (await getSettings()).materials[foto];
+        if (url) {
+          const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+          if (!res.ok) throw new Error(`Não consegui baixar a foto ${foto}.`);
+          assets.photo = photoDataUrl(Buffer.from(await res.arrayBuffer()), res.headers.get("content-type")?.split(";")[0] ?? "image/jpeg");
+        } else {
+          const file = await driveFileToSend(foto, { all: level === "socio" });
+          assets.photo = photoDataUrl(file.data!, file.mime);
+        }
+      }
+      const png = await renderArt(input as unknown as ArtInput, assets);
+      const name = `Banneg - ${text(input.titulo).slice(0, 40).replace(/[\\/:*?"<>|]+/g, " ").trim() || "arte"}.png`;
+      await secretarySendFile(where.chatId, { name, mime: "image/png", data: png }, text(input.legenda), s);
+      return `Arte enviada ${where.label} (${text(input.formato) || "post"}, tema ${text(input.tema) || "azul"}).`;
     }
     case "relatorio": {
       const report = await secretaryReport(text(input.tipo), { from: text(input.de), to: text(input.ate), now, assignee: mine });

@@ -30,8 +30,8 @@ export default function SecretariaPage({ searchParams }: { searchParams: Promise
 }
 
 const DRIVE_NOTICE: Record<string, (d: string) => { ok: boolean; text: string }> = {
-  ok: (d) => ({ ok: true, text: `Google Drive conectado${d ? ` (${d})` : ""}. Agora cole o link da pasta.` }),
-  pasta: (d) => ({ ok: true, text: `Pronto: ela lê a pasta "${d}".` }),
+  ok: (d) => ({ ok: true, text: `Google Drive conectado${d ? ` (${d})` : ""}. Agora cole o link da pasta da equipe.` }),
+  pasta: (d) => ({ ok: true, text: `Pronto: a equipe vê a pasta "${d}".` }),
   recusado: () => ({ ok: false, text: "O Google não recebeu a permissão. Clique em conectar e marque o acesso ao Drive." }),
   erro: (d) => ({ ok: false, text: d || "Não deu certo. Tente de novo." }),
 };
@@ -131,31 +131,32 @@ async function Secretaria({ searchParams }: { searchParams: Promise<Search> }) {
               <li>“Quais são as tarefas da semana?” · “Manda o checklist de cadastro.”</li>
               <li>“Jessica, me manda o relatório de inadimplência.” · “Quais seguradoras foram feitas em outubro?”</li>
               <li>“Manda a tabela de comissões aqui.” · “Quantos leads entraram essa semana? Manda em planilha.”</li>
+              <li>“Jess, faz um post da Black Banneg” · “Me dá 5 ideias de story para telemedicina.”</li>
             </ul>
           </div>
         </Section>
 
-        <Section icon={FolderOpen} title="Pasta do Google Drive">
+        <Section icon={FolderOpen} title="Google Drive">
           <div id="drive" className="space-y-3 text-sm text-slate-600">
             <p>
-              Os relatórios que as outras abas salvam no Drive (inadimplência, comissões, seguradoras) ficam numa pasta. Ela procura, lê e manda esses
-              arquivos quando pedirem. Ela só enxerga essa pasta e o que está dentro dela.
+              Ela procura, lê e manda arquivos do seu Drive (relatórios de inadimplência, comissões, seguradoras, marketing, jurídico). Você e o Franklin
+              podem pedir qualquer arquivo do Drive. A equipe só enxerga a pasta da equipe escolhida abaixo.
             </p>
             {notice && <p className={`rounded-lg px-3 py-2 text-sm ${notice.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>{notice.text}</p>}
             {drive ? (
               <>
                 <p className="flex items-center gap-2 font-medium text-emerald-700">
                   <CheckCircle2 size={18} /> Conectado em {drive.email}
-                  {drive.folderName ? ` · lendo a pasta "${drive.folderName}"` : " · falta escolher a pasta"}
+                  {drive.folderName ? ` · pasta da equipe "${drive.folderName}"` : " · falta escolher a pasta da equipe"}
                 </p>
                 <form action={setDriveFolderAction} className="flex flex-col gap-2 sm:flex-row">
                   <input
                     name="folder"
                     required
-                    placeholder="Link da pasta: drive.google.com/drive/folders/..."
+                    placeholder="Link da pasta da equipe: drive.google.com/drive/folders/..."
                     defaultValue={drive.folderId ? `https://drive.google.com/drive/folders/${drive.folderId}` : ""}
                     className={inputCls}
-                    aria-label="Link da pasta do Google Drive"
+                    aria-label="Link da pasta da equipe no Google Drive"
                   />
                   <button className={btnCls}>{drive.folderId ? "Trocar pasta" : "Usar esta pasta"}</button>
                 </form>

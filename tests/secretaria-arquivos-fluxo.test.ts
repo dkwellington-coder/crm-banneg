@@ -2,6 +2,7 @@
 // meeting (on his agenda, her name first, shown as free), then for the inadimplência report from the Drive folder,
 // and a spreadsheet of the CRM's leads. Google, the WhatsApp server and the AI are stubbed. Runs with TEST_DATABASE_URL.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { INADIMPLENCIA_XLSX } from "./fixtures/office";
 
 const dbUrl = process.env.TEST_DATABASE_URL;
@@ -52,10 +53,16 @@ describe.skipIf(!dbUrl)("Jessica: the team's Meet links, the Drive reports and t
     db = (await import("@/lib/db")).db;
     sec = await import("@/lib/secretary");
     ai = await import("@/lib/secretary-ai");
+    const realFetch = globalThis.fetch;
     vi.stubGlobal("fetch", async (input: string | URL, init: { method?: string; body?: unknown } = {}) => {
       const url = new URL(String(input));
+      // The image renderer loads its own WebAssembly (data: and file: links)
+      if (!url.protocol.startsWith("http")) return realFetch(input, init as RequestInit);
       const body = typeof init.body === "string" && init.body.startsWith("{") ? JSON.parse(init.body) : null;
       if (url.host === "oauth2.googleapis.com") return Response.json({ access_token: "at" });
+      // The fonts and the monograms of the arts, from the CRM's public folder
+      if (url.pathname.startsWith("/brand/")) return new Response(new Uint8Array(readFileSync(`public${url.pathname}`)));
+      if (url.pathname.startsWith("/materiais/")) return new Response(new Uint8Array(readFileSync(`public${url.pathname}`)), { headers: { "content-type": "image/jpeg" } });
       if (url.pathname === "/send/text") return texts.push(body), Response.json({ messageid: `T${texts.length}` });
       if (url.pathname === "/send/media") return media.push(body), Response.json({ messageid: `M${media.length}` });
       if (url.pathname === "/instance/status") return Response.json({ instance: { status: "connected" }, status: { connected: true } });
@@ -65,6 +72,9 @@ describe.skipIf(!dbUrl)("Jessica: the team's Meet links, the Drive reports and t
       }
       if (url.host === "www.googleapis.com" && url.pathname.startsWith("/drive/v3/files")) {
         const q = url.searchParams.get("q") ?? "";
+        // The partners search the whole Drive
+        if (url.searchParams.get("corpora") === "allDrives")
+          return Response.json({ files: q.includes("contrato") ? [{ id: "fora", name: "Contrato social.pdf", mimeType: "application/pdf", modifiedTime: "2026-11-01T10:00:00Z", size: "10" }] : [] });
         if (q.includes(`'${FOLDER}' in parents`))
           return Response.json({ files: [{ id: "sub1", name: "Inadimplência", mimeType: "application/vnd.google-apps.folder", modifiedTime: "2026-11-20T10:00:00Z" }] });
         if (q.includes("'sub1' in parents"))
@@ -77,6 +87,7 @@ describe.skipIf(!dbUrl)("Jessica: the team's Meet links, the Drive reports and t
         if (url.pathname.endsWith("/f1") && url.searchParams.get("alt") === "media") return new Response(new Uint8Array(INADIMPLENCIA_XLSX()));
         if (url.pathname.endsWith("/f1")) return Response.json({ id: "f1", name: "inadimplencia-novembro.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", modifiedTime: "2026-11-25T10:00:00Z", size: "900", parents: ["sub1"] });
         if (url.pathname.endsWith("/sub1")) return Response.json({ parents: [FOLDER] });
+        if (url.pathname.endsWith("/fora") && url.searchParams.get("alt") === "media") return new Response(new Uint8Array(Buffer.from("%PDF-1.4 contrato")));
         if (url.pathname.endsWith("/fora")) return Response.json({ id: "fora", name: "segredo.pdf", mimeType: "application/pdf", modifiedTime: "2026-11-25T10:00:00Z", parents: ["outraPasta"] });
         if (url.pathname.endsWith("/outraPasta")) return Response.json({ parents: [] });
       }
@@ -174,5 +185,45 @@ describe.skipIf(!dbUrl)("Jessica: the team's Meet links, the Drive reports and t
     expect(csv).toContain("Ligar para a Porto;tarefa;Camila");
     // A collaborator sees only her own tasks
     expect(csv).not.toContain("Laiane");
+  });
+
+  it("a partner finds and gets any file of his Drive, outside the team folder", async () => {
+    await sec.receiveSecretary("chave", { ...pm("W1", "Jess, me manda o contrato social"), message: { ...pm("W1", "x").message, chatid: "5517981600088@s.whatsapp.net", text: "Jess, me manda o contrato social", senderName: "Wellington", sender_pn: "5517981600088@s.whatsapp.net" }, chat: { phone: "5517981600088" } });
+    script.push(
+      { stop_reason: "tool_use", content: [{ type: "tool_use", id: "t1", name: "buscar_arquivo", input: { busca: "contrato social" } }] },
+      { stop_reason: "tool_use", content: [{ type: "tool_use", id: "t2", name: "enviar_arquivo", input: { arquivo_id: "fora" } }] },
+      { stop_reason: "end_turn", content: [{ type: "text", text: "Segue o contrato." }] },
+    );
+    await ai.runSecretaryTurn("5517981600088@s.whatsapp.net", new Date("2026-11-26T14:00:00Z"));
+    const found = (seen[1].messages.at(-1)!.content as { content: string }[])[0].content;
+    expect(found).toContain("No Google Drive do Wellington");
+    expect(found).toContain("fora · Contrato social.pdf");
+    expect(media[0]).toMatchObject({ number: "5517981600088@s.whatsapp.net", docName: "segredo.pdf", mimetype: "application/pdf" });
+  });
+
+  it("makes a post in Banneg's look, with a CRM photo behind, and sends it as a picture", async () => {
+    await sec.receiveSecretary("chave", pm("C4", "Jess, faz um post da inauguração da loja"));
+    script.push(
+      {
+        stop_reason: "tool_use",
+        content: [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "criar_arte",
+            input: { formato: "post", chamada: "Evento", titulo: "Inauguração da nova loja", texto: "Venha conhecer o Banneg.", foto: "foto_fachada", legenda: "Te esperamos!" },
+          },
+        ],
+      },
+      { stop_reason: "end_turn", content: [{ type: "text", text: "Pronto, mandei o post!" }] },
+    );
+    await ai.runSecretaryTurn(`${CAMILA}@s.whatsapp.net`, new Date("2026-11-26T14:00:00Z"));
+    const result = (seen[1].messages.at(-1)!.content as { content: string; is_error?: boolean }[])[0];
+    expect(result.content).toBe("Arte enviada aqui (post, tema azul).");
+    expect(media[0]).toMatchObject({ number: `${CAMILA}@s.whatsapp.net`, type: "image", mimetype: "image/png", docName: "Banneg - Inauguração da nova loja.png", text: "Te esperamos!" });
+    const png = Buffer.from(media[0].file, "base64");
+    expect(png.subarray(1, 4).toString()).toBe("PNG");
+    expect(png.readUInt32BE(16)).toBe(1080);
+    expect(png.readUInt32BE(20)).toBe(1350);
   });
 });

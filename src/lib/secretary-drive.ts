@@ -4,6 +4,9 @@ import { docxToText, xlsxToText } from "./office-read";
 import type { SecretaryFile } from "./secretary";
 
 /**
+ * Jessica's Google Drive (2026-11-26, Wellington: "Tudo para sócios, pasta p/ equipe"): the partners may ask any file of
+ * his Drive; the collaborators only see the team folder chosen on the Secretária screen.
+ *
  * Jessica's Google Drive folder (Wellington, 2026-11-26): the other Claude tabs (Marketing, Download comissões) save
  * their reports in a Drive folder, and she finds, reads and sends them when the team asks ("manda o relatório de
  * inadimplência", "quais seguradoras foram feitas"). She sees only that folder and what is inside it, never the rest.
@@ -53,11 +56,14 @@ async function drive<T>(token: string, url: string | URL): Promise<T> {
   return json;
 }
 
-async function tokenAndFolder() {
+/** all: the whole Drive (partners); otherwise only the team folder (collaborators). */
+export type DriveScope = { all?: boolean };
+
+async function tokenAndFolder(scope: DriveScope = {}) {
   const link = await secretaryDrive();
-  if (!link) throw new Error("O Google Drive da secretária não está conectado (tela Secretária > Pasta do Google Drive).");
-  if (!link.folderId) throw new Error("Falta escolher a pasta do Google Drive na tela Secretária.");
-  return { token: await accessTokenFrom(link.token), folderId: link.folderId, link };
+  if (!link) throw new Error("O Google Drive da secretária não está conectado (tela Secretária > Google Drive).");
+  if (!scope.all && !link.folderId) throw new Error("A equipe só vê a pasta da equipe, e ela ainda não foi escolhida na tela Secretária.");
+  return { token: await accessTokenFrom(link.token), folderId: link.folderId ?? null, link };
 }
 
 /** Saves the folder she reads, after checking that the connected Google account sees it and that it is a folder. */
@@ -86,9 +92,49 @@ export function matches(entry: Pick<DriveEntry, "name" | "path">, search: string
 
 type RawFile = { id: string; name: string; mimeType: string; modifiedTime: string; size?: string };
 
-/** Everything inside her folder (sub-folders too, up to 4 levels and 600 files), newest first. */
-export async function listDriveFiles(search = "") {
-  const { token, folderId } = await tokenAndFolder();
+/** The Drive query for a search in the whole Drive: every word in the name or the text, files only. */
+export function driveQuery(search: string) {
+  const words = search
+    .split(/[\s,/_-]+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length >= 2)
+    .slice(0, 6)
+    .map((w) => w.replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+  return ["trashed = false", "mimeType != 'application/vnd.google-apps.folder'", ...words.map((w) => `(name contains '${w}' or fullText contains '${w}')`)].join(" and ");
+}
+
+/** Searching the whole Drive (partners): newest first, up to 30. */
+async function searchWholeDrive(token: string, search: string) {
+  const url = new URL(API);
+  url.searchParams.set("q", driveQuery(search));
+  url.searchParams.set("fields", "files(id,name,mimeType,modifiedTime,size)");
+  url.searchParams.set("pageSize", "30");
+  url.searchParams.set("supportsAllDrives", "true");
+  url.searchParams.set("includeItemsFromAllDrives", "true");
+  url.searchParams.set("corpora", "allDrives");
+  // Google refuses ordering a fullText search: only plain listings come newest first
+  if (!search.trim()) url.searchParams.set("orderBy", "modifiedTime desc");
+  const page = await drive<{ files?: RawFile[] }>(token, url);
+  return (page.files ?? [])
+    .map((x) => ({ id: x.id, name: x.name, mimeType: x.mimeType, modifiedTime: x.modifiedTime, size: x.size ? Number(x.size) : null, path: "" }))
+    .sort((a, b) => b.modifiedTime.localeCompare(a.modifiedTime));
+}
+
+/** Everything inside her folder (sub-folders too, up to 4 levels and 600 files), newest first; partners search the whole Drive. */
+export async function listDriveFiles(search = "", scope: DriveScope = {}) {
+  const { token, folderId } = await tokenAndFolder(scope);
+  if (scope.all) {
+    const everywhere = await searchWholeDrive(token, search);
+    if (!folderId) return everywhere;
+    // The team folder's files keep their path, so a report saved there is easy to tell apart
+    const inFolder = (await listInFolder(token, folderId, search)).slice(0, 30);
+    const ids = new Set(inFolder.map((f) => f.id));
+    return [...inFolder, ...everywhere.filter((f) => !ids.has(f.id))].sort((a, b) => b.modifiedTime.localeCompare(a.modifiedTime));
+  }
+  return listInFolder(token, folderId!, search);
+}
+
+async function listInFolder(token: string, folderId: string, search: string) {
   const found: DriveEntry[] = [];
   let level: { id: string; path: string }[] = [{ id: folderId, path: "" }];
   for (let depth = 0; depth < 5 && level.length && found.length < 600; depth++) {
@@ -116,6 +162,9 @@ export async function listDriveFiles(search = "") {
   }
   return found.filter((e) => !search.trim() || matches(e, search)).sort((a, b) => b.modifiedTime.localeCompare(a.modifiedTime));
 }
+
+const fileMeta = (token: string, fileId: string) =>
+  drive<RawFile>(token, `${API}/${fileId}?fields=id,name,mimeType,modifiedTime,size&supportsAllDrives=true`);
 
 /** A file, only when it really is inside her folder (its parents lead up to it). */
 async function insideFolder(token: string, folderId: string, fileId: string) {
@@ -154,9 +203,9 @@ async function download(token: string, meta: RawFile, purpose: "read" | "send") 
 }
 
 /** The file as it goes out on WhatsApp. */
-export async function driveFileToSend(fileId: string): Promise<SecretaryFile> {
-  const { token, folderId } = await tokenAndFolder();
-  const meta = await insideFolder(token, folderId, fileId);
+export async function driveFileToSend(fileId: string, scope: DriveScope = {}): Promise<SecretaryFile> {
+  const { token, folderId } = await tokenAndFolder(scope);
+  const meta = scope.all ? await fileMeta(token, fileId) : await insideFolder(token, folderId!, fileId);
   return download(token, meta, "send");
 }
 
@@ -187,9 +236,9 @@ export function contentFor(file: { name: string; mime: string; data: Buffer }): 
   return [{ type: "text", text: `Não consigo ler arquivos "${file.mime}" (${file.name}), mas posso enviar o arquivo.` }];
 }
 
-export async function readDriveFile(fileId: string) {
-  const { token, folderId } = await tokenAndFolder();
-  const meta = await insideFolder(token, folderId, fileId);
+export async function readDriveFile(fileId: string, scope: DriveScope = {}) {
+  const { token, folderId } = await tokenAndFolder(scope);
+  const meta = scope.all ? await fileMeta(token, fileId) : await insideFolder(token, folderId!, fileId);
   const file = await download(token, meta, "read");
   return contentFor(file);
 }
