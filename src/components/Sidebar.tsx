@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Bot, CalendarDays, ClipboardList, Columns3, FlaskConical, Headset, KeyRound, ListTodo, LayoutDashboard, LogOut, Menu, MessageCircle, Plug, Settings, Target, X, type LucideIcon } from "lucide-react";
+import { Bot, CalendarDays, ClipboardList, Columns3, FlaskConical, Headset, KeyRound, ListTodo, LayoutDashboard, LogOut, Menu, MessageCircle, Palette, Plug, Settings, Target, X, type LucideIcon } from "lucide-react";
 import { logoutAction } from "@/app/actions";
 import { LEAD_AREAS, type Area } from "@/lib/areas";
 import { AlertBell, AlertToasts, Badge, useTeamAlerts } from "./Alerts";
@@ -22,6 +22,7 @@ const ALL_ITEMS: Item[] = [
   // Last, so the owner's phone bar stays as it was; for the business manager it is the only screen
   { href: "/reunioes", label: "Reuniões", icon: ClipboardList, area: "reunioes" },
   { href: "/suporte", label: "Suporte", icon: Headset, area: "suporte" },
+  { href: "/artes", label: "Artes", icon: Palette, area: "artes" },
   // The owner's own (no area): his secretary in the WhatsApp group
   { href: "/secretaria", label: "Secretária", icon: Bot },
   // Her tasks as a short checklist (owner only)

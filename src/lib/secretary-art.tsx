@@ -20,8 +20,13 @@ export type ArtInput = {
   texto?: string;
   destaque?: string; // a big number or offer ("R$ 19.900")
   destaque_legenda?: string; // what the number is ("taxa de franquia")
-  itens?: string[];
+  itens?: string[]; // selos with a gold check ("Consulte disponibilidade de vagas")
   rodape?: string;
+  // The approved Banneg layouts (Guia de Marketing, 4.1): a table with a gold header, big numbers, numbered steps, a gold button
+  tabela?: { colunas?: string[]; linhas?: string[][] };
+  numeros?: { valor?: string; rotulo?: string }[];
+  passos?: { titulo?: string; texto?: string; destaque?: boolean }[];
+  botao?: string;
 };
 
 // serif: Lora for titles (Guia de Marketing Banneg, 2026-11-26); without it the title falls back to Montserrat
@@ -63,7 +68,29 @@ export function normalizeArt(input: ArtInput) {
     destaqueLegenda: clean(input.destaque_legenda, 60),
     itens: (Array.isArray(input.itens) ? input.itens : []).map((i) => clean(i, 80)).filter(Boolean).slice(0, 5),
     rodape: clean(input.rodape, 140) || "banneg.com.br",
+    tabela: normalizeTable(input.tabela),
+    numeros: (Array.isArray(input.numeros) ? input.numeros : [])
+      .map((n) => ({ valor: clean(n?.valor, 20), rotulo: clean(n?.rotulo, 40) }))
+      .filter((n) => n.valor)
+      .slice(0, 4),
+    passos: (Array.isArray(input.passos) ? input.passos : [])
+      .map((p) => ({ titulo: clean(p?.titulo, 40), texto: clean(p?.texto, 90), destaque: !!p?.destaque }))
+      .filter((p) => p.titulo)
+      .slice(0, 3),
+    botao: clean(input.botao, 40),
   };
+}
+
+/** Up to 4 columns and 5 rows; rows padded or cut to the header's width. */
+function normalizeTable(t: ArtInput["tabela"]) {
+  const colunas = (Array.isArray(t?.colunas) ? t.colunas : []).map((c) => clean(c, 22)).filter(Boolean).slice(0, 4);
+  if (!colunas.length) return null;
+  const linhas = (Array.isArray(t?.linhas) ? t.linhas : [])
+    .filter(Array.isArray)
+    .map((l) => colunas.map((_, i) => clean(l[i], 24)))
+    .filter((l) => l.some(Boolean))
+    .slice(0, 5);
+  return linhas.length ? { colunas, linhas } : null;
 }
 
 /** The title without the *marks* around its key word. */
@@ -180,7 +207,19 @@ export async function renderArt(input: ArtInput, assets: ArtAssets): Promise<Buf
   const accentInk = photo ? NAVY : t.accentInk;
 
   const element = (
-    <div style={{ width, height, display: "flex", flexDirection: "column", background: t.bg, fontFamily: "Montserrat", position: "relative" }}>
+    <div
+      style={{
+        width,
+        height,
+        display: "flex",
+        flexDirection: "column",
+        background: t.bg,
+        // The blue goes from azul profundo at the top down to azul abissal (Guia de Marketing Banneg)
+        ...(a.tema === "azul" ? { backgroundImage: `linear-gradient(180deg, #02051c 0%, ${NAVY} 70%)` } : {}),
+        fontFamily: "Montserrat",
+        position: "relative",
+      }}
+    >
       {photo && (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={photo} alt="" width={width} height={height} style={{ position: "absolute", top: 0, left: 0, width, height, objectFit: "cover" }} />
@@ -222,12 +261,61 @@ export async function renderArt(input: ArtInput, assets: ArtAssets): Promise<Buf
           )}
           <Title title={a.titulo} size={Math.round(titleSize(a.titulo, width, tall) * (assets.serif ? 0.9 : 1))} ink={ink} accent={accent} serif={!!assets.serif} />
           {a.texto && <div style={{ display: "flex", fontSize: Math.round(36 * s), fontWeight: 400, lineHeight: 1.4, color: soft, textAlign: "center", justifyContent: "center" }}>{a.texto}</div>}
+          {a.tabela && (
+            <div style={{ display: "flex", flexDirection: "column", width: width - 2 * pad, borderRadius: Math.round(18 * s), overflow: "hidden", border: `${Math.round(2 * s)}px solid ${accent}` }}>
+              <div style={{ display: "flex", background: accent }}>
+                {a.tabela.colunas.map((c, i) => (
+                  <div key={i} style={{ display: "flex", flex: 1, justifyContent: "center", padding: `${Math.round(14 * s)}px ${Math.round(8 * s)}px`, fontSize: Math.round(24 * s), fontWeight: 800, color: accentInk, letterSpacing: 1 * s }}>
+                    {c.toUpperCase()}
+                  </div>
+                ))}
+              </div>
+              {a.tabela.linhas.map((l, r) => (
+                <div key={r} style={{ display: "flex", background: r % 2 ? "rgba(255,255,255,0.04)" : "rgba(0,3,20,0.55)" }}>
+                  {l.map((cell, i) => (
+                    <div key={i} style={{ display: "flex", flex: 1, justifyContent: "center", padding: `${Math.round(14 * s)}px ${Math.round(8 * s)}px`, fontSize: Math.round(28 * s), fontWeight: i === l.length - 1 ? 800 : 700, color: i === l.length - 1 ? accent : ink }}>
+                      {cell}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+          {a.numeros.length > 0 && (
+            <div style={{ display: "flex", gap: Math.round(18 * s), width: width - 2 * pad }}>
+              {a.numeros.map((n, i) => (
+                <div key={i} style={{ display: "flex", flex: 1, flexDirection: "column", alignItems: "center", gap: Math.round(6 * s), padding: `${Math.round(20 * s)}px ${Math.round(10 * s)}px`, borderRadius: Math.round(18 * s), border: `${Math.round(2 * s)}px solid ${accent}`, background: "rgba(0,3,20,0.55)" }}>
+                  <div style={{ display: "flex", fontSize: Math.round((a.numeros.length > 3 ? 36 : 44) * s), fontWeight: 800, color: accent }}>{n.valor}</div>
+                  {n.rotulo && <div style={{ display: "flex", fontSize: Math.round(20 * s), fontWeight: 700, color: ink, textAlign: "center", justifyContent: "center", letterSpacing: 1 * s }}>{n.rotulo.toUpperCase()}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+          {a.passos.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: Math.round(14 * s), width: width - 2 * pad }}>
+              {a.passos.map((p, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: Math.round(22 * s), padding: `${Math.round(16 * s)}px ${Math.round(22 * s)}px`, borderRadius: Math.round(18 * s), background: p.destaque ? accent : "rgba(0,3,20,0.55)", border: `${Math.round(2 * s)}px solid ${accent}` }}>
+                  <div style={{ display: "flex", width: Math.round(58 * s), height: Math.round(58 * s), borderRadius: 99, alignItems: "center", justifyContent: "center", background: p.destaque ? accentInk : accent, color: p.destaque ? accent : accentInk, fontSize: Math.round(30 * s), fontWeight: 800 }}>
+                    {i + 1}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
+                    <div style={{ display: "flex", fontSize: Math.round(32 * s), fontWeight: 800, color: p.destaque ? accentInk : ink }}>{p.titulo}</div>
+                    {p.texto && <div style={{ display: "flex", fontSize: Math.round(24 * s), fontWeight: 400, color: p.destaque ? accentInk : soft }}>{p.texto}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           {a.itens.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: Math.round(16 * s) }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: Math.round(14 * s) }}>
               {a.itens.map((item, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: Math.round(20 * s) }}>
-                  <div style={{ display: "flex", width: Math.round(16 * s), height: Math.round(16 * s), borderRadius: 99, background: accent }} />
-                  <div style={{ display: "flex", fontSize: Math.round(36 * s), fontWeight: 700, color: ink }}>{item}</div>
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: Math.round(16 * s) }}>
+                  {/* Gold check, the approved "selo" */}
+                  <svg width={Math.round(34 * s)} height={Math.round(34 * s)} viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="12" fill={accent} />
+                    <path d="M6.5 12.5l3.5 3.5 7.5-8" stroke={accentInk} strokeWidth="2.6" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <div style={{ display: "flex", fontSize: Math.round(30 * s), fontWeight: 700, color: ink }}>{item}</div>
                 </div>
               ))}
             </div>
@@ -248,6 +336,11 @@ export async function renderArt(input: ArtInput, assets: ArtAssets): Promise<Buf
                 {a.destaque}
               </div>
               {a.destaqueLegenda && <div style={{ display: "flex", maxWidth: Math.round(420 * s), fontSize: Math.round(32 * s), fontWeight: 700, color: ink, lineHeight: 1.25 }}>{a.destaqueLegenda}</div>}
+            </div>
+          )}
+          {a.botao && (
+            <div style={{ display: "flex", padding: `${Math.round(18 * s)}px ${Math.round(46 * s)}px`, borderRadius: 99, backgroundImage: `linear-gradient(180deg, #f5d36a 0%, ${GOLD} 55%, #b8890f 100%)`, color: NAVY, fontSize: Math.round(30 * s), fontWeight: 800, letterSpacing: 1 * s }}>
+              {a.botao}
             </div>
           )}
         </div>

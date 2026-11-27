@@ -11,6 +11,7 @@ export const AREAS = [
   { key: "metas", label: "Metas", hint: "Metas e resultados do time", href: "/metas" },
   { key: "painel", label: "Painel", hint: "Números e campanhas", href: "/painel" },
   { key: "suporte", label: "Suporte", hint: "Números de suporte, conversas e o acompanhamento dos atendentes", href: "/suporte" },
+  { key: "artes", label: "Artes", hint: "Criar artes no padrão do Banneg (posts, stories)", href: "/artes" },
   { key: "simulador", label: "Simulador", hint: "Testar a IA", href: "/simulador" },
   { key: "integracoes", label: "Integrar", hint: "WhatsApp, Meta, Google e formulários", href: "/integracoes" },
   { key: "configuracoes", label: "Ajustes", hint: "IA, e-mails, modelos e macros", href: "/configuracoes" },

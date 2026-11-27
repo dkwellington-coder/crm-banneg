@@ -368,7 +368,7 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
   {
     name: "criar_arte",
     description:
-      "Cria uma arte no visual do Banneg (azul abissal e dourado imperial, logo nova no topo, título em Lora com a palavra-chave entre *asteriscos* em dourado itálico) e manda a imagem no WhatsApp. Você escreve as palavras: chapéu (chamada), título curto e forte, um texto de apoio, até 5 itens (selos), um destaque (número ou oferta) e o rodapé (linha legal). Pode usar uma foto real de fundo.",
+      "Cria uma arte no visual do Banneg (azul abissal e dourado imperial, logo nova no topo, título em Lora com a palavra-chave entre *asteriscos* em dourado itálico) e manda a imagem no WhatsApp. Você escreve as palavras: chapéu (chamada), título curto e forte, um texto de apoio, e os blocos dos modelos aprovados: tabela (Carta | Prazo | Meia parcela), números grandes, 3 passos, selos com check (itens), um destaque, botão dourado e o rodapé (linha legal). Use só os blocos que a peça pede, uma ideia por arte. Pode usar uma foto real de fundo.",
     input_schema: {
       type: "object",
       properties: {
@@ -380,6 +380,22 @@ export const TOOLS: Anthropic.Beta.BetaTool[] = [
         itens: strList,
         destaque: { ...str, description: "número ou oferta em destaque, ex.: R$ 19.900" },
         destaque_legenda: str,
+        tabela: {
+          type: "object",
+          description: 'tabela com cabeçalho dourado, ex.: colunas ["Carta","Prazo","Meia parcela"] e até 5 linhas; só valores reais da tabela',
+          properties: { colunas: strList, linhas: { type: "array", items: strList } },
+        },
+        numeros: {
+          type: "array",
+          description: "2 a 4 números grandes em dourado (oferta com números), ex.: {valor: \"R$ 1,4 mi\", rotulo: \"Crédito\"}",
+          items: { type: "object", properties: { valor: str, rotulo: str }, required: ["valor"] },
+        },
+        passos: {
+          type: "array",
+          description: "até 3 passos numerados; marque destaque no principal (fica dourado)",
+          items: { type: "object", properties: { titulo: str, texto: str, destaque: { type: "boolean" } }, required: ["titulo"] },
+        },
+        botao: { ...str, description: 'botão dourado, ex.: "Me chame agora", "Agende uma consultoria"; telefone só se o Wellington pedir' },
         rodape: { ...str, description: 'linha legal pequena (ex.: "Consórcio sem juros, com taxa de administração. Lance conforme as regras do grupo."); padrão "banneg.com.br". Telefone só se o Wellington pedir' },
         foto: { ...str, description: "foto de fundo: midia_id de uma imagem da conversa, material do CRM (foto_fachada, foto_fundador) ou arquivo_id de uma imagem do Drive" },
         para: { ...str, description: 'padrão "aqui"' },
